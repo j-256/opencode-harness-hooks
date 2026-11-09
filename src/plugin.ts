@@ -98,6 +98,7 @@ export interface V2Context extends V2ToolContext {
   readonly app?: { readonly version: string }
   readonly location: { readonly directory: string }
   readonly options: unknown
+  readonly event?: { readonly subscribe: (options: { readonly types: readonly string[]; readonly signal: AbortSignal }) => AsyncIterable<unknown> }
   readonly model?: { readonly list: (input: { readonly types: readonly ['chat'] }, options: { readonly signal: AbortSignal }) => Promise<unknown> }
   readonly provider?: { readonly get: (input: { readonly providerID: string }, options: { readonly signal: AbortSignal }) => Promise<unknown> }
   readonly permission?: { readonly hook: (name: 'evaluate', callback: (event: PermissionEvaluation) => Promise<void>) => Promise<{ readonly dispose: () => Promise<void> | void }> }
@@ -255,10 +256,10 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
   try {
     if (runtime.hasStopHooks) {
       if (context.app?.version !== HOST_VERSIONS.v2) unavailable('HOST_STOP_HOST_VERSION_UNAVAILABLE')
-      if (!context.session.synthetic || !context.session.get || !context.session.context) unavailable('HOST_STOP_HOST_UNAVAILABLE')
+      if (!context.session.synthetic || !context.session.get || !context.session.context || !context.event?.subscribe) unavailable('HOST_STOP_HOST_UNAVAILABLE')
       const codex = runtime.report.sources.find(source => source.enabled && source.dialect === 'codex' && source.events.includes('Stop'))
       if (codex) throw new HostHookError('HOST_STOP_DIALECT_UNAVAILABLE', 'unsupported', `Codex Stop native rollout and model projection required for source ${codex.id}`)
-      stopBridge = new V2StopBridge({ directory: context.location.directory, runtime, transcripts, contexts, history: read, synthetic: input => context.session.synthetic!(input) })
+      stopBridge = new V2StopBridge({ directory: context.location.directory, runtime, transcripts, contexts, history: read, synthetic: input => context.session.synthetic!(input), subscribe: options => context.event!.subscribe(options) })
       handles.add(await context.session.hook('experimental.idle', event => stopBridge!.idle(event)))
     }
     handles.add(await register('prompt', async event => {
@@ -272,6 +273,7 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
       runtime.sessions.model(event.sessionID, info.model.id, event.messageID)
       if (runtime.hasPromptHooks) await submit(runtime, contexts, { host: 'v2', event: 'UserPromptSubmit', sessionID: event.sessionID, messageID: event.messageID, prompt: event.prompt.text, signal: session.turnSignal }, [event.prompt.text], services)
       else contexts.remember(runtime.sessions.get(event.sessionID), [event.prompt.text], [])
+      stopBridge?.accept(runtime.sessions.get(event.sessionID), event.prompt.text)
     }))
     handles.add(await register('context', async event => {
       const session = runtime.sessions.get(event.sessionID)

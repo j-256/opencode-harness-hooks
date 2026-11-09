@@ -32,12 +32,13 @@ test('V2 Stop core probe help needs no host executable or project build', async 
     assert.match(result.stdout, /^Usage:/)
     assert.ok(result.stdout.includes('--default-root'))
     assert.ok(result.stdout.includes('--history'))
+    assert.ok(result.stdout.includes('--cancellation'))
     assert.equal(result.stderr, '')
   }
 })
 
 test('V2 Stop core probe rejects invalid arguments before querying dependencies', async () => {
-  for (const args of [['--unknown'], ['--binary'], ['--binary='], ['unexpected'], ['--', 'unexpected'], ['--history']]) {
+  for (const args of [['--unknown'], ['--binary'], ['--binary='], ['unexpected'], ['--', 'unexpected'], ['--history'], ['--cancellation'], ['--default-root', '--cancellation', '--history']]) {
     const result = await invoke(args)
     assert.equal(result.status, 2)
     assert.equal(result.stdout, '')
@@ -50,7 +51,7 @@ test('V2 Stop core probe reports missing and mismatched dependencies before star
   assert.equal(missing.status, 3)
   assert.equal(missing.stdout, '')
   assert.match(missing.stderr, /DEPENDENCY_UNAVAILABLE/)
-  for (const args of [['--binary=' + node], ['--binary', node], ['-b', node], ['-b' + node], ['--default-root', '-b', node], ['--default-root', '--history', '-b', node]]) {
+  for (const args of [['--binary=' + node], ['--binary', node], ['-b', node], ['-b' + node], ['--default-root', '-b', node], ['--default-root', '--history', '-b', node], ['--default-root', '--cancellation', '-b', node]]) {
     const mismatched = await invoke(args)
     assert.equal(mismatched.status, 2)
     assert.equal(mismatched.stdout, '')

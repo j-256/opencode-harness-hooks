@@ -5,7 +5,11 @@ import type { createRuntime } from '../runtime.js'
 import type { PromptContexts, PromptContinuationReservation, PromptStopHistory } from '../prompt-contexts.js'
 import type { SessionSnapshot } from '../sessions.js'
 import type { StopDelivery } from '../stop.js'
+import type { StopEvent } from '../stop.js'
+import type { StopModelBlocks } from '../stop-records.js'
 import type { TranscriptHistory, TranscriptService, TranscriptContinuationReservation } from '../transcript.js'
+import { V2StopEvents, V2_STOP_EVENT_TYPES } from './v2-stop-events.js'
+import type { V2ExecutionInterruption } from './v2-stop-events.js'
 
 const SERVICE_MS = 5000
 const MAX_SESSIONS = 1024
@@ -28,7 +32,8 @@ interface Pending {
   reading?: Promise<void>
 }
 interface Historical extends PromptStopHistory { readonly turnID: string; readonly bytes: number; nextPromptID?: string }
-interface State { readonly signal: AbortSignal; readonly cleanup: () => void; readonly histories: Map<string, Historical>; pending?: Pending; failure?: HostHookError }
+interface Attempt { readonly owner: SessionSnapshot; readonly event: StopEvent; readonly text: string; readonly bytes: number; readonly receipt: Promise<void>; readonly received: () => void; phase: 'dispatch' | 'admitted' | 'done' | 'interrupted' }
+interface State { readonly signal: AbortSignal; readonly cleanup: () => void; readonly histories: Map<string, Historical>; attempt?: Attempt; pending?: Pending; failure?: HostHookError }
 interface Options {
   readonly directory: string
   readonly runtime: Pick<Runtime, 'sessions' | 'stop'>
@@ -36,6 +41,7 @@ interface Options {
   readonly contexts: PromptContexts
   readonly history: (sessionID: string, signal: AbortSignal) => Promise<TranscriptHistory>
   readonly synthetic: (input: V2SyntheticInput) => Promise<unknown>
+  readonly subscribe: (options: { readonly types: typeof V2_STOP_EVENT_TYPES; readonly signal: AbortSignal }) => AsyncIterable<unknown>
 }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 function fail(code: string, outcome: HostHookError['outcome'] = 'unsupported'): never { throw new HostHookError(code, outcome) }
@@ -51,15 +57,49 @@ export class V2StopBridge {
   private bytes = 0
   private historicalCount = 0
   private disposing: Promise<void> | undefined
+  private readonly events = new V2StopEvents()
+  private readonly observing: Promise<void>
+  private eventFailure?: HostHookError
 
-  constructor(private readonly options: Options) {}
+  constructor(private readonly options: Options) {
+    this.observing = (async () => {
+      for await (const raw of options.subscribe({ types: V2_STOP_EVENT_TYPES, signal: this.lifetime.signal })) {
+        if (this.lifetime.signal.aborted) break
+        const sessionID = record(raw) && record(raw.data) && typeof raw.data.sessionID === 'string' ? raw.data.sessionID : undefined
+        if (sessionID && this.states.get(sessionID)?.failure) continue
+        const started = performance.now()
+        try {
+          const receipt = this.events.event(raw)
+          if (receipt) this.interrupted(receipt)
+        } catch (error) { this.failedEvents(error, started, raw); if (this.eventFailure) return }
+      }
+      if (!this.lifetime.signal.aborted) fail('HOST_STOP_EVENT_STREAM_ENDED')
+    })().catch((error: unknown) => {
+      if (this.lifetime.signal.aborted) return
+      this.failedEvents(error, performance.now())
+    })
+  }
+
+  accept(session: SessionSnapshot, text: string): void { this.guard(session, false); this.events.accept(session, text); this.state(session) }
+
+  private failedEvents(error: unknown, started: number, raw?: unknown): void {
+    if (this.eventFailure) return
+    const candidate = record(raw) && record(raw.data) && typeof raw.data.sessionID === 'string' ? raw.data.sessionID : undefined
+    const state = candidate ? this.states.get(candidate) : undefined
+    if (state?.failure) return
+    const failure = this.failure('events', state ? candidate : undefined, error instanceof HostHookError ? error : new HostHookError('HOST_STOP_EVENT_STREAM_FAILED', 'failed'), state?.attempt?.event.completionID, started)
+    if (state) { state.failure = failure; state.attempt?.received() }
+    else { this.eventFailure = failure; for (const row of this.states.values()) row.attempt?.received() }
+  }
 
   guard(session: SessionSnapshot, ready = true): void {
     if (this.lifetime.signal.aborted) fail('HOST_STOP_DISPOSED', 'cancelled')
     if (session.signal.aborted || session.turnSignal.aborted) fail('HOST_STOP_CANCELLED', 'cancelled')
+    if (this.eventFailure) throw this.eventFailure
     const state = this.states.get(session.sessionID)
     if (state && state.signal !== session.signal) fail('HOST_STOP_SESSION_MISMATCH')
     if (state?.failure) throw state.failure
+    if (ready && state?.attempt?.phase === 'dispatch' && state.attempt.owner.turnSignal.aborted) fail('HOST_STOP_INTERRUPTION_UNAVAILABLE')
     if (ready && state && [...state.histories.values()].some(row => !row.nextPromptID)) fail('HOST_STOP_HISTORY_UNAVAILABLE')
     const pending = state?.pending
     if (!pending) return
@@ -71,6 +111,7 @@ export class V2StopBridge {
   async idle(frame: V2IdleEvent): Promise<void> {
     const started = performance.now()
     let completionID: string | undefined
+    let attempt: Attempt | undefined
     try {
       const session = this.options.runtime.sessions.get(frame.sessionID)
       this.guard(session, false)
@@ -84,8 +125,24 @@ export class V2StopBridge {
       completionID = last.id
       const event = { host: 'v2' as const, event: 'Stop' as const, cwd: this.options.directory, sessionID: session.sessionID, messageID: session.turnID, completionID: last.id }
       const path = await this.options.transcripts.prepare(event, session, session.turnSignal)
+      const state = this.state(session)
+      if (state.attempt?.phase === 'dispatch' && !state.attempt.owner.turnSignal.aborted && state.attempt.event.completionID !== event.completionID) fail('HOST_STOP_ADMISSION_PENDING')
+      if (state.attempt?.event.completionID !== event.completionID || state.attempt.owner.turnSignal !== session.turnSignal) {
+        const text = last.content[0].text, bytes = Buffer.byteLength(JSON.stringify([event, text]))
+        if (this.bytes - (state.attempt?.bytes ?? 0) + bytes > MAX_BYTES) fail('HOST_STOP_LIMIT')
+        let received!: () => void
+        const receipt = new Promise<void>(resolve => { received = resolve })
+        if (state.attempt) this.bytes -= state.attempt.bytes
+        state.attempt = { owner: Object.freeze({ ...session }), event: Object.freeze(event), text, bytes, receipt, received, phase: 'dispatch' }
+        this.bytes += bytes
+      }
+      attempt = state.attempt
       await this.options.runtime.stop({ ...event, data: { transcript_path: path, last_assistant_message: last.content[0].text, background_tasks: [], session_crons: [] } })
-    } catch (error) { throw this.failure('completion', frame.sessionID, error, completionID, started) }
+      if (attempt.phase !== 'interrupted') attempt.phase = 'done'
+    } catch (error) {
+      if (attempt?.phase === 'interrupted' && attempt.event.completionID === completionID && error instanceof HostHookError && error.outcome === 'cancelled') return
+      throw this.failure('completion', frame.sessionID, error, completionID, started)
+    }
   }
 
   async admit(delivery: StopDelivery): Promise<void> {
@@ -95,6 +152,8 @@ export class V2StopBridge {
     if (effects.permission || effects.input || effects.block || effects.context.length || effects.feedback.length || effects.warnings.length || effects.extensions.length || effects.resultReplacements.length || effects.unresolved.length) fail('HOST_STOP_EFFECT_UNAVAILABLE')
     if (!this.options.transcripts.admitStop || !this.options.transcripts.reserveContinuation || !this.options.transcripts.stopModelInput) fail('HOST_STOP_ARTIFACT_UNAVAILABLE')
     const projection = this.options.transcripts.admitStop(delivery)
+    const attempt = this.states.get(session.sessionID)?.attempt
+    if (attempt?.event.completionID === event.completionID) attempt.phase = 'admitted'
     if (effects.stop || !effects.continuations.length) {
       if (projection.length) {
         const state = this.state(session)
@@ -102,12 +161,7 @@ export class V2StopBridge {
           const blocks = this.options.transcripts.stopModelInput(delivery)
           const text = event.data?.last_assistant_message
           if (typeof text !== 'string' || state.histories.has(event.completionID)) fail('HOST_STOP_HISTORY_UNAVAILABLE')
-          const input = { completionID: event.completionID, turnID: event.messageID, assistantText: Object.freeze([text]), reminders: Object.freeze([...blocks.reminders]), feedback: Object.freeze([...blocks.feedback]) }
-          const bytes = Buffer.byteLength(JSON.stringify(input))
-          if (this.historicalCount >= MAX_HISTORY || this.bytes + bytes > MAX_BYTES) fail('HOST_STOP_LIMIT')
-          state.histories.set(event.completionID, { ...input, bytes })
-          this.historicalCount++
-          this.bytes += bytes
+          this.retainHistory(state, session, event.completionID, text, blocks)
         } catch (error) {
           state.failure = error instanceof HostHookError ? error : new HostHookError('HOST_STOP_HISTORY_UNAVAILABLE', 'unsupported')
           throw state.failure
@@ -147,6 +201,11 @@ export class V2StopBridge {
 
   async context(session: SessionSnapshot, messages?: readonly unknown[]): Promise<void> {
     this.guard(session, false)
+    const attempt = this.states.get(session.sessionID)?.attempt
+    if (attempt?.phase === 'dispatch' && attempt.owner.turnSignal.aborted) {
+      try { await runService(SERVICE_MS, session.turnSignal, () => attempt.receipt) } catch { fail('HOST_STOP_INTERRUPTION_UNAVAILABLE') }
+      this.guard(session, false)
+    }
     const state = this.states.get(session.sessionID), pending = state?.pending
     if (!pending) { this.history(session, messages); return }
     if (pending.phase !== 'queued') fail('HOST_STOP_ADMISSION_PENDING')
@@ -174,6 +233,29 @@ export class V2StopBridge {
     this.history(session, messages)
   }
 
+  private interrupted(receipt: V2ExecutionInterruption): void {
+    const { owner } = receipt
+    const state = this.states.get(owner.sessionID), attempt = state?.attempt
+    if (receipt.reason !== 'user') fail('HOST_STOP_INTERRUPTION_REASON_UNAVAILABLE')
+    this.options.runtime.sessions.interrupt(owner)
+    if (!state || !attempt || attempt.owner.turnSignal !== owner.turnSignal || attempt.owner.turnID !== owner.turnID || attempt.owner.signal !== owner.signal || attempt.phase !== 'dispatch' || receipt.inputType !== 'user' || receipt.inputID !== owner.turnID) fail('HOST_STOP_INTERRUPTION_RECONCILIATION_UNAVAILABLE')
+    if (!this.options.transcripts.admitStopInterruption) fail('HOST_STOP_ARTIFACT_UNAVAILABLE')
+    const blocks = this.options.transcripts.admitStopInterruption(attempt.event, attempt.owner, { eventID: receipt.eventID, created: receipt.created, reason: 'user', source: 'sdk-cli' })
+    this.retainHistory(state, owner, attempt.event.completionID, attempt.text, blocks)
+    attempt.phase = 'interrupted'
+    attempt.received()
+  }
+
+  private retainHistory(state: State, session: SessionSnapshot, completionID: string, text: string, blocks: StopModelBlocks & { readonly interrupted?: true }): void {
+    if (!session.turnID || state.histories.has(completionID)) fail('HOST_STOP_HISTORY_UNAVAILABLE')
+    const input = { completionID, turnID: session.turnID, assistantText: Object.freeze([text]), reminders: Object.freeze([...blocks.reminders]), feedback: Object.freeze([...blocks.feedback]), ...(blocks.interrupted ? { interrupted: true as const } : {}) }
+    const bytes = Buffer.byteLength(JSON.stringify(input))
+    if (this.historicalCount >= MAX_HISTORY || this.bytes + bytes > MAX_BYTES) fail('HOST_STOP_LIMIT')
+    state.histories.set(completionID, { ...input, bytes })
+    this.historicalCount++
+    this.bytes += bytes
+  }
+
   private history(session: SessionSnapshot, messages: readonly unknown[] | undefined): void {
     const state = this.states.get(session.sessionID)
     if (!state?.histories.size) return
@@ -199,8 +281,9 @@ export class V2StopBridge {
     this.lifetime.abort()
     this.disposing ??= (async () => {
       const started = performance.now()
-      try { await runService(SERVICE_MS, undefined, async () => { await Promise.allSettled([...this.submissions]) }) } catch { throw this.failure('drain', undefined, new HostHookError('HOST_STOP_ADMISSION_DRAIN_FAILED', 'failed'), undefined, started) }
+      try { await runService(SERVICE_MS, undefined, async () => { await Promise.allSettled([...this.submissions, this.observing]) }) } catch { throw this.failure('drain', undefined, new HostHookError('HOST_STOP_ADMISSION_DRAIN_FAILED', 'failed'), undefined, started) }
       for (const state of this.states.values()) state.cleanup()
+      this.events.dispose()
     })().finally(() => { this.disposing = undefined })
     return this.disposing
   }
@@ -220,6 +303,7 @@ export class V2StopBridge {
         const state = this.states.get(session.sessionID)
         if (!state) return
         if (state.pending) { state.pending.model.release(); state.pending.transcript.release(); this.bytes -= state.pending.bytes }
+        if (state.attempt) { this.bytes -= state.attempt.bytes; state.attempt.received() }
         for (const history of state.histories.values()) { this.bytes -= history.bytes; this.historicalCount-- }
         this.states.delete(session.sessionID)
         session.signal.removeEventListener('abort', cleanup)
@@ -233,7 +317,7 @@ export class V2StopBridge {
 
   private failure(phase: string, sessionID: string | undefined, error: unknown, completionID: string | undefined, started: number): HostHookError {
     const failure = error instanceof HostHookError ? error : new HostHookError('HOST_STOP_FAILED', 'failed')
-    console.error(JSON.stringify({ component: 'opencode-harness-hooks', host: 'v2', event: 'Stop', phase, ...(sessionID ? { sessionID } : {}), ...(completionID ? { completionID } : {}), code: failure.code, outcome: failure.outcome, durationMs: Math.round(performance.now() - started), activeSubmissions: this.submissions.size, retainedBytes: this.bytes }))
+    console.error(JSON.stringify({ component: 'opencode-harness-hooks', host: 'v2', event: 'Stop', phase, ...(sessionID ? { sessionID } : {}), ...(completionID ? { completionID } : {}), code: failure.code, outcome: failure.outcome, durationMs: Math.round(performance.now() - started), activeSubmissions: this.submissions.size, retainedBytes: this.bytes, nativeEvents: this.events.inspect() }))
     return failure
   }
 }
