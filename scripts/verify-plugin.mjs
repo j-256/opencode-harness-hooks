@@ -18,7 +18,7 @@ const MAX_BYTES = 2 * 1024 * 1024
 const MAX_REQUESTS = 16
 const CONTROLLED_TOOL_CALLS = 2
 const run = promisify(execFile)
-const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME]
+const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval]
 
 Verify the built package's default entrypoint, native options and tool enforcement
 against a pinned OpenCode host. Requires npm run build, Node.js 22+, Git and the
@@ -30,6 +30,7 @@ Options:
   -b, --binary PATH   Host executable (OPENCODE_V1_BINARY/OPENCODE_V2_BINARY,
                      then opencode)
       --dialect NAME Native source: codex (default), claude-code, or mixed (both)
+      --preapproval  Exercise Claude allow with host permissions set to ask
   -h, --help          Show help without requiring a host or dependencies
 
 Success writes JSON to stdout; failures use stderr without provider traffic.
@@ -62,7 +63,7 @@ async function stop(child, done) {
   await bounded(done, SHUTDOWN_MS, 'HOST_CLEANUP_FAILED')
 }
 
-async function verify(hostVersion, binary, dialect) {
+async function verify(hostVersion, binary, dialect, preapproval) {
   const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
   if (version !== VERSIONS[hostVersion]) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + VERSIONS[hostVersion], 2)
   await dependency('git', ['--version'], 'Git')
@@ -108,7 +109,7 @@ if (!codex) {
 fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, transcriptValidated, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
 const decision = input.tool_input.command.includes('forbidden')
   ? { permissionDecision: 'deny', permissionDecisionReason: 'PACKAGE_FIXTURE_DENIED' }
-  : { ...(codex ? { permissionDecision: 'allow' } : {}), updatedInput: { command: ${JSON.stringify(replacementCommand)}, description: 'Rewritten fixture' } }
+  : { ...(codex || ${preapproval} ? { permissionDecision: 'allow' } : {}), updatedInput: { command: ${JSON.stringify(replacementCommand)}, description: 'Rewritten fixture' } }
 console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...decision } }))
 `)
     await run(process.execPath, ['--check', script], { env, timeout: STARTUP_MS, maxBuffer: MAX_BYTES })
@@ -117,7 +118,9 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     const selectedDialects = dialect === 'mixed' ? ['claude-code', 'codex'] : [dialect]
     const sources = selectedDialects.map(dialect => ({ id: 'fixture-' + dialect, dialect, path: sourcePath }))
     const digest = createHash('sha256').update(source).digest('hex')
-    const options = { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, digest])), permissionMode: 'bypassPermissions' }
+    const permissionMode = preapproval ? 'default' : 'bypassPermissions'
+    const hostPermission = preapproval ? 'ask' : 'allow'
+    const options = { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, digest])), permissionMode }
     const requests = []
     const tool = hostVersion === 'v1' ? 'bash' : 'shell'
     gateway = createServer(async (request, response) => {
@@ -147,8 +150,8 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     await new Promise((resolve, reject) => { gateway.once('error', reject); gateway.listen(0, '127.0.0.1', resolve) })
     const baseURL = 'http://127.0.0.1:' + gateway.address().port + '/v1'
     const configData = hostVersion === 'v1'
-      ? { model: 'fixture/fixture', small_model: 'fixture/fixture', enabled_providers: ['fixture'], snapshot: false, share: 'disabled', autoupdate: false, permission: 'allow', plugin: [[pathToFileURL(entrypoint).href, options]], provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { apiKey: 'synthetic', baseURL }, models: { fixture: { name: 'Fixture', tool_call: true, limit: { context: 50000, output: 2000 } } } } } }
-      : { model: 'fixture/fixture', update: 'disable', snapshots: false, share: 'disabled', warming: false, permissions: [{ action: '*', resource: '*', effect: 'allow' }], plugins: [{ package: packageDirectory, options }], providers: { fixture: { package: '@opencode/ai/providers/openai-compatible', settings: { apiKey: 'synthetic', baseURL }, models: { fixture: { name: 'Fixture', capabilities: { tools: true }, limit: { context: 50000, output: 2000 } } } } } }
+      ? { model: 'fixture/fixture', small_model: 'fixture/fixture', enabled_providers: ['fixture'], snapshot: false, share: 'disabled', autoupdate: false, permission: hostPermission, plugin: [[pathToFileURL(entrypoint).href, options]], provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { apiKey: 'synthetic', baseURL }, models: { fixture: { name: 'Fixture', tool_call: true, limit: { context: 50000, output: 2000 } } } } } }
+      : { model: 'fixture/fixture', update: 'disable', snapshots: false, share: 'disabled', warming: false, permissions: [{ action: '*', resource: '*', effect: hostPermission }], plugins: [{ package: packageDirectory, options }], providers: { fixture: { package: '@opencode/ai/providers/openai-compatible', settings: { apiKey: 'synthetic', baseURL }, models: { fixture: { name: 'Fixture', capabilities: { tools: true }, limit: { context: 50000, output: 2000 } } } } } }
     await writeFile(join(config, 'opencode.json'), JSON.stringify(configData))
     child = spawn(binary, [...(hostVersion === 'v1' ? ['--print-logs'] : []), 'serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: project, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     done = new Promise(resolve => child.once('close', resolve))
@@ -189,7 +192,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     stage = 'native-payloads'
     const payloads = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
     assert.equal(payloads.length, CONTROLLED_TOOL_CALLS * sources.length)
-    assert.ok(payloads.every(payload => payload.tool_name === 'Bash' && typeof payload.tool_use_id === 'string' && payload.tool_use_id && payload.permission_mode === 'bypassPermissions'))
+    assert.ok(payloads.every(payload => payload.tool_name === 'Bash' && typeof payload.tool_use_id === 'string' && payload.tool_use_id && payload.permission_mode === permissionMode))
     for (let index = 1; index <= CONTROLLED_TOOL_CALLS; index++) {
       const group = payloads.filter(payload => payload.tool_use_id === 'call_' + index)
       assert.deepEqual(group.map(payload => payload.nativeDialect).sort(), [...selectedDialects].sort())
@@ -203,7 +206,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     assert.ok(JSON.stringify(requests[1].messages).includes('PACKAGE_FIXTURE_DENIED'))
     stage = 'final-answer'
     assert.ok(JSON.stringify(answer).includes('PACKAGE_FIXTURE_DONE'))
-    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, requiredPayloadMetadataObserved: true, ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
+    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
   } catch (error) {
     if (error instanceof ProbeError) throw error
     throw new ProbeError('PACKAGE_CHECK_FAILED: ' + stage + ' ' + (error.code ?? error.name ?? 'unknown') + (diagnosticCodes.size ? ' diagnostics=' + [...diagnosticCodes].sort().join(',') : ''))
@@ -216,16 +219,18 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const host = parsed.values.host
     if (!Object.hasOwn(VERSIONS, host ?? '')) throw new ProbeError('USAGE_HOST: expected v1 or v2', 2)
     const dialect = parsed.values.dialect ?? 'codex'
     if (!DIALECTS.has(dialect)) throw new ProbeError('USAGE_DIALECT: expected codex, claude-code or mixed', 2)
+    const preapproval = parsed.values.preapproval ?? false
+    if (preapproval && dialect === 'codex') throw new ProbeError('USAGE_PREAPPROVAL: select claude-code or mixed', 2)
     const binary = parsed.values.binary ?? process.env[host === 'v1' ? 'OPENCODE_V1_BINARY' : 'OPENCODE_V2_BINARY'] ?? 'opencode'
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    process.stdout.write(JSON.stringify(await verify(host, binary, dialect)) + '\n')
+    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval)) + '\n')
   }
 } catch (error) {
   process.stderr.write((error instanceof ProbeError ? error.message : 'PACKAGE_PROBE_FAILED') + '\n')

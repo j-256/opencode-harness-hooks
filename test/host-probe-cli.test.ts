@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { mkdtemp, writeFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,9 +8,11 @@ import { fileURLToPath } from 'node:url'
 
 const script = fileURLToPath(new URL('../scripts/verify-v2.mjs', import.meta.url))
 const packageProbe = fileURLToPath(new URL('../scripts/verify-plugin.mjs', import.meta.url))
+// The probes require Node even when the library tests run in Bun
+const node = process.versions.bun ? execFileSync('node', ['-p', 'process.execPath'], { encoding: 'utf8', timeout: 5000 }).trim() : process.execPath
 function invoke(args: readonly string[], env: NodeJS.ProcessEnv = process.env, target = script) {
   return new Promise<{ status: number; stdout: string; stderr: string }>(resolve => {
-    execFile(process.execPath, [target, ...args], { env, timeout: 5000 }, (error, stdout, stderr) => resolve({ status: error ? typeof error.code === 'number' ? error.code : 1 : 0, stdout, stderr }))
+    execFile(node, [target, ...args], { env, timeout: 5000 }, (error, stdout, stderr) => resolve({ status: error ? typeof error.code === 'number' ? error.code : 1 : 0, stdout, stderr }))
   })
 }
 
@@ -34,9 +36,10 @@ test('package probe help and invalid host/options require no executable and pres
     assert.match(result.stdout, /2\.2\.5/)
     assert.match(result.stdout, /--dialect/)
     assert.match(result.stdout, /mixed/)
+    assert.match(result.stdout, /--preapproval/)
     assert.equal(result.stderr, '')
   }
-  for (const args of [[], ['--host'], ['--host', 'v3'], ['--host', 'constructor'], ['--unknown'], ['--host=v1', '--binary='], ['--host=v1', '--dialect=other'], ['--', 'v1']]) {
+  for (const args of [[], ['--host'], ['--host', 'v3'], ['--host', 'constructor'], ['--unknown'], ['--host=v1', '--binary='], ['--host=v1', '--dialect=other'], ['--host=v1', '--preapproval'], ['--host=v2', '--dialect=codex', '--preapproval'], ['--', 'v1']]) {
     const result = await invoke(args, process.env, packageProbe)
     assert.equal(result.status, 2, String(args))
     assert.equal(result.stdout, '')
@@ -45,7 +48,7 @@ test('package probe help and invalid host/options require no executable and pres
 })
 
 test('package probe honors literal binary forms and the selected host environment', async () => {
-  for (const args of [['--host=v1', '-b', process.execPath], ['--host', 'v2', '-b' + process.execPath], ['--host=v1', '--binary=' + process.execPath], ['--host=v2', '--dialect=claude-code', '-b', process.execPath], ['--host=v1', '--dialect=mixed', '-b', process.execPath]]) {
+  for (const args of [['--host=v1', '-b', process.execPath], ['--host', 'v2', '-b' + process.execPath], ['--host=v1', '--binary=' + process.execPath], ['--host=v2', '--dialect=claude-code', '-b', process.execPath], ['--host=v1', '--dialect=mixed', '-b', process.execPath], ['--host=v1', '--dialect=claude-code', '--preapproval', '-b', process.execPath], ['--host=v2', '--dialect=mixed', '--preapproval', '-b', process.execPath]]) {
     const result = await invoke(args, process.env, packageProbe)
     assert.equal(result.status, 2)
     assert.equal(result.stdout, '')
