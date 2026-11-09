@@ -53,6 +53,37 @@ test('V2 execution retains its real owner through synthetic delivery and exact e
   assert.throws(() => events.event({ ...interrupted, created: CREATED }), { code: 'HOST_STOP_EVENT_ORDER_INVALID' })
 })
 
+test('V2 interruption carries the exact failed provider step and its delivered input owner', t => {
+  const { events, owner } = fixture(t)
+  events.accept(owner, 'Original')
+  events.event(enqueue('original', 'Original', 1)); events.event(event('execution.started', 2)); events.event(event('inbox.delivered', 4, { inboxID: 'original' }))
+  const model = { id: 'fixture', providerID: 'fixture', variant: 'default' }
+  events.event(event('step.started', 6, { assistantMessageID: 'answer', agent: 'build', model, started: CREATED + 5 }))
+  events.event(event('step.streamed', 9, { assistantMessageID: 'answer' }))
+  events.event(event('step.ended', 10, { assistantMessageID: 'answer', finish: 'stop' }))
+  events.event(enqueue('synthetic', 'Marker', 11, 'synthetic')); events.event(event('inbox.delivered', 12, { inboxID: 'synthetic' }))
+  events.event(event('step.started', 13, { assistantMessageID: 'aborted', agent: 'build', model, started: CREATED + 12 }))
+  const error = { type: 'aborted', message: 'Step interrupted' }
+  events.event(event('step.failed', 14, { assistantMessageID: 'aborted', error }))
+  model.id = 'mutated'; error.message = 'mutated'
+  const receipt = events.event(event('execution.interrupted', 15, { reason: 'user' }))!
+  assert.equal(receipt.owner.turnSignal, owner.turnSignal)
+  assert.deepEqual(receipt.step, { id: 'aborted', agent: 'build', model: { id: 'fixture', providerID: 'fixture', variant: 'default' }, started: CREATED + 12, inputID: 'synthetic', phase: 'failed', eventID: 'event-14', completed: CREATED + 14, error: { type: 'aborted', message: 'Step interrupted' } })
+  assert.ok(Object.isFrozen(receipt.step) && Object.isFrozen(receipt.step!.model) && Object.isFrozen(receipt.step!.error))
+})
+
+test('V2 step events reject foreign, reused and overlapping assistant identities', t => {
+  const { events, owner } = fixture(t)
+  events.accept(owner, 'Original')
+  events.event(enqueue('original', 'Original', 1)); events.event(event('execution.started', 2)); events.event(event('inbox.delivered', 4, { inboxID: 'original' }))
+  const start = (id: string, seq: number) => event('step.started', seq, { assistantMessageID: id, agent: 'build', model: { id: 'fixture', providerID: 'fixture' }, started: CREATED })
+  events.event(start('answer', 5))
+  assert.throws(() => events.event(start('overlap', 6)), { code: 'HOST_STOP_EVENT_STEP_CHANGED' })
+  assert.throws(() => events.event(event('step.failed', 6, { assistantMessageID: 'foreign', error: { type: 'aborted' } })), { code: 'HOST_STOP_EVENT_STEP_CHANGED' })
+  events.event(event('step.failed', 6, { assistantMessageID: 'answer', error: { type: 'aborted', message: 'Step interrupted' } }))
+  assert.throws(() => events.event(start('answer', 7)), { code: 'HOST_STOP_EVENT_STEP_REUSED' })
+})
+
 test('V2 events reject malformed envelopes, missing input ownership and mismatched accepted text', t => {
   const { events, owner } = fixture(t)
   for (const invalid of [

@@ -1,22 +1,25 @@
 import { createHash } from 'node:crypto'
 import type { SessionSnapshot } from '../sessions.js'
+import type { JsonValue } from '../types.js'
 import { HostHookError } from './tools.js'
 
 const MAX_SESSIONS = 1024
 const MAX_ENTRIES = 10000
 const MAX_ID_BYTES = 4096
 const MAX_BYTES = 32 * 1024 * 1024
-export const V2_STOP_EVENT_TYPES = Object.freeze(['session.inbox.enqueued', 'session.inbox.delivered', 'session.inbox.cancelled', 'session.execution.started', 'session.execution.interrupted', 'session.execution.succeeded', 'session.execution.failed'] as const)
+export const V2_STOP_EVENT_TYPES = Object.freeze(['session.inbox.enqueued', 'session.inbox.delivered', 'session.inbox.cancelled', 'session.execution.started', 'session.execution.interrupted', 'session.execution.succeeded', 'session.execution.failed', 'session.step.started', 'session.step.streamed', 'session.step.ended', 'session.step.failed'] as const)
 const TYPES = new Set<string>(V2_STOP_EVENT_TYPES)
 const REASONS = new Set(['user', 'shutdown', 'superseded', 'inactivity'])
 const INPUT_TYPES = new Set(['user', 'synthetic'])
 const DELIVERIES = new Set(['steer', 'queue'])
 interface Input { readonly type: 'user' | 'synthetic'; readonly textHash: string; phase: 'queued' | 'delivered' | 'cancelled' }
 interface Owner { readonly snapshot: SessionSnapshot; readonly textHash: string }
-interface Execution { ownerID?: string; inputID?: string }
+export interface V2ObservedStep { readonly id: string; readonly agent: string; readonly model: Readonly<Record<string, JsonValue>>; readonly started: number; readonly inputID: string; readonly phase: 'started' | 'streamed' | 'ended' | 'failed'; readonly eventID?: string; readonly completed?: number; readonly finish?: string; readonly error?: Readonly<Record<string, JsonValue>> }
+interface Execution { ownerID?: string; inputID?: string; step?: V2ObservedStep; stepBytes?: number }
 interface State {
   readonly inputs: Map<string, Input>
   readonly owners: Map<string, Owner>
+  readonly steps: Set<string>
   signal?: AbortSignal
   cleanup?: () => void
   closed?: boolean
@@ -24,10 +27,12 @@ interface State {
   execution?: Execution
   bytes: number
 }
-export interface V2ExecutionInterruption { readonly owner: SessionSnapshot; readonly inputID: string; readonly inputType: Input['type']; readonly eventID: string; readonly created: number; readonly reason: 'user' | 'shutdown' | 'superseded' | 'inactivity' }
+export interface V2ExecutionInterruption { readonly owner: SessionSnapshot; readonly inputID: string; readonly inputType: Input['type']; readonly eventID: string; readonly created: number; readonly reason: 'user' | 'shutdown' | 'superseded' | 'inactivity'; readonly step?: V2ObservedStep }
 function fail(code: string): never { throw new HostHookError(code, code === 'HOST_STOP_EVENT_CANCELLED' ? 'cancelled' : 'unsupported') }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 function id(value: unknown): value is string { return typeof value === 'string' && !!value && !value.includes('\0') && Buffer.byteLength(value) <= MAX_ID_BYTES }
+function freeze<T>(value: T): T { if (value !== null && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value) } return value }
+function capture(value: Record<string, unknown>): Readonly<Record<string, JsonValue>> { return freeze(JSON.parse(JSON.stringify(value)) as Record<string, JsonValue>) }
 function hash(value: unknown): string {
   try {
     const text = JSON.stringify(value, (_key, item: unknown) => record(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)
@@ -40,6 +45,7 @@ export class V2StopEvents {
   private readonly states = new Map<string, State>()
   private inputs = 0
   private owners = 0
+  private steps = 0
   private bytes = 0
   private disposed = false
 
@@ -57,8 +63,8 @@ export class V2StopEvents {
       const cleanup = () => {
         if (state.closed) return
         state.closed = true
-        this.inputs -= state.inputs.size; this.owners -= state.owners.size; this.bytes -= state.bytes
-        state.inputs.clear(); state.owners.clear(); state.bytes = 0
+        this.inputs -= state.inputs.size; this.owners -= state.owners.size; this.steps -= state.steps.size; this.bytes -= state.bytes
+        state.inputs.clear(); state.owners.clear(); state.steps.clear(); state.bytes = 0
         delete state.execution; delete state.last
         owner.signal.removeEventListener('abort', cleanup)
       }
@@ -113,13 +119,38 @@ export class V2StopEvents {
         if (state.execution) fail('HOST_STOP_EVENT_EXECUTION_CHANGED')
         state.execution = {}
         break
+      case 'session.step.started': {
+        const execution = state.execution
+        if (!id(data.assistantMessageID) || !id(data.agent) || !record(data.model) || !id(data.model.id) || !id(data.model.providerID) || data.model.variant !== undefined && (typeof data.model.variant !== 'string' || Buffer.byteLength(data.model.variant) > MAX_ID_BYTES) || typeof data.started !== 'number' || !Number.isSafeInteger(data.started) || data.started < 0) fail('HOST_STOP_EVENT_INVALID')
+        if (!execution?.inputID || execution.step && ['started', 'streamed'].includes(execution.step.phase)) fail('HOST_STOP_EVENT_STEP_CHANGED')
+        if (state.steps.has(data.assistantMessageID) || state.inputs.has(data.assistantMessageID)) fail('HOST_STOP_EVENT_STEP_REUSED')
+        const step: V2ObservedStep = Object.freeze({ id: data.assistantMessageID, agent: data.agent, model: capture(data.model), started: data.started, inputID: execution.inputID, phase: 'started' })
+        const bytes = Buffer.byteLength(JSON.stringify(step))
+        if (this.steps >= MAX_ENTRIES || this.bytes + bytes > MAX_BYTES) fail('HOST_STOP_EVENT_LIMIT')
+        state.steps.add(step.id); this.steps++; state.bytes += bytes; this.bytes += bytes
+        execution.step = step; execution.stepBytes = bytes
+        break
+      }
+      case 'session.step.streamed':
+      case 'session.step.ended':
+      case 'session.step.failed': {
+        const execution = state.execution, step = execution?.step
+        if (!id(data.assistantMessageID)) fail('HOST_STOP_EVENT_INVALID')
+        if (!execution || !step || step.id !== data.assistantMessageID || !['started', 'streamed'].includes(step.phase) || raw.type === 'session.step.streamed' && step.phase !== 'started') fail('HOST_STOP_EVENT_STEP_CHANGED')
+        if (raw.type === 'session.step.ended' && (typeof data.finish !== 'string' || !data.finish) || raw.type === 'session.step.failed' && (!record(data.error) || !id(data.error.type))) fail('HOST_STOP_EVENT_INVALID')
+        const next: V2ObservedStep = Object.freeze({ ...step, phase: raw.type === 'session.step.streamed' ? 'streamed' : raw.type === 'session.step.ended' ? 'ended' : 'failed', ...(raw.type === 'session.step.streamed' ? {} : { eventID: raw.id, completed: raw.created }), ...(raw.type === 'session.step.ended' ? { finish: data.finish as string } : {}), ...(raw.type === 'session.step.failed' ? { error: capture(data.error as Record<string, unknown>) } : {}) })
+        const bytes = Math.max(execution.stepBytes!, Buffer.byteLength(JSON.stringify(next))), extra = bytes - execution.stepBytes!
+        if (this.bytes + extra > MAX_BYTES) fail('HOST_STOP_EVENT_LIMIT')
+        state.bytes += extra; this.bytes += extra; execution.stepBytes = bytes; execution.step = next
+        break
+      }
       case 'session.execution.interrupted': {
         if (typeof data.reason !== 'string' || !REASONS.has(data.reason)) fail('HOST_STOP_EVENT_INVALID')
         const execution = state.execution
         if (!execution) fail('HOST_STOP_EVENT_EXECUTION_CHANGED')
         const owner = execution.ownerID ? state.owners.get(execution.ownerID) : undefined, input = execution.inputID ? state.inputs.get(execution.inputID) : undefined
         if (!owner || !input) fail('HOST_STOP_EVENT_OWNER_UNAVAILABLE')
-        result = Object.freeze({ owner: owner.snapshot, inputID: execution.inputID!, inputType: input.type, eventID: raw.id, created: raw.created, reason: data.reason as V2ExecutionInterruption['reason'] })
+        result = Object.freeze({ owner: owner.snapshot, inputID: execution.inputID!, inputType: input.type, eventID: raw.id, created: raw.created, reason: data.reason as V2ExecutionInterruption['reason'], ...(execution.step ? { step: execution.step } : {}) })
         delete state.execution
         break
       }
@@ -133,13 +164,13 @@ export class V2StopEvents {
     return result
   }
 
-  inspect() { return Object.freeze({ sessions: this.states.size, inputs: this.inputs, owners: this.owners, bytes: this.bytes }) }
-  dispose(): void { this.disposed = true; for (const state of this.states.values()) state.cleanup?.(); this.states.clear(); this.inputs = 0; this.owners = 0; this.bytes = 0 }
+  inspect() { return Object.freeze({ sessions: this.states.size, inputs: this.inputs, owners: this.owners, steps: this.steps, bytes: this.bytes }) }
+  dispose(): void { this.disposed = true; for (const state of this.states.values()) state.cleanup?.(); this.states.clear(); this.inputs = 0; this.owners = 0; this.steps = 0; this.bytes = 0 }
   private state(sessionID: string): State {
     let state = this.states.get(sessionID)
     if (!state) {
       if (this.states.size >= MAX_SESSIONS) fail('HOST_STOP_EVENT_LIMIT')
-      state = { inputs: new Map(), owners: new Map(), bytes: 0 }
+      state = { inputs: new Map(), owners: new Map(), steps: new Set(), bytes: 0 }
       this.states.set(sessionID, state)
     }
     return state

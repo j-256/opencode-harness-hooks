@@ -21,7 +21,7 @@ export interface PromptContinuationReservation { readonly admit: () => void; rea
 export interface PromptStopHistory extends StopModelBlocks { readonly completionID: string; readonly assistantText: readonly string[]; readonly interrupted?: true }
 interface Entry { readonly kind: 'prompt' | 'continuation'; readonly turnID: string; readonly turnSignal: AbortSignal; readonly text: readonly string[]; readonly contexts: readonly Context[]; readonly projection?: readonly string[]; readonly history?: PromptStopHistory; readonly bytes: number }
 interface Layout { readonly turnID: string; readonly turnSignal: AbortSignal; readonly rows: readonly PromptLayout[] }
-interface State { readonly signal: AbortSignal; readonly entries: Map<string, Entry>; readonly reservations: Map<string, Entry>; readonly cleanup: () => void; requests: AbortController; layout?: Layout }
+interface State { readonly signal: AbortSignal; readonly entries: Map<string, Entry>; readonly reservations: Map<string, Entry>; readonly retired: Map<string, Entry>; readonly cleanup: () => void; requests: AbortController; layout?: Layout }
 interface Ticket { readonly sessionID: string; readonly turnID: string; readonly sessionSignal: AbortSignal; readonly turnSignal: AbortSignal; readonly signal: AbortSignal; readonly protocol: PromptProtocol; readonly entries: readonly Entry[]; readonly hashes: Map<string, string> }
 function fail(code: string): never { throw new HostHookError(code, 'unsupported') }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
@@ -102,7 +102,7 @@ export class PromptContexts {
       state.reservations.delete(messageID)
       this.continuations--
       this.bytes -= entry.bytes
-      if (!state.reservations.size && !state.entries.size) state.cleanup()
+      if (!state.reservations.size && !state.entries.size && !state.retired.size) state.cleanup()
     }
     signal.addEventListener('abort', release, { once: true })
     return Object.freeze({
@@ -117,6 +117,19 @@ export class PromptContexts {
       },
       release,
     })
+  }
+
+  retireContinuation(owner: SessionSnapshot, messageID: string, text: readonly string[]): void {
+    owner = { ...owner }
+    if (this.lifetime.signal.aborted || owner.signal.aborted) fail('HOST_PROMPT_CANCELLED')
+    if (!Array.isArray(text) || !text.every(value => typeof value === 'string')) fail('HOST_PROMPT_RETIREMENT_UNAVAILABLE')
+    text = [...text]
+    const state = this.sessions.get(owner.sessionID), entry = state?.entries.get(messageID)
+    if (!owner.turnSignal.aborted || !state || state.signal !== owner.signal || !entry || entry.kind !== 'continuation' || entry.turnID !== owner.turnID || entry.turnSignal !== owner.turnSignal || !same(entry.text, text)) fail('HOST_PROMPT_RETIREMENT_UNAVAILABLE')
+    this.invalidate(state)
+    if (this.lifetime.signal.aborted || owner.signal.aborted || this.sessions.get(owner.sessionID) !== state || state.entries.get(messageID) !== entry) fail('HOST_PROMPT_CANCELLED')
+    state.entries.delete(messageID)
+    state.retired.set(messageID, entry)
   }
 
   ownsCurrentMessage(session: SessionSnapshot, messageID: string): boolean {
@@ -143,7 +156,7 @@ export class PromptContexts {
       const cleanup = () => {
         const previous = this.sessions.get(session.sessionID)
         if (!previous) return
-        for (const entry of [...previous.entries.values(), ...previous.reservations.values()]) {
+        for (const entry of [...previous.entries.values(), ...previous.reservations.values(), ...previous.retired.values()]) {
           this.bytes -= entry.bytes
           if (entry.kind === 'prompt') this.prompts--
           else this.continuations--
@@ -151,16 +164,17 @@ export class PromptContexts {
         this.sessions.delete(session.sessionID)
         previous.entries.clear()
         previous.reservations.clear()
+        previous.retired.clear()
         previous.requests.abort()
         session.signal.removeEventListener('abort', cleanup)
       }
-      state = { signal: session.signal, entries: new Map(), reservations: new Map(), cleanup, requests: new AbortController() }
+      state = { signal: session.signal, entries: new Map(), reservations: new Map(), retired: new Map(), cleanup, requests: new AbortController() }
       this.sessions.set(session.sessionID, state)
       session.signal.addEventListener('abort', cleanup, { once: true })
     }
     this.invalidate(state)
     if (this.lifetime.signal.aborted || session.signal.aborted || session.turnSignal.aborted || this.sessions.get(session.sessionID) !== state) {
-      if (this.sessions.get(session.sessionID) === state && !state.entries.size && !state.reservations.size) state.cleanup()
+      if (this.sessions.get(session.sessionID) === state && !state.entries.size && !state.reservations.size && !state.retired.size) state.cleanup()
       fail('HOST_PROMPT_CANCELLED')
     }
     this.capacity(state, messageID, bytes)
@@ -180,7 +194,7 @@ export class PromptContexts {
   }
 
   private capacity(state: State | undefined, messageID: string, bytes: number): void {
-    if (state?.entries.has(messageID) || state?.reservations.has(messageID)) fail('HOST_PROMPT_ID_REUSED')
+    if (state?.entries.has(messageID) || state?.reservations.has(messageID) || state?.retired.has(messageID)) fail('HOST_PROMPT_ID_REUSED')
     if (this.prompts + this.continuations >= MAX_ENTRIES || this.bytes + bytes > MAX_BYTES) fail('HOST_PROMPT_CONTEXT_LIMIT')
   }
 

@@ -89,7 +89,7 @@ interface Prompt {
 interface UserMessage { readonly id: string; readonly model?: { readonly modelID: string; readonly providerID?: string } }
 interface V2SessionEvents {
   readonly prompt: { readonly sessionID: string; readonly messageID: string; readonly prompt?: { readonly text: string; readonly files?: readonly unknown[]; readonly agents?: readonly unknown[]; readonly skills?: readonly unknown[] } }
-  readonly context: { readonly sessionID: string; readonly model: { readonly id: string; readonly providerID?: string }; readonly messages?: readonly unknown[] }
+  readonly context: { readonly sessionID: string; readonly model: { readonly id: string; readonly providerID?: string }; messages?: readonly unknown[] }
   readonly 'model.request': { readonly sessionID: string; readonly kind: string; readonly model: { readonly id: string; readonly providerID: string }; readonly headers: Record<string, string> }
   readonly 'http.request': { readonly sessionID: string; readonly kind: string; request: Request }
   readonly 'experimental.idle': V2IdleEvent
@@ -218,10 +218,19 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
   if (services.stop) throw new HostHookError('HOST_STOP_HOST_UNAVAILABLE', 'unsupported')
   services = { ...services }
   let stopBridge: V2StopBridge | undefined
+  const nativeHistoryReads = new Set<Promise<unknown>>()
+  const trackHistory = (signal: AbortSignal, operation: () => Promise<unknown>) => {
+    const work = Promise.resolve().then(() => { signal.throwIfAborted(); return operation() })
+    nativeHistoryReads.add(work)
+    void work.finally(() => { nativeHistoryReads.delete(work) }).catch(() => {})
+    return work
+  }
   const read = async (sessionID: string, signal: AbortSignal) => {
     if (!context.session.get || !context.session.context) throw new HostHookError('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE', 'unsupported')
-    const [info, messages] = await Promise.all([context.session.get({ sessionID }, { signal }), context.session.context({ sessionID }, { signal })])
-    return history(info, messages)
+    const [info, messages] = await Promise.allSettled([trackHistory(signal, () => context.session.get!({ sessionID }, { signal })), trackHistory(signal, () => context.session.context!({ sessionID }, { signal }))])
+    if (info.status === 'rejected') throw info.reason
+    if (messages.status === 'rejected') throw messages.reason
+    return history(info.value, messages.value)
   }
   const transcripts = services.transcripts ?? new ClaudeTranscript({ host: 'v2', directory: context.location.directory, history: async (event, signal) => {
     return read(event.sessionID, signal)
@@ -235,6 +244,14 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
   const register = <K extends keyof typeof PROMPT_PHASES>(name: K, callback: (event: V2SessionEvents[K]) => Promise<void>) => context.session.hook(name, guarded(runtime, PROMPT_PHASES[name], callback, event => ({ sessionID: event.sessionID, ...('messageID' in event && typeof event.messageID === 'string' ? { messageID: event.messageID } : {}) })))
   let tools: Awaited<ReturnType<typeof registerV2Hooks>> | undefined
   let disposing: Promise<void> | undefined
+  const drainHistory = async () => {
+    const started = performance.now()
+    try { await runService(METADATA_MS, undefined, async () => { while (nativeHistoryReads.size) await Promise.allSettled([...nativeHistoryReads]) }) } catch {
+      const code = runtime.hasStopHooks ? 'HOST_STOP_ADMISSION_DRAIN_FAILED' : 'HOST_TRANSCRIPT_HISTORY_DRAIN_FAILED'
+      console.error(JSON.stringify({ component: 'opencode-harness-hooks', host: 'v2', phase: 'history-drain', code, outcome: 'failed', pendingReads: nativeHistoryReads.size, durationMs: Math.round(performance.now() - started) }))
+      throw new HostHookError(code, 'failed')
+    }
+  }
   const cleanup = async () => {
     runtime.sessions.dispose()
     contexts.dispose()
@@ -242,8 +259,9 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
     let toolError: unknown
     try { await tools?.dispose() } catch (error) { toolError = error }
     await approvals.dispose()
-    const [stopped, disposed] = await Promise.allSettled([stopBridge?.dispose(), runtime.dispose()])
+    const [stopped, disposed, history] = await Promise.allSettled([stopBridge?.dispose(), runtime.dispose(), drainHistory()])
     if (stopped.status === 'rejected') throw stopped.reason
+    if (history.status === 'rejected') throw history.reason
     const artifactError = disposed.status === 'rejected' ? disposed.reason : undefined
     if (stopBridge && artifactError) throw artifactError
     for (const handle of handles) {
@@ -277,7 +295,8 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
     }))
     handles.add(await register('context', async event => {
       const session = runtime.sessions.get(event.sessionID)
-      await stopBridge?.context(session, event.messages)
+      const messages = await stopBridge?.context(session, event.messages)
+      if (messages) event.messages = messages
       if (runtime.needsModelArtifacts) modelOwners.delete(event.sessionID)
       if (transport) contexts.layout(session, layout('v2', event.messages))
       if (runtime.needsModelArtifacts) {

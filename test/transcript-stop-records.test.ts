@@ -201,6 +201,47 @@ test('SDK interruption refuses foreign owners and malformed receipts without ret
   assert.throws(() => f.transcripts.admitStopInterruption(f.event, f.session, receipt), { code: 'TRANSCRIPT_CANCELLED' })
 })
 
+test('authenticated interruption retires only its committed feedback input and empty aborted assistant', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback', hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'Context' } }], completionOrder: [0] }, true), row = synthetic()
+  const aborted = { id: 'aborted', type: 'assistant', agent: 'build', model: { id: 'fixture', providerID: 'fixture', variant: 'default' }, time: { created: CREATED + 2, completed: CREATED + 4 }, content: [], finish: 'error', error: { type: 'aborted', message: 'Step interrupted' } }
+  const evidence = { id: aborted.id, phase: 'failed' as const, inputID: row.id, agent: aborted.agent, model: aborted.model, started: CREATED + 2, completed: CREATED + 4, eventID: 'step-failed', error: aborted.error }
+  const lease = f.transcripts.reserveContinuation(f.delivery, { id: row.id, text: row.text, metadata: row.metadata, description: row.description }, { reconcileCancellation: true })
+  lease.admit(row)
+  f.records.push(row, aborted)
+  f.runtime.sessions.prompt('session', 'next', 'fixture')
+  const next = f.runtime.sessions.get('session')
+  assert.throws(() => f.transcripts.retireStopContinuation(f.event, f.session, row, aborted, evidence), { code: 'TRANSCRIPT_STOP_RETIREMENT_UNAVAILABLE' })
+  f.transcripts.admitStopInterruption(f.event, f.session, { eventID: 'interruption', created: CREATED + 5, reason: 'user', source: 'sdk-cli' })
+  for (const time of [{ ...aborted.time, created: CREATED + 99 }, { ...aborted.time, completed: CREATED + 99 }]) assert.throws(() => f.transcripts.retireStopContinuation(f.event, f.session, row, { ...aborted, time }, evidence), { code: 'TRANSCRIPT_STOP_ABORTED_ASSISTANT_INVALID' })
+  for (const changed of [{ ...aborted, id: 'foreign' }, { ...aborted, agent: 'foreign' }, { ...aborted, model: { id: 'foreign' } }, { ...aborted, content: [{ type: 'text', text: 'Partial output' }] }, { ...aborted, error: { type: 'api', message: 'Other' } }]) assert.throws(() => f.transcripts.retireStopContinuation(f.event, f.session, row, changed, evidence), { code: 'TRANSCRIPT_STOP_ABORTED_ASSISTANT_INVALID' })
+  assert.throws(() => f.transcripts.retireStopContinuation(f.event, f.session, { ...row, metadata: {} }, aborted, evidence), { code: 'TRANSCRIPT_STOP_CONTINUATION_CHANGED' })
+  f.transcripts.retireStopContinuation(f.event, f.session, row, aborted, evidence)
+  lease.release()
+  assert.throws(() => lease.suppress!(row, 'answer'), { code: 'TRANSCRIPT_STOP_RESERVATION_UNAVAILABLE' })
+  assert.throws(() => f.transcripts.retireStopContinuation(f.event, f.session, row, aborted, evidence), { code: 'TRANSCRIPT_STOP_RETIREMENT_UNAVAILABLE' })
+  f.runtime.observeModel({ host: 'v2', sessionID: 'session', messageID: 'next', signal: next.turnSignal })
+  f.records.push({ type: 'user', id: 'next', text: 'Next', time: { created: CREATED + 6 } }, { ...secondAnswer(), time: { created: CREATED + 7 } })
+  const event = { ...f.event, messageID: 'next', completionID: 'answer-2' }, path = await f.transcripts.prepare(event, next, next.turnSignal), text = await readFile(path, 'utf8'), rows = parse(text)
+  assert.ok(!text.includes(row.text) && !text.includes('Step interrupted'))
+  assert.equal(rows.filter(row => row.isMeta && row.message.content === 'Stop hook feedback:\nFeedback').length, 1)
+  assert.equal(rows.filter(row => row.subtype === 'stop_hook_summary').length, 1)
+  assert.equal(rows.find(row => row.userType === 'external').promptId, 'prompt')
+  const original = structuredClone(f.records)
+  for (const change of ['changed-input', 'changed-assistant', 'moved', 'pruned-input', 'pruned-assistant', 'duplicate']) {
+    f.records.splice(0, f.records.length, ...structuredClone(original))
+    if (change === 'changed-input') (f.records[2] as any).metadata.token = 'foreign'
+    else if (change === 'changed-assistant') (f.records[3] as any).error.message = 'Changed'
+    else if (change === 'moved') f.records.push(f.records.splice(3, 1)[0])
+    else if (change === 'pruned-input') f.records.splice(2, 1)
+    else if (change === 'pruned-assistant') f.records.splice(3, 1)
+    else f.records.push(structuredClone(f.records[3]))
+    await assert.rejects(f.transcripts.prepare(event, next, next.turnSignal))
+    assert.equal(await readFile(path, 'utf8'), text)
+  }
+  f.runtime.sessions.close('session')
+  assert.equal(f.transcripts.inspect().stopBytes, 0)
+})
+
 for (const scenario of oracle.cases) test(`Claude Stop transcript retains native ${scenario.name} records`, async t => {
   const f = await fixture(t, scenario, true)
   assert.equal(f.receipt.control, scenario.preventedContinuation ? 'stop' : 'continue')
@@ -516,6 +557,65 @@ test('releasing or cancelling a transcript reservation frees its budget and iden
   assert.equal(f.transcripts.inspect().stopBytes, 0)
   reservation.release(); cancelled.release()
   assert.equal(f.transcripts.inspect().stopBytes, 0)
+})
+
+test('committed feedback reserves its interruption record before other continuations consume the byte budget', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+  const records = new StopRecords()
+  t.after(() => records.dispose())
+  records.prepare(f.event, f.session, 'primary')
+  records.admit(f.delivery)
+  const row = synthetic(), input = { id: row.id, text: row.text, metadata: row.metadata, description: row.description }
+  const before = records.inspect()
+  const released = records.reserveContinuation(f.delivery, input, { reconcileCancellation: true })
+  released.release()
+  assert.deepEqual(records.inspect(), before)
+  records.reserveContinuation(f.delivery, input, { reconcileCancellation: true }).admit(row)
+  const filler = { ...f.delivery, event: { ...f.event, completionID: 'filler-answer' } }
+  records.prepare(filler.event, f.session, 'filler')
+  records.admit(filler)
+  const baseline = records.inspect().stopBytes
+  const empty = records.reserveContinuation(filler, { id: 'filler-input', text: '', metadata: {} }, { reconcileCancellation: true })
+  const overhead = records.inspect().stopBytes - baseline
+  empty.release()
+  records.reserveContinuation(filler, { id: 'filler-input', text: 'x'.repeat(32 * 1024 * 1024 - baseline - overhead - 1), metadata: {} }, { reconcileCancellation: true })
+  const saturated = records.inspect()
+  f.runtime.sessions.interrupt(f.session)
+  assert.equal(records.admitInterruption(f.event, f.session, { eventID: 'interruption', created: CREATED + 5, reason: 'user', source: 'sdk-cli' }).interrupted, true)
+  assert.ok(records.inspect().stopBytes <= saturated.stopBytes)
+  assert.equal(records.inspect().stopRecords, saturated.stopRecords + 1)
+  f.runtime.sessions.close('session')
+  assert.equal(records.inspect().stopBytes, 0)
+  assert.equal(records.inspect().stopRecords, 0)
+})
+
+test('a continuation reserves an interruption slot against later Stop artifact admission', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+  const records = new StopRecords()
+  t.after(() => records.dispose())
+  records.prepare(f.event, f.session, 'primary')
+  records.admit(f.delivery)
+  const row = synthetic()
+  records.reserveContinuation(f.delivery, { id: row.id, text: row.text, metadata: row.metadata, description: row.description }, { reconcileCancellation: true }).admit(row)
+  const event = { ...f.event, completionID: 'filler-answer' }
+  records.prepare(event, f.session, 'filler')
+  const entry = f.delivery.dispatch.entries[0]!, result = entry.result
+  assert.ok(result.status === 'success' || result.status === 'failed')
+  assert.ok(result.commandArtifact)
+  const artifact = result.commandArtifact
+  const entries = Array.from({ length: 50000 - records.inspect().stopRecords - 1 }, (_, index) => ({ ...entry, configuredOrder: index, completionOrder: index, result: { ...result, actions: [], commandArtifact: { ...artifact, stdout: '{}' } } }))
+  const filler = { ...f.delivery, event, dispatch: { ...f.delivery.dispatch, entries } }
+  const before = records.inspect()
+  assert.throws(() => records.admit(filler), { code: 'TRANSCRIPT_STOP_LIMIT' })
+  assert.deepEqual(records.inspect(), before)
+  records.admit({ ...filler, dispatch: { ...filler.dispatch, entries: entries.slice(1) } })
+  assert.equal(records.inspect().stopRecords, 49999)
+  f.runtime.sessions.interrupt(f.session)
+  records.admitInterruption(f.event, f.session, { eventID: 'interruption', created: CREATED + 5, reason: 'user', source: 'sdk-cli' })
+  assert.equal(records.inspect().stopRecords, 50000)
+  f.runtime.sessions.close('session')
+  assert.equal(records.inspect().stopBytes, 0)
+  assert.equal(records.inspect().stopRecords, 0)
 })
 
 test('transcript reservation preflight rejects unknown payloads and excess bytes before claiming ownership', async t => {

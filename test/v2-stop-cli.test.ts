@@ -33,12 +33,13 @@ test('V2 Stop core probe help needs no host executable or project build', async 
     assert.ok(result.stdout.includes('--default-root'))
     assert.ok(result.stdout.includes('--history'))
     assert.ok(result.stdout.includes('--cancellation'))
+    assert.ok(result.stdout.includes('--cancellation-stage'))
     assert.equal(result.stderr, '')
   }
 })
 
 test('V2 Stop core probe rejects invalid arguments before querying dependencies', async () => {
-  for (const args of [['--unknown'], ['--binary'], ['--binary='], ['unexpected'], ['--', 'unexpected'], ['--history'], ['--cancellation'], ['--default-root', '--cancellation', '--history']]) {
+  for (const args of [['--unknown'], ['--binary'], ['--binary='], ['unexpected'], ['--', 'unexpected'], ['--history'], ['--cancellation'], ['--default-root', '--cancellation', '--history'], ['--default-root', '--cancellation-stage', 'after-feedback'], ['--default-root', '--cancellation', '--cancellation-stage', 'unknown'], ['--default-root', '--cancellation', '--cancellation-stage']]) {
     const result = await invoke(args)
     assert.equal(result.status, 2)
     assert.equal(result.stdout, '')

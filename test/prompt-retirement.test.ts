@@ -1,0 +1,50 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { Sessions } from '../src/sessions.js'
+import { PromptContexts } from '../src/prompt-contexts.js'
+
+test('retiring an interrupted continuation preserves ownership and invalidates another turn request ticket', async t => {
+  const sessions = new Sessions(), contexts = new PromptContexts()
+  t.after(() => { sessions.dispose(); contexts.dispose() })
+  sessions.prompt('session', 'original')
+  const original = sessions.get('session')
+  contexts.remember(original, ['Original'], [])
+  const lease = contexts.reserveContinuation(original, 'marker', ['Marker'], ['Feedback'])
+  lease.admit()
+  const before = contexts.inspect()
+  assert.throws(() => contexts.retireContinuation(original, 'marker', ['Marker']), { code: 'HOST_PROMPT_RETIREMENT_UNAVAILABLE' })
+  assert.deepEqual(contexts.inspect(), before)
+  sessions.prompt('session', 'next')
+  const next = sessions.get('session')
+  contexts.remember(next, ['Next'], [])
+  contexts.layout(next, [{ id: 'original', text: ['Original'] }, { id: 'marker', text: ['Marker'] }, { id: 'next', text: ['Next'] }])
+  const token = contexts.issue(next)!
+  const request = new Request('https://provider.invalid', { method: 'POST', body: JSON.stringify({ messages: [{ role: 'user', content: 'Original' }, { role: 'assistant', content: 'Answer' }, { role: 'user', content: 'Next' }] }) })
+  for (const [owner, id, text] of [[{ ...original, turnID: 'foreign' }, 'marker', ['Marker']], [original, 'foreign', ['Marker']], [original, 'marker', ['Changed']]] as const) assert.throws(() => contexts.retireContinuation(owner, id, text), { code: 'HOST_PROMPT_RETIREMENT_UNAVAILABLE' })
+  contexts.retireContinuation(original, 'marker', ['Marker'])
+  lease.release()
+  await assert.rejects(contexts.project(request, token, next), { code: 'HOST_PROMPT_REQUEST_UNAVAILABLE' })
+  assert.throws(() => contexts.rememberContinuation(next, 'marker', ['Marker'], ['Other']), { code: 'HOST_PROMPT_ID_REUSED' })
+  assert.throws(() => contexts.retireContinuation(original, 'marker', ['Marker']), { code: 'HOST_PROMPT_RETIREMENT_UNAVAILABLE' })
+  contexts.rememberHistory(next, { completionID: 'answer', assistantText: ['Answer'], reminders: ['Reminder'], feedback: ['Feedback'], interrupted: true })
+  contexts.layout(next, [{ id: 'original', text: ['Original'] }, { id: 'next', text: ['Next'] }])
+  const body = await (await contexts.project(request, contexts.issue(next)!, next)).json()
+  assert.deepEqual(body.messages[2].content, ['Reminder', 'Feedback\n', '[Request interrupted by user]\n', 'Next'].map(text => ({ type: 'text', text })))
+  sessions.close('session')
+  assert.equal(contexts.inspect().bytes, 0)
+})
+
+test('releasing a pending reservation cannot erase a retired continuation in an otherwise empty layout', t => {
+  const sessions = new Sessions(), contexts = new PromptContexts()
+  t.after(() => { sessions.dispose(); contexts.dispose() })
+  sessions.prompt('session', 'original')
+  const original = sessions.get('session')
+  contexts.rememberContinuation(original, 'retired', ['Marker'], ['Feedback'])
+  sessions.prompt('session', 'next')
+  const next = sessions.get('session')
+  contexts.retireContinuation(original, 'retired', ['Marker'])
+  const pending = contexts.reserveContinuation(next, 'pending', ['Pending'], ['Feedback'])
+  pending.release()
+  assert.equal(contexts.inspect().continuations, 1)
+  assert.throws(() => contexts.rememberContinuation(next, 'retired', ['Marker']), { code: 'HOST_PROMPT_ID_REUSED' })
+})

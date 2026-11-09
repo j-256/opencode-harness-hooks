@@ -17,7 +17,7 @@ import { ModelContext } from './model-context.js'
 import type { HostModelEvent } from './model-types.js'
 import type { StopDelivery, StopEvent } from './stop.js'
 import { StopRecords } from './stop-records.js'
-import type { StopModelBlocks, StopContinuationOptions, StopInterruptionReceipt, StopInterruptedModel } from './stop-records.js'
+import type { StopModelBlocks, StopContinuationOptions, StopInterruptionReceipt, StopInterruptedModel, StopAbortedAssistant } from './stop-records.js'
 
 const HISTORY_MS = 5000
 const MAX_MESSAGES = 10000
@@ -28,6 +28,7 @@ const MAX_PENDING = 1024
 const TRANSCRIPT_NAMESPACE = Buffer.from('6ba7b8119dad11d180b400c04fd430c8', 'hex')
 const V1_BOOKKEEPING = new Set(['step-start', 'step-finish'])
 const V2_BOOKKEEPING = new Set(['agent-switched', 'model-switched', 'idle'])
+export function isV2Bookkeeping(type: unknown): boolean { return typeof type === 'string' && V2_BOOKKEEPING.has(type) }
 const FINISH: Readonly<Record<string, string>> = Object.freeze({ stop: 'end_turn', 'end-turn': 'end_turn', 'tool-calls': 'tool_use', length: 'max_tokens' })
 type TranscriptEvent = HostToolEvent | HostPromptEvent | StopEvent
 
@@ -42,6 +43,7 @@ export interface TranscriptService {
   admitStop?(delivery: StopDelivery): readonly string[]
   stopModelInput?(delivery: StopDelivery): StopModelBlocks
   admitStopInterruption?(event: StopEvent, session: SessionSnapshot, receipt: StopInterruptionReceipt): StopInterruptedModel
+  retireStopContinuation?(event: StopEvent, session: SessionSnapshot, row: unknown, assistant: unknown, evidence: StopAbortedAssistant): void
   admitContinuation?(delivery: StopDelivery, readback: unknown): void
   reserveContinuation?(delivery: StopDelivery, input: unknown, options?: StopContinuationOptions): TranscriptContinuationReservation
   observe(event: HostToolEvent, session: SessionSnapshot): void
@@ -109,14 +111,14 @@ function messages(host: HostVersion, sessionID: string, input: readonly unknown[
     const info = host === 'v1' ? object(row.info) : row
     if (host === 'v1' && info.sessionID !== sessionID) fail('TRANSCRIPT_SESSION_MISMATCH')
     const role = host === 'v1' ? info.role : row.type
-    if (host === 'v2' && V2_BOOKKEEPING.has(String(role))) return []
+    if (host === 'v2' && isV2Bookkeeping(role)) return []
     if (role !== 'user' && role !== 'assistant' && !(host === 'v2' && role === 'synthetic')) return fail('TRANSCRIPT_CONTENT_UNSUPPORTED')
     const id = string(info.id)
     if (!id || seen.has(id)) fail('TRANSCRIPT_MESSAGE_ID_INVALID')
     seen.add(id)
     const preceding = previousRawID
     previousRawID = id
-    if (role === 'synthetic' && stops.suppresses(sessionID, row, completions, preceding)) return []
+    if (host === 'v2' && stops.suppresses(sessionID, row, completions, preceding)) return []
     if (role === 'synthetic') stops.validateContinuation(sessionID, row, previousID, turnID)
     if (role === 'assistant') completions.add(id)
     if (role === 'user') turnID = id
@@ -206,6 +208,12 @@ export class ClaudeTranscript implements TranscriptService {
     return this.stops.admitInterruption(snapshot(event), owner, snapshot(receipt))
   }
 
+  retireStopContinuation(event: StopEvent, session: SessionSnapshot, row: unknown, assistant: unknown, evidence: StopAbortedAssistant): void {
+    this.stopHost({ event })
+    const owner = Object.freeze({ ...session })
+    this.stops.retireContinuation(snapshot(event), owner, snapshot(row) as JsonValue, snapshot(assistant) as JsonValue, snapshot(evidence))
+  }
+
   private stopHost(delivery: Pick<StopDelivery, 'event'>): void {
     if (delivery.event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
     if (this.options.host !== 'v2') fail('TRANSCRIPT_STOP_HOST_UNSUPPORTED')
@@ -250,7 +258,7 @@ export class ClaudeTranscript implements TranscriptService {
       if (!session.turnID) fail('TRANSCRIPT_TURN_UNAVAILABLE')
       if (event.event === 'UserPromptSubmit') this.prompts.begin(session)
       const entries = messages(this.options.host, event.sessionID, array(history.messages), this.stops)
-      const rawContinuations = new Set(history.messages.flatMap(row => record(row) && row.type === 'synthetic' && typeof row.id === 'string' ? [row.id] : []))
+      const rawContinuations = new Set(history.messages.flatMap(row => record(row) && ['user', 'assistant', 'synthetic'].includes(String(row.type)) && typeof row.id === 'string' ? [row.id] : []))
       const rows = this.project(event, entries, history.parentID !== undefined, rawContinuations)
       const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
       if (Buffer.byteLength(text) > MAX_BYTES) fail('TRANSCRIPT_SIZE_LIMIT')

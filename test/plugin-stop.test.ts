@@ -19,7 +19,7 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }, mo
   const history = historyCases.find((row: any) => row.name === mode)
   const source = `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify({input:p,rows})+'\\n');if(${JSON.stringify(mode)}==='prevent')console.log(JSON.stringify({continue:false,stopReason:'Stopped'}));else if(${JSON.stringify(mode)}==='warning')console.log(JSON.stringify({systemMessage:'Warning'}));else if(!p.stop_hook_active)console.log(JSON.stringify({decision:'block',reason:'Feedback',hookSpecificOutput:{hookEventName:'Stop',additionalContext:'Context'}}));`
   const executable = history ? `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));if(p.hook_event_name==='UserPromptSubmit'){if(p.prompt==='Blocked')console.log(JSON.stringify({decision:'block',reason:'Rejected'}));else if(p.prompt==='LATER_NEXT_PROMPT')console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'UserPromptSubmit',additionalContext:${JSON.stringify(history.promptContext ?? '')}}}));return}const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify({input:p,rows})+'\\n');console.log(JSON.stringify(${JSON.stringify(history.output)}));` : source
-  const scriptSource = mode === 'during-hook' ? `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify({input:p,rows,pid:process.pid})+'\\n');if(p.prompt_id==='prompt')setTimeout(()=>{fs.writeFileSync(${JSON.stringify(join(directory, 'finished'))},'finished');console.log(JSON.stringify({decision:'block',reason:'Late output'}))},${COMMAND_DELAY_MS});` : executable
+  const scriptSource = mode === 'during-hook' ? `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify({input:p,rows,pid:process.pid})+'\\n');if(p.prompt_id==='prompt')setTimeout(()=>{fs.writeFileSync(${JSON.stringify(join(directory, 'finished'))},'finished');console.log(JSON.stringify({decision:'block',reason:'Late output'}))},${COMMAND_DELAY_MS});` : mode === 'after-feedback' ? `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify({input:p,rows})+'\\n');if(p.prompt_id==='prompt'&&!p.stop_hook_active)console.log(JSON.stringify({decision:'block',reason:'Feedback',hookSpecificOutput:{hookEventName:'Stop',additionalContext:'Context'}}));` : executable
   await writeFile(script, scriptSource)
   const hooks = Array.from({ length: repeats }, () => ({ type: 'command', command: process.execPath, args: [script] }))
   const native = JSON.stringify({ hooks: { Stop: [{ hooks }], ...(history?.promptContext ? { UserPromptSubmit: [{ hooks }] } : {}) } })
@@ -83,22 +83,32 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }, mo
   const model = async () => {
     for (const row of records) if (row.type === 'synthetic' && !delivered.has(row.id)) { await emit('inbox.delivered', { inboxID: row.id }); delivered.add(row.id) }
     const messages = records.filter(row => ['user', 'synthetic', 'assistant'].includes(row.type)).map(row => row.type === 'assistant' ? { id: row.id, role: 'assistant', content: row.content } : { id: row.id, role: 'user', content: [{ type: 'text', text: row.text }] })
-    await callbacks.get('session.context')!({ sessionID: 'session', model: { id: 'fixture', providerID: 'fixture' }, messages })
+    const frame = { sessionID: 'session', model: { id: 'fixture', providerID: 'fixture' }, messages }
+    await callbacks.get('session.context')!(frame)
     const event = { sessionID: 'session', kind: 'primary', model: { id: 'fixture', providerID: 'fixture' }, headers: {} }
     await callbacks.get('session.model.request')!(event)
-    const http = { ...event, request: new Request('https://provider.invalid', { method: 'POST', headers: event.headers, body: JSON.stringify({ messages: messages.map(({ id: _id, ...row }) => row) }) }) }
+    const http = { ...event, request: new Request('https://provider.invalid', { method: 'POST', headers: event.headers, body: JSON.stringify({ messages: frame.messages.map(({ id: _id, ...row }) => row) }) }) }
     await callbacks.get('session.http.request')!(http)
     assert.equal([...http.request.headers.keys()].some(key => key.startsWith('x-opencode-harness')), false)
     return http.request.json()
   }
   const idle = async (background: unknown[] = []) => { const before = queued.length; await callbacks.get('session.experimental.idle')!({ sessionID: 'session', background }); if (executing && queued.length === before) { await emit('execution.succeeded'); executing = false } }
   const promote = () => { for (const row of queued) if (!records.some(message => message.id === row.id)) records.push({ type: 'synthetic', id: row.id, text: row.text, metadata: row.metadata, ...(row.description === undefined ? {} : { description: row.description }), time: { created: CREATED + 2 } }) }
+  const interrupt = async () => { await emit('execution.interrupted', { reason: 'user' }); executing = false }
+  const abortFeedback = async () => {
+    const model = { id: 'fixture', providerID: 'fixture', variant: 'default' }, error = { type: 'aborted', message: 'Step interrupted' }
+    await emit('step.started', { assistantMessageID: 'aborted', agent: 'build', model, started: CREATED + 2 })
+    records.push({ id: 'aborted', type: 'assistant', agent: 'build', model, time: { created: CREATED + 2, completed: CREATED + sequence + 1 }, content: [], finish: 'error', error })
+    await emit('step.failed', { assistantMessageID: 'aborted', error })
+    await interrupt()
+  }
+
   const calls = async () => (await readFile(capture, 'utf8')).trim().split('\n').map(row => JSON.parse(row))
   const waitForHook = async () => {
     const deadline = performance.now() + HOOK_START_MS
     while (true) { try { if ((await calls()).length) return } catch {} if (performance.now() >= deadline) throw new Error('Hook did not start'); await new Promise(resolve => setTimeout(resolve, HOOK_POLL_MS)) }
   }
-  return { directory, path, script, context, callbacks, records, queued, connect, prompt, answer, model, idle, promote, acknowledge, emit, setEventReturnGate: (gate: Promise<void>) => { eventReturnGate = gate }, interrupt: async () => { await emit('execution.interrupted', { reason: 'user' }); executing = false }, setEnqueue: (value: typeof enqueue) => { enqueue = value }, calls, waitForHook, unchanged: async () => { assert.equal(await readFile(path, 'utf8'), native); assert.equal(await readFile(script, 'utf8'), scriptSource) }, command: [process.execPath, script].join(' ') }
+  return { directory, path, script, context, callbacks, records, queued, connect, prompt, answer, model, idle, promote, acknowledge, emit, setEventReturnGate: (gate: Promise<void>) => { eventReturnGate = gate }, interrupt, abortFeedback, setEnqueue: (value: typeof enqueue) => { enqueue = value }, calls, waitForHook, unchanged: async () => { assert.equal(await readFile(path, 'utf8'), native); assert.equal(await readFile(script, 'utf8'), scriptSource) }, command: [process.execPath, script].join(' ') }
 }
 
 test('default V2 user interruption cancels a running Stop and retains native interruption history', async t => {
@@ -122,6 +132,110 @@ test('default V2 user interruption cancels a running Stop and retains native int
   assert.equal(calls[1].rows.filter((row: any) => row.subtype === 'stop_hook_summary').length, 0)
   assert.deepEqual(calls.map(row => [row.input.prompt_id, row.input.stop_hook_active]), [['prompt', false], ['next', false]])
   await f.unchanged()
+})
+
+test('default V2 after-feedback interruption retains native output and retires only its unanswered owned input', async t => {
+  const f = await fixture(t, 'after-feedback')
+  await f.connect(); await f.prompt(); await f.model(); f.answer(); await f.idle(); f.promote()
+  const feedback = await f.model()
+  assert.ok(feedback.messages.at(-1).content.some((part: any) => part.text === 'Stop hook feedback:\nFeedback'))
+  await f.abortFeedback()
+  await f.prompt('next', 'Next')
+  const body = await f.model()
+  assert.deepEqual(body.messages.map((row: any) => row.role), ['user', 'assistant', 'user'])
+  assert.deepEqual(body.messages[2].content, [
+    `<system-reminder>\nStop hook blocking error from command: "${f.command}": Feedback\n</system-reminder>`,
+    '<system-reminder>\nStop hook additional context: Context\n</system-reminder>',
+    'Stop hook feedback:\nFeedback\n', '[Request interrupted by user]\n', 'Next',
+  ].map(text => ({ type: 'text', text })))
+  f.answer('next-answer', 'Next answer'); await f.idle()
+  const calls = await f.calls(), rows = calls[1].rows
+  assert.equal(rows.filter((row: any) => row.subtype === 'stop_hook_summary').length, 1)
+  assert.equal(rows.find((row: any) => row.userType === 'external').promptId, 'prompt')
+  assert.ok(!JSON.stringify(rows).includes(f.queued[0].text) && !JSON.stringify(rows).includes('Step interrupted'))
+  assert.deepEqual(calls.map(row => [row.input.prompt_id, row.input.stop_hook_active]), [['prompt', false], ['next', false]])
+  await f.prompt('third', 'Third')
+  assert.deepEqual((await f.model()).messages[2], body.messages[2])
+  assert.equal(f.queued.length, 1)
+  await f.unchanged()
+})
+
+test('reconciled V2 interruption rejects changed or missing native ownership before a later model', async t => {
+  const f = await fixture(t, 'after-feedback')
+  await f.connect(); await f.prompt(); await f.model(); f.answer(); await f.idle(); f.promote(); await f.model(); await f.abortFeedback(); await f.prompt('next', 'Next'); await f.model()
+  const stable = structuredClone(f.records)
+  for (const change of ['input', 'assistant', 'pruned', 'moved']) {
+    f.records.splice(0, f.records.length, ...structuredClone(stable))
+    if (change === 'input') f.records[2].metadata.token = 'foreign'
+    else if (change === 'assistant') f.records[3].error.message = 'Changed'
+    else if (change === 'pruned') f.records.splice(3, 1)
+    else f.records.push(f.records.splice(2, 1)[0])
+    await assert.rejects(f.model(), { code: 'HOST_STOP_INTERRUPTION_HISTORY_CHANGED' })
+  }
+  f.records.splice(0, f.records.length, ...stable)
+  await f.model()
+  await f.unchanged()
+})
+
+test('a new real prompt waits for session-owned reconciliation without being cancelled by the old owner', async t => {
+  const f = await fixture(t, 'after-feedback')
+  await f.connect(); await f.prompt(); await f.model(); f.answer(); await f.idle(); f.promote(); await f.model()
+  const history = f.context.session.context
+  let entered!: () => void, release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve }), waiting = new Promise<void>(resolve => { release = resolve })
+  f.context.session.context = async input => { entered(); await waiting; return history(input) }
+  try {
+    await f.abortFeedback(); await started; await f.prompt('next', 'Next')
+    let settled = false
+    const model = f.model().finally(() => { settled = true })
+    await new Promise<void>(resolve => setImmediate(resolve))
+    assert.equal(settled, false)
+    release()
+    const body = await model
+    assert.equal(body.messages.at(-1).content.at(-1).text, 'Next')
+    assert.ok(body.messages.at(-1).content.some((part: any) => part.text === '[Request interrupted by user]\n'))
+  } finally { release() }
+})
+
+test('V2 disposal tracks the raw cancelled-turn reconciliation read until actual settlement', { timeout: 15000 }, async t => {
+  const f = await fixture(t, 'after-feedback'), dispose = await f.connect()
+  await f.prompt(); await f.model(); f.answer(); await f.idle(); f.promote(); await f.model()
+  const history = f.context.session.context
+  let entered!: () => void, release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve }), waiting = new Promise<void>(resolve => { release = resolve })
+  f.context.session.context = async input => { entered(); await waiting; return history(input) }
+  try {
+    await f.abortFeedback(); await started
+    await assert.rejects(dispose(), { code: 'HOST_STOP_ADMISSION_DRAIN_FAILED' })
+    assert.equal(f.callbacks.has('session.context'), true)
+  } finally { release() }
+  await dispose()
+  assert.equal(f.callbacks.size, 0)
+})
+
+for (const phase of ['idle', 'queued-context', 'rejected-sibling', 'transcript']) test(`V2 disposal retains guards while the ${phase} native history read remains unresolved`, { timeout: 15000 }, async t => {
+  const f = await fixture(t), dispose = await f.connect()
+  await f.prompt(); await f.model(); f.answer()
+  if (phase === 'queued-context') { await f.idle(); f.promote() }
+  const history = f.context.session.context
+  let entered!: () => void, release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve }), waiting = new Promise<void>(resolve => { release = resolve })
+  let reads = 0
+  f.context.session.context = async input => { if (phase === 'transcript' && ++reads === 1) return history(input); entered(); await waiting; return history(input) }
+  if (phase === 'rejected-sibling') f.context.session.get = async (_input, options?: { signal: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+    const signal = options!.signal
+    if (signal.aborted) reject(new Error('Metadata read aborted'))
+    else signal.addEventListener('abort', () => reject(new Error('Metadata read aborted')), { once: true })
+  })
+  const operation = (phase === 'queued-context' ? f.model() : f.idle()).catch(error => error)
+  try {
+    await started
+    await assert.rejects(dispose(), { code: 'HOST_STOP_ADMISSION_DRAIN_FAILED' })
+    assert.equal(f.callbacks.has('session.context'), true)
+    assert.equal((await operation).outcome, 'cancelled')
+  } finally { release() }
+  await dispose()
+  assert.equal(f.callbacks.size, 0)
 })
 
 test('malformed V2 session events block their model without waiting for iterator return or blocking another session', async t => {
