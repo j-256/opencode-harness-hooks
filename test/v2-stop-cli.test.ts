@@ -30,6 +30,7 @@ test('V2 Stop core probe help needs no host executable or project build', async 
     const result = await invoke([flag], isolatedScript)
     assert.equal(result.status, 0)
     assert.match(result.stdout, /^Usage:/)
+    assert.ok(result.stdout.includes('--default-root'))
     assert.equal(result.stderr, '')
   }
 })
@@ -48,7 +49,7 @@ test('V2 Stop core probe reports missing and mismatched dependencies before star
   assert.equal(missing.status, 3)
   assert.equal(missing.stdout, '')
   assert.match(missing.stderr, /DEPENDENCY_UNAVAILABLE/)
-  for (const args of [['--binary=' + node], ['--binary', node], ['-b', node], ['-b' + node]]) {
+  for (const args of [['--binary=' + node], ['--binary', node], ['-b', node], ['-b' + node], ['--default-root', '-b', node]]) {
     const mismatched = await invoke(args)
     assert.equal(mismatched.status, 2)
     assert.equal(mismatched.stdout, '')

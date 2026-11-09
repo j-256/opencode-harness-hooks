@@ -14,6 +14,9 @@ import type { PromptProtocol, PromptLayout } from './prompt-contexts.js'
 import type { HostPromptEvent, PromptDiagnostic } from './prompt-types.js'
 import { resolveEffects } from './effects.js'
 import { runService } from './service-execution.js'
+import { V2StopBridge } from './hosts/v2-stop.js'
+import type { V2IdleEvent, V2SyntheticInput } from './hosts/v2-stop.js'
+import { HOST_VERSIONS } from './contracts.js'
 
 const METADATA_MS = 5000
 const OPENAI_PACKAGES = new Set(['@ai-sdk/openai', '@ai-sdk/openai-compatible', '@opencode/ai/providers/openai', '@opencode/ai/providers/openai-compatible'])
@@ -89,8 +92,10 @@ interface V2SessionEvents {
   readonly context: { readonly sessionID: string; readonly model: { readonly id: string; readonly providerID?: string }; readonly messages?: readonly unknown[] }
   readonly 'model.request': { readonly sessionID: string; readonly kind: string; readonly model: { readonly id: string; readonly providerID: string }; readonly headers: Record<string, string> }
   readonly 'http.request': { readonly sessionID: string; readonly kind: string; request: Request }
+  readonly 'experimental.idle': V2IdleEvent
 }
 export interface V2Context extends V2ToolContext {
+  readonly app?: { readonly version: string }
   readonly location: { readonly directory: string }
   readonly options: unknown
   readonly model?: { readonly list: (input: { readonly types: readonly ['chat'] }, options: { readonly signal: AbortSignal }) => Promise<unknown> }
@@ -100,6 +105,7 @@ export interface V2Context extends V2ToolContext {
     readonly hook: <K extends keyof V2SessionEvents>(name: K, callback: (event: V2SessionEvents[K]) => Promise<void>) => Promise<{ readonly dispose: () => Promise<void> | void }>
     readonly get?: (input: { readonly sessionID: string }, options: { readonly signal: AbortSignal }) => Promise<unknown>
     readonly context?: (input: { readonly sessionID: string }, options: { readonly signal: AbortSignal }) => Promise<unknown>
+    readonly synthetic?: (input: V2SyntheticInput) => Promise<unknown>
   }
 }
 
@@ -210,17 +216,22 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
   if (services.sessionStart) throw new HostHookError('HOST_SESSION_START_HOST_UNAVAILABLE', 'unsupported')
   if (services.stop) throw new HostHookError('HOST_STOP_HOST_UNAVAILABLE', 'unsupported')
   services = { ...services }
-  const transcripts = services.transcripts ?? new ClaudeTranscript({ host: 'v2', directory: context.location.directory, history: async (event, signal) => {
+  let stopBridge: V2StopBridge | undefined
+  const read = async (sessionID: string, signal: AbortSignal) => {
     if (!context.session.get || !context.session.context) throw new HostHookError('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE', 'unsupported')
-    const [info, messages] = await Promise.all([context.session.get({ sessionID: event.sessionID }, { signal }), context.session.context({ sessionID: event.sessionID }, { signal })])
+    const [info, messages] = await Promise.all([context.session.get({ sessionID }, { signal }), context.session.context({ sessionID }, { signal })])
     return history(info, messages)
+  }
+  const transcripts = services.transcripts ?? new ClaudeTranscript({ host: 'v2', directory: context.location.directory, history: async (event, signal) => {
+    return read(event.sessionID, signal)
   } })
-  const runtime = await createRuntime('v2', context.location.directory, context.options, { ...services, transcripts })
+  const runtime = await createRuntime('v2', context.location.directory, context.options, { ...services, transcripts, stop: { admit: async delivery => { if (!stopBridge) unavailable('HOST_STOP_HOST_UNAVAILABLE'); await stopBridge.admit(delivery) } } })
   const approvals = new CallApprovals({ diagnostic: runtime.tools.diagnostic })
   const contexts = new PromptContexts()
   const handles = new Set<{ readonly dispose: () => Promise<void> | void }>()
   const modelOwners = new Map<string, { readonly turnID: string; readonly signal: AbortSignal }>()
-  const register = <K extends keyof V2SessionEvents>(name: K, callback: (event: V2SessionEvents[K]) => Promise<void>) => context.session.hook(name, guarded(runtime, PROMPT_PHASES[name], callback, event => ({ sessionID: event.sessionID, ...('messageID' in event && typeof event.messageID === 'string' ? { messageID: event.messageID } : {}) })))
+  const transport = runtime.hasPromptHooks || runtime.hasStopHooks
+  const register = <K extends keyof typeof PROMPT_PHASES>(name: K, callback: (event: V2SessionEvents[K]) => Promise<void>) => context.session.hook(name, guarded(runtime, PROMPT_PHASES[name], callback, event => ({ sessionID: event.sessionID, ...('messageID' in event && typeof event.messageID === 'string' ? { messageID: event.messageID } : {}) })))
   let tools: Awaited<ReturnType<typeof registerV2Hooks>> | undefined
   let disposing: Promise<void> | undefined
   const cleanup = async () => {
@@ -230,8 +241,10 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
     let toolError: unknown
     try { await tools?.dispose() } catch (error) { toolError = error }
     await approvals.dispose()
-    let artifactError: unknown
-    try { await runtime.dispose() } catch (error) { artifactError = error }
+    const [stopped, disposed] = await Promise.allSettled([stopBridge?.dispose(), runtime.dispose()])
+    if (stopped.status === 'rejected') throw stopped.reason
+    const artifactError = disposed.status === 'rejected' ? disposed.reason : undefined
+    if (stopBridge && artifactError) throw artifactError
     for (const handle of handles) {
       try { await handle.dispose(); handles.delete(handle) } catch {}
     }
@@ -240,20 +253,31 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
   }
   const dispose = () => { disposing ??= cleanup().finally(() => { disposing = undefined }); return disposing }
   try {
+    if (runtime.hasStopHooks) {
+      if (context.app?.version !== HOST_VERSIONS.v2) unavailable('HOST_STOP_HOST_VERSION_UNAVAILABLE')
+      if (!context.session.synthetic || !context.session.get || !context.session.context) unavailable('HOST_STOP_HOST_UNAVAILABLE')
+      const codex = runtime.report.sources.find(source => source.enabled && source.dialect === 'codex' && source.events.includes('Stop'))
+      if (codex) throw new HostHookError('HOST_STOP_DIALECT_UNAVAILABLE', 'unsupported', `Codex Stop native rollout and model projection required for source ${codex.id}`)
+      stopBridge = new V2StopBridge({ directory: context.location.directory, runtime, transcripts, contexts, history: read, synthetic: input => context.session.synthetic!(input) })
+      handles.add(await context.session.hook('experimental.idle', event => stopBridge!.idle(event)))
+    }
     handles.add(await register('prompt', async event => {
       runtime.sessions.prompt(event.sessionID, event.messageID)
-      if (!runtime.hasPromptHooks) return
+      stopBridge?.guard(runtime.sessions.get(event.sessionID))
+      if (!transport) return
       const session = runtime.sessions.get(event.sessionID)
       if (!context.session.get || !event.prompt || ['files', 'agents', 'skills'].some(key => event.prompt![key as 'files']?.length)) unavailable('HOST_PROMPT_INPUT_UNAVAILABLE')
       const info = await runService(METADATA_MS, session.turnSignal, signal => context.session.get!({ sessionID: event.sessionID }, { signal }))
       if (!record(info) || info.id !== event.sessionID || !record(info.model) || typeof info.model.id !== 'string') unavailable('HOST_NATIVE_METADATA_UNAVAILABLE')
       runtime.sessions.model(event.sessionID, info.model.id, event.messageID)
-      await submit(runtime, contexts, { host: 'v2', event: 'UserPromptSubmit', sessionID: event.sessionID, messageID: event.messageID, prompt: event.prompt.text, signal: session.turnSignal }, [event.prompt.text], services)
+      if (runtime.hasPromptHooks) await submit(runtime, contexts, { host: 'v2', event: 'UserPromptSubmit', sessionID: event.sessionID, messageID: event.messageID, prompt: event.prompt.text, signal: session.turnSignal }, [event.prompt.text], services)
+      else contexts.remember(runtime.sessions.get(event.sessionID), [event.prompt.text], [])
     }))
     handles.add(await register('context', async event => {
       const session = runtime.sessions.get(event.sessionID)
+      await stopBridge?.context(session)
       if (runtime.needsModelArtifacts) modelOwners.delete(event.sessionID)
-      if (runtime.hasPromptHooks) contexts.layout(session, layout('v2', event.messages))
+      if (transport) contexts.layout(session, layout('v2', event.messages))
       if (runtime.needsModelArtifacts) {
         const last = Array.isArray(event.messages) ? event.messages.findLast(message => record(message) && message.role === 'user') : undefined
         if (!session.turnID || !record(last) || typeof last.id !== 'string' || !contexts.ownsCurrentMessage(session, last.id)) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
@@ -261,16 +285,17 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
       }
       runtime.sessions.model(event.sessionID, event.model.id, session.turnID)
     }))
-    if (runtime.hasPromptHooks || runtime.needsModelArtifacts) {
+    if (transport || runtime.needsModelArtifacts) {
       handles.add(await register('model.request', async event => {
         if (event.kind !== 'primary') return
         const session = runtime.sessions.get(event.sessionID)
+        stopBridge?.guard(session)
         if (runtime.needsModelArtifacts) {
           const owner = modelOwners.get(event.sessionID)
           if (!owner) unavailable('HOST_MODEL_CONTEXT_UNAVAILABLE')
           runtime.observeModel({ host: 'v2', sessionID: event.sessionID, messageID: owner.turnID, signal: owner.signal })
         }
-        if (!runtime.hasPromptHooks) return
+        if (!transport) return
         if (!context.model) unavailable('HOST_PROMPT_PROVIDER_UNAVAILABLE')
         const data = await runService(METADATA_MS, session.turnSignal, signal => context.model!.list({ types: ['chat'] }, { signal }))
         if (!record(data) || !Array.isArray(data.data)) unavailable('HOST_PROMPT_PROVIDER_UNAVAILABLE')
@@ -284,9 +309,10 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
         if (token) event.headers[PROMPT_REQUEST_HEADER] = token
       }))
     }
-    if (runtime.hasPromptHooks) {
+    if (transport) {
       handles.add(await register('http.request', async event => {
         if (event.kind !== 'primary') return
+        stopBridge?.guard(runtime.sessions.get(event.sessionID))
         const token = event.request.headers.get(PROMPT_REQUEST_HEADER)
         if (token) event.request = await contexts.project(event.request, token, runtime.sessions.get(event.sessionID))
       }))

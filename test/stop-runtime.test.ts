@@ -216,7 +216,7 @@ test('Stop waits for explicit startup coordination before executing a hook', asy
   assert.equal((await runtime.stop(f.event('after-start'))).control, 'continue')
 })
 
-test('core Stop services do not enable an unconnected default host factory', async t => {
+test('default host factories retain ownership of Stop admission services', async t => {
   const { createHarnessHooks, setupHarnessHooks } = await import('../src/plugin.js')
   const f = await fixture(t)
   const services = { ...quiet, stop: { admit: async () => {} } }
