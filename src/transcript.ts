@@ -40,10 +40,12 @@ export interface TranscriptService {
   admitPrompt?(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void
   admitStop?(delivery: StopDelivery): readonly string[]
   admitContinuation?(delivery: StopDelivery, readback: unknown): void
+  reserveContinuation?(delivery: StopDelivery, input: unknown): TranscriptContinuationReservation
   observe(event: HostToolEvent, session: SessionSnapshot): void
   prepare(event: TranscriptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<string>
   dispose(): Promise<void>
 }
+export interface TranscriptContinuationReservation { readonly admit: (readback: unknown) => void; readonly release: () => void }
 interface Options {
   readonly host: HostVersion
   readonly directory: string
@@ -169,17 +171,25 @@ export class ClaudeTranscript implements TranscriptService {
   }
 
   admitStop(delivery: StopDelivery): readonly string[] {
-    if (delivery.event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
-    if (this.options.host !== 'v2') fail('TRANSCRIPT_STOP_HOST_UNSUPPORTED')
-    if (delivery.event.cwd !== this.options.directory) fail('TRANSCRIPT_STOP_CWD_UNAVAILABLE')
+    this.stopHost(delivery)
     return this.stops.admit(delivery)
   }
 
   admitContinuation(delivery: StopDelivery, readback: unknown): void {
+    this.stopHost(delivery)
+    this.stops.admitContinuation(delivery, snapshot(readback) as JsonValue)
+  }
+
+  reserveContinuation(delivery: StopDelivery, input: unknown): TranscriptContinuationReservation {
+    this.stopHost(delivery)
+    const reservation = this.stops.reserveContinuation(delivery, snapshot(input) as JsonValue)
+    return Object.freeze({ admit: (readback: unknown) => reservation.admit(snapshot(readback) as JsonValue), release: reservation.release })
+  }
+
+  private stopHost(delivery: StopDelivery): void {
     if (delivery.event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
     if (this.options.host !== 'v2') fail('TRANSCRIPT_STOP_HOST_UNSUPPORTED')
     if (delivery.event.cwd !== this.options.directory) fail('TRANSCRIPT_STOP_CWD_UNAVAILABLE')
-    this.stops.admitContinuation(delivery, snapshot(readback) as JsonValue)
   }
 
   observe(event: HostToolEvent, session: SessionSnapshot): void {

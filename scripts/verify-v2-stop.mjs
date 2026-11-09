@@ -134,13 +134,16 @@ export default {
       transcripts, report: () => {}, dispatchDiagnostic: () => {},
       host: { environment: { PATH: process.env.PATH, HOME: process.env.HOME, SHELL: '/bin/sh' } },
       stop: { diagnostic: () => {}, admit: async delivery => {
-        let stage = 'records', reservation; try { const projection = transcripts.admitStop(delivery)
+        let stage = 'records', reservation, transcriptReservation; try { const projection = transcripts.admitStop(delivery)
         if (delivery.effects.stop || !delivery.effects.continuations.length) return
         const id = 'msg_' + randomUUID()
         const text = 'V2_OWNED_TRANSPORT_MARKER'
         const description = 'Hook continuation'
         const metadata = { source: 'opencode-harness-hooks', completionID: delivery.event.completionID, token: randomUUID() }
-        stage = 'reservation'; reservation = contexts.reserveContinuation(delivery.session, id, [text], projection)
+        const before = transcripts.inspect().stopBytes
+        stage = 'transcript-reservation'; transcriptReservation = transcripts.reserveContinuation(delivery, { id, text, metadata, description })
+        assert.ok(transcripts.inspect().stopBytes > before)
+        stage = 'model-reservation'; reservation = contexts.reserveContinuation(delivery.session, id, [text], projection)
         assert.equal(contexts.ownsCurrentMessage(delivery.session, id), false)
         assert.throws(() => contexts.issue(delivery.session), { code: 'HOST_PROMPT_ADMISSION_PENDING' })
         await log({ phase: 'reserved', id })
@@ -149,8 +152,8 @@ export default {
         assert.deepEqual(admitted.payload, { text, description, metadata }); assert.ok(Number.isFinite(admitted.time.created))
         stage = 'readback'; const readback = await ctx.session.context({ sessionID: delivery.event.sessionID }, { signal: delivery.signal })
         await log({ phase: 'queued', id: admitted.id, readbackVisible: readback.some(row => row.id === admitted.id), returnedKeys: Object.keys(admitted) })
-        pending = { delivery, id, text, metadata, reservation }
-         } catch (error) { reservation?.release(); await log({phase:'admission-failure',stage,code:error.code,name:error.name}); throw error }
+        pending = { delivery, id, text, metadata, reservation, transcriptReservation }
+         } catch (error) { reservation?.release(); transcriptReservation?.release(); await log({phase:'admission-failure',stage,code:error.code,name:error.name}); throw error }
       } },
     })
     const sessions = runtime.sessions
@@ -161,11 +164,11 @@ export default {
     })
     await ctx.session.hook('context', async event => {
       if (pending) {
-        const { delivery, id, text, metadata, reservation } = pending
+        const { delivery, id, text, metadata, reservation, transcriptReservation } = pending
         const readback = await ctx.session.context({ sessionID: event.sessionID }, { signal: delivery.signal })
         const row = readback.find(row => row.id === id)
         assert.equal(row.type, 'synthetic'); assert.equal(row.text, text); assert.deepEqual(row.metadata, metadata)
-        transcripts.admitContinuation(delivery, row)
+        transcriptReservation.admit(row)
         reservation.admit()
         assert.equal(contexts.ownsCurrentMessage(delivery.session, id), true)
         await log({ phase: 'admitted', id, readbackVisible: true })
@@ -251,7 +254,7 @@ export default {
     check(JSON.stringify(owned)===JSON.stringify(expected),'HOST_OWNED_STOP_MODEL_FAILED')
     check(primary.every(row=>!row.privateHeaderPresent) && !JSON.stringify(primary).includes('V2_OWNED_TRANSPORT_MARKER'),'HOST_OWNED_STOP_TRANSPORT_FAILED')
     check(events.filter(row=>row.phase==='prompt-observed').length===1,'HOST_OWNED_STOP_PROMPT_REPLAYED')
-    return {ownedStopHistory:true,ownedStopModelInput:true,reservedModelInput:true,explicitInputIdentity:true,originalTurnRetained:true,stopActiveTransition:true,unchangedCommandExecutedTwice:true,queuedReadbackPhaseVerified:true,foregroundFixture:true,mechanismOnly:true,defaultRootStop:false,equivalent:false}
+    return {ownedStopHistory:true,ownedStopModelInput:true,reservedModelInput:true,reservedTranscriptInput:true,explicitInputIdentity:true,originalTurnRetained:true,stopActiveTransition:true,unchangedCommandExecutedTwice:true,queuedReadbackPhaseVerified:true,foregroundFixture:true,mechanismOnly:true,defaultRootStop:false,equivalent:false}
   } finally {
     await stop(host, hostDone)
     if (gateway?.listening) { gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)) }

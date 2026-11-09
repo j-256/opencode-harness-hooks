@@ -311,6 +311,102 @@ test('synthetic admission shares retained byte limits and rejects cancelled or f
   assert.equal(f.transcripts.inspect().stopBytes, 0)
 })
 
+test('a transcript reservation holds the exact synthetic payload before normalized readback exists', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+  const row = synthetic()
+  const input = { id: row.id, text: row.text, metadata: structuredClone(row.metadata), description: row.description }
+  const before = f.transcripts.inspect()
+  const reservation = f.transcripts.reserveContinuation(f.delivery, input)
+  const reserved = f.transcripts.inspect()
+  assert.ok(reserved.stopBytes > before.stopBytes)
+  input.text = 'Changed caller marker'; input.metadata.source = 'Changed caller metadata'
+  f.records.push(row, secondAnswer())
+  const event = { ...f.event, completionID: 'answer-2' }
+  await assert.rejects(f.transcripts.prepare(event, f.session, f.session.turnSignal), { code: 'TRANSCRIPT_CONTENT_UNSUPPORTED' })
+  assert.throws(() => f.transcripts.admitContinuation(f.delivery, row), { code: 'TRANSCRIPT_STOP_ID_REUSED' })
+  reservation.admit(row)
+  assert.ok(f.transcripts.inspect().stopBytes <= reserved.stopBytes)
+  assert.throws(() => reservation.admit(row), { code: 'TRANSCRIPT_STOP_RESERVATION_UNAVAILABLE' })
+  reservation.release()
+  const path = await f.transcripts.prepare(event, f.session, f.session.turnSignal)
+  assert.deepEqual(parse(await readFile(path, 'utf8')).filter(row => row.type === 'user').map(row => row.message.content), ['Original', 'Stop hook feedback:\nFeedback'])
+})
+
+test('a reserved transcript readback cannot change payload or add unreserved native fields', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+  const row = synthetic()
+  const input = { id: row.id, text: row.text, metadata: row.metadata, description: row.description }
+  const reservation = f.transcripts.reserveContinuation(f.delivery, input)
+  const before = f.transcripts.inspect()
+  for (const changed of [{ ...row, id: 'foreign' }, { ...row, text: 'Foreign' }, { ...row, metadata: { source: 'foreign' } }, { ...row, description: 'Foreign' }, { ...row, extra: 'Unreserved' }, { ...row, time: { created: CREATED + 2, extra: 'Unreserved' } }]) {
+    assert.throws(() => reservation.admit(changed), { code: 'TRANSCRIPT_STOP_CONTINUATION_CHANGED' })
+    assert.deepEqual(f.transcripts.inspect(), before)
+  }
+  reservation.admit({ ...row, metadata: { token: 'fixture', completionID: 'answer', source: 'opencode-harness-hooks' } })
+  f.records.push(row, secondAnswer())
+  await f.transcripts.prepare({ ...f.event, completionID: 'answer-2' }, f.session, f.session.turnSignal)
+})
+
+test('releasing or cancelling a transcript reservation frees its budget and identity', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+  const row = synthetic()
+  const input = { id: row.id, text: row.text, metadata: row.metadata, description: row.description }
+  const before = f.transcripts.inspect()
+  const reservation = f.transcripts.reserveContinuation(f.delivery, input)
+  assert.throws(() => f.transcripts.reserveContinuation(f.delivery, input), { code: 'TRANSCRIPT_STOP_ID_REUSED' })
+  reservation.release(); reservation.release()
+  assert.deepEqual(f.transcripts.inspect(), before)
+  assert.throws(() => reservation.admit(row), { code: 'TRANSCRIPT_STOP_RESERVATION_UNAVAILABLE' })
+  const controller = new AbortController()
+  const cancelled = f.transcripts.reserveContinuation({ ...f.delivery, signal: controller.signal }, input)
+  controller.abort()
+  assert.deepEqual(f.transcripts.inspect(), before)
+  assert.throws(() => cancelled.admit(row), { code: 'TRANSCRIPT_CANCELLED' })
+  f.transcripts.reserveContinuation(f.delivery, input).admit(row)
+  f.runtime.sessions.close('session')
+  assert.equal(f.transcripts.inspect().stopBytes, 0)
+  reservation.release(); cancelled.release()
+  assert.equal(f.transcripts.inspect().stopBytes, 0)
+})
+
+test('transcript reservation preflight rejects unknown payloads and excess bytes before claiming ownership', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+  const row = synthetic()
+  const input = { id: row.id, text: row.text, metadata: row.metadata, description: row.description }
+  const before = f.transcripts.inspect()
+  for (const value of [null, { ...input, id: 'prompt' }, { ...input, id: '' }, { ...input, text: 123 }, { ...input, metadata: [] }, { ...input, extra: 'Unreserved' }]) {
+    assert.throws(() => f.transcripts.reserveContinuation(f.delivery, value))
+    assert.deepEqual(f.transcripts.inspect(), before)
+  }
+  assert.throws(() => f.transcripts.reserveContinuation(f.delivery, { ...input, text: 'x'.repeat(32 * 1024 * 1024 - 1024) }), { code: 'TRANSCRIPT_STOP_LIMIT' })
+  assert.deepEqual(f.transcripts.inspect(), before)
+  const reservation = f.transcripts.reserveContinuation(f.delivery, input)
+  await f.transcripts.dispose()
+  reservation.release()
+  assert.equal(f.transcripts.inspect().stopBytes, 0)
+  assert.throws(() => reservation.admit(row), { code: 'TRANSCRIPT_CANCELLED' })
+})
+
+test('transcript reservation ownership captures delivery identity before caller mutation', async t => {
+  for (const action of ['admit', 'release'] as const) {
+    const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+    const row = synthetic()
+    const input = { id: row.id, text: row.text, metadata: row.metadata, description: row.description }
+    const mutable = { ...f.delivery, event: { ...f.delivery.event }, session: { ...f.delivery.session } }
+    const before = f.transcripts.inspect()
+    const reservation = f.transcripts.reserveContinuation(mutable, input)
+    mutable.event.sessionID = 'foreign'; mutable.event.completionID = 'foreign'; mutable.session.turnID = 'foreign'
+    if (action === 'release') {
+      reservation.release()
+      assert.deepEqual(f.transcripts.inspect(), before)
+    } else {
+      reservation.admit(row)
+      f.records.push(row, secondAnswer())
+      await f.transcripts.prepare({ ...f.event, completionID: 'answer-2' }, f.session, f.session.turnSignal)
+    }
+  }
+})
+
 test('identical decision and additional-context text retains both native record forms', async t => {
   const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Same', hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'Same' } }], completionOrder: [0] }, true)
   await f.transcripts.prepare(f.event, f.session, f.session.turnSignal)

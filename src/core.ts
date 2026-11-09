@@ -23,7 +23,7 @@ export type { SourceSpec, NativeEvent, LoadedSource, Registration, JsonValue } f
 export { ClaudeTranscript } from './transcript.js'
 export { ClaudeEnvironmentFiles, ClaudeEnvironmentError } from './claude-environment-files.js'
 export type { ClaudeEnvironmentPlan } from './claude-environment-files.js'
-export type { TranscriptService, TranscriptHistory } from './transcript.js'
+export type { TranscriptService, TranscriptHistory, TranscriptContinuationReservation } from './transcript.js'
 export { CallApprovals } from './hosts/permissions.js'
 export type { PermissionEvaluation, PermissionReply } from './hosts/permissions.js'
 export { inspectSources } from './inspection.js'

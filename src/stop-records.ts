@@ -10,6 +10,9 @@ const MAX_COMPLETIONS = 10000
 const MAX_RECORDS = 50000
 const MAX_BYTES = 32 * 1024 * 1024
 const MAX_ID_BYTES = 4096
+// The normalized timestamp is unavailable until the next context phase
+const READBACK_OVERHEAD_BYTES = 1024
+const CONTINUATION_INPUT_FIELDS = new Set(['id', 'text', 'metadata', 'description'])
 const FEEDBACK_PREFIX = 'Stop hook feedback:\n'
 const SUCCESS_EXIT = 0
 const BLOCKING_EXIT = 2
@@ -28,12 +31,23 @@ interface Completion {
   continuationID?: string
   bytes: number
 }
-interface Continuation { readonly completionID: string; readonly turnID: string; readonly signature: string }
+type Continuation = { readonly completionID: string; readonly turnID: string } & (
+  | { readonly phase: 'admitted'; readonly signature: string }
+  | { readonly phase: 'pending'; readonly expected: string; readonly bytes: number; readonly detach: () => void }
+)
 interface State { readonly signal: AbortSignal; readonly completions: Map<string, Completion>; readonly continuations: Map<string, Continuation>; readonly cleanup: () => void }
+export interface StopContinuationReservation { readonly admit: (readback: JsonValue) => void; readonly release: () => void }
+interface ContinuationOwner { readonly event: Pick<StopEvent, 'event' | 'sessionID' | 'messageID' | 'completionID'>; readonly session: SessionSnapshot; readonly signal: AbortSignal }
 function fail(code: string): never { throw new HostHookError(code, code === 'TRANSCRIPT_CANCELLED' ? 'cancelled' : 'unsupported') }
 function record(value: unknown): value is Readonly<Record<string, JsonValue>> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 function signature(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value, (_key, item: unknown) => record(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)).digest('hex')
+}
+function validContinuation(value: JsonValue): value is Readonly<Record<string, JsonValue>> & { readonly id: string } {
+  return record(value) && typeof value.id === 'string' && !!value.id && !value.id.includes('\0') && Buffer.byteLength(value.id) <= MAX_ID_BYTES && typeof value.text === 'string' && record(value.metadata) && (value.description === undefined || typeof value.description === 'string')
+}
+function validReadback(value: JsonValue): value is Readonly<Record<string, JsonValue>> & { readonly id: string; readonly time: Readonly<Record<string, JsonValue>> } {
+  return validContinuation(value) && value.type === 'synthetic' && record(value.time) && typeof value.time.created === 'number' && Number.isFinite(value.time.created) && !Number.isNaN(new Date(value.time.created).getTime())
 }
 function freeze<T>(value: T): T {
   if (value !== null && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value) }
@@ -191,24 +205,64 @@ export class StopRecords {
     return projection
   }
 
-  admitContinuation({ event, session, signal }: StopDelivery, row: JsonValue): void {
-    if (this.disposed || signal.aborted || session.signal.aborted || session.turnSignal.aborted) fail('TRANSCRIPT_CANCELLED')
-    const state = this.states.get(event.sessionID)
-    const completion = state?.completions.get(event.completionID)
-    if (!state || state.signal !== session.signal || event.sessionID !== session.sessionID || event.messageID !== session.turnID || !completion || completion.turnID !== event.messageID || completion.turnSignal !== session.turnSignal || !completion.records || !completion.continuable) fail('TRANSCRIPT_STOP_CONTINUATION_UNAVAILABLE')
-    if (!record(row) || row.type !== 'synthetic' || typeof row.id !== 'string' || !row.id || row.id.includes('\0') || Buffer.byteLength(row.id) > MAX_ID_BYTES || typeof row.text !== 'string' || !record(row.metadata) || !record(row.time) || typeof row.time.created !== 'number' || !Number.isFinite(row.time.created) || Number.isNaN(new Date(row.time.created).getTime()) || row.description !== undefined && typeof row.description !== 'string') fail('TRANSCRIPT_STOP_CONTINUATION_INVALID')
-    if (completion.continuationID !== undefined || state.continuations.has(row.id) || state.completions.has(row.id) || row.id === event.messageID) fail('TRANSCRIPT_STOP_ID_REUSED')
+  admitContinuation(delivery: StopDelivery, row: JsonValue): void {
+    const { event } = delivery
+    const { state, completion } = this.continuationOwner(delivery)
+    if (!validReadback(row)) fail('TRANSCRIPT_STOP_CONTINUATION_INVALID')
+    this.available(state, completion, row.id, event.messageID)
     const bytes = Buffer.byteLength(JSON.stringify([event.completionID, event.messageID, row]))
     if (this.bytes + bytes > MAX_BYTES) fail('TRANSCRIPT_STOP_LIMIT')
-    state.continuations.set(row.id, Object.freeze({ completionID: event.completionID, turnID: event.messageID, signature: signature(row) }))
+    state.continuations.set(row.id, Object.freeze({ phase: 'admitted', completionID: event.completionID, turnID: event.messageID, signature: signature(row) }))
     completion.continuationID = row.id
     completion.bytes += bytes
     this.bytes += bytes
   }
 
+  reserveContinuation(delivery: StopDelivery, input: JsonValue): StopContinuationReservation {
+    const owner: ContinuationOwner = { event: { event: delivery.event.event, sessionID: delivery.event.sessionID, messageID: delivery.event.messageID, completionID: delivery.event.completionID }, session: { ...delivery.session }, signal: delivery.signal }
+    const { event, session } = owner
+    const { state, completion } = this.continuationOwner(owner)
+    if (!validContinuation(input) || Object.keys(input).some(key => !CONTINUATION_INPUT_FIELDS.has(key))) fail('TRANSCRIPT_STOP_CONTINUATION_INVALID')
+    const id = input.id
+    this.available(state, completion, id, event.messageID)
+    const bytes = Buffer.byteLength(JSON.stringify([event.completionID, event.messageID, input])) + READBACK_OVERHEAD_BYTES
+    if (this.bytes + bytes > MAX_BYTES) fail('TRANSCRIPT_STOP_LIMIT')
+    const signal = AbortSignal.any([owner.signal, session.signal, session.turnSignal])
+    const release = () => {
+      if (this.states.get(event.sessionID) !== state || state.continuations.get(id) !== pending) return
+      pending.detach()
+      state.continuations.delete(id)
+      delete completion.continuationID
+      completion.bytes -= bytes
+      this.bytes -= bytes
+    }
+    const pending: Extract<Continuation, { phase: 'pending' }> = Object.freeze({ phase: 'pending', completionID: event.completionID, turnID: event.messageID, expected: signature({ type: 'synthetic', ...input }), bytes, detach: () => { signal.removeEventListener('abort', release) } })
+    state.continuations.set(id, pending)
+    completion.continuationID = id
+    completion.bytes += bytes
+    this.bytes += bytes
+    signal.addEventListener('abort', release, { once: true })
+    return Object.freeze({
+      admit: (row: JsonValue) => {
+        this.continuationOwner(owner)
+        if (this.states.get(event.sessionID) !== state || state.continuations.get(id) !== pending) fail('TRANSCRIPT_STOP_RESERVATION_UNAVAILABLE')
+        if (!validReadback(row)) fail('TRANSCRIPT_STOP_CONTINUATION_INVALID')
+        const payload = Object.fromEntries(Object.entries(row).filter(([key]) => key !== 'time'))
+        if (Object.keys(row.time).length !== 1 || signature(payload) !== pending.expected) fail('TRANSCRIPT_STOP_CONTINUATION_CHANGED')
+        const actual = Buffer.byteLength(JSON.stringify([event.completionID, event.messageID, row]))
+        if (actual > bytes) fail('TRANSCRIPT_STOP_LIMIT')
+        state.continuations.set(id, Object.freeze({ phase: 'admitted', completionID: event.completionID, turnID: event.messageID, signature: signature(row) }))
+        completion.bytes += actual - bytes
+        this.bytes += actual - bytes
+        pending.detach()
+      },
+      release,
+    })
+  }
+
   validateContinuation(sessionID: string, row: Readonly<Record<string, unknown>>, previousID: string | undefined, turnID: string | undefined): void {
     const owned = typeof row.id === 'string' ? this.states.get(sessionID)?.continuations.get(row.id) : undefined
-    if (!owned) fail('TRANSCRIPT_CONTENT_UNSUPPORTED')
+    if (!owned || owned.phase !== 'admitted') fail('TRANSCRIPT_CONTENT_UNSUPPORTED')
     if (owned.turnID !== turnID || owned.completionID !== previousID) fail('TRANSCRIPT_STOP_CONTINUATION_POSITION')
     if (owned.signature !== signature(row)) fail('TRANSCRIPT_STOP_CONTINUATION_CHANGED')
   }
@@ -223,11 +277,23 @@ export class StopRecords {
   validateHistory(sessionID: string, completionIDs: ReadonlySet<string>, continuationIDs: ReadonlySet<string>): void {
     const state = this.states.get(sessionID)
     if (state) for (const [id, completion] of state.completions) if (completion.records !== undefined && !completionIDs.has(id)) fail('TRANSCRIPT_STOP_HISTORY_UNAVAILABLE')
-    if (state) for (const id of state.continuations.keys()) if (!continuationIDs.has(id)) fail('TRANSCRIPT_STOP_HISTORY_UNAVAILABLE')
+    if (state) for (const [id, row] of state.continuations) if (row.phase === 'admitted' && !continuationIDs.has(id)) fail('TRANSCRIPT_STOP_HISTORY_UNAVAILABLE')
   }
 
   dispose(): void { this.disposed = true; for (const state of this.states.values()) state.cleanup() }
   inspect() { return Object.freeze({ stopSessions: this.states.size, stopCompletions: this.completions, stopRecords: this.records, stopBytes: this.bytes }) }
+
+  private continuationOwner({ event, session, signal }: ContinuationOwner): { readonly state: State; readonly completion: Completion } {
+    if (this.disposed || signal.aborted || session.signal.aborted || session.turnSignal.aborted) fail('TRANSCRIPT_CANCELLED')
+    const state = this.states.get(event.sessionID)
+    const completion = state?.completions.get(event.completionID)
+    if (event.event !== 'Stop' || !state || state.signal !== session.signal || event.sessionID !== session.sessionID || event.messageID !== session.turnID || !completion || completion.turnID !== event.messageID || completion.turnSignal !== session.turnSignal || !completion.records || !completion.continuable) fail('TRANSCRIPT_STOP_CONTINUATION_UNAVAILABLE')
+    return { state, completion }
+  }
+
+  private available(state: State, completion: Completion, id: string, turnID: string): void {
+    if (completion.continuationID !== undefined || state.continuations.has(id) || state.completions.has(id) || id === turnID) fail('TRANSCRIPT_STOP_ID_REUSED')
+  }
 
   private state(session: SessionSnapshot): State {
     let state = this.states.get(session.sessionID)
@@ -237,8 +303,11 @@ export class StopRecords {
       const cleanup = () => {
         const previous = this.states.get(session.sessionID)
         if (!previous) return
+        for (const row of previous.continuations.values()) if (row.phase === 'pending') row.detach()
         for (const completion of previous.completions.values()) { this.completions--; this.records -= completion.records?.length ?? 0; this.bytes -= completion.bytes }
         this.states.delete(session.sessionID)
+        previous.completions.clear()
+        previous.continuations.clear()
         session.signal.removeEventListener('abort', cleanup)
       }
       state = { signal: session.signal, completions: new Map(), continuations: new Map(), cleanup }
