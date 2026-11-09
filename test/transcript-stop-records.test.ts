@@ -16,6 +16,8 @@ const CREATED = Date.parse('2026-01-01T00:00:00Z')
 const oracle = JSON.parse(readFileSync(new URL('./fixtures/claude-stop-aggregation-oracle.json', import.meta.url), 'utf8'))
 const outputs = JSON.parse(readFileSync(new URL('./fixtures/claude-stop-output-oracle.json', import.meta.url), 'utf8'))
 const parse = (text: string) => text.trim().split('\n').map(line => JSON.parse(line))
+const synthetic = () => ({ type: 'synthetic', id: 'synthetic', text: 'Owned transport marker', metadata: { source: 'opencode-harness-hooks', completionID: 'answer', token: 'fixture' }, description: 'Hook continuation', time: { created: CREATED + 2 } })
+const secondAnswer = () => ({ type: 'assistant', id: 'answer-2', model: { id: 'fixture' }, finish: 'stop', time: { created: CREATED + 3 }, content: [{ type: 'text', text: 'Second answer' }] })
 
 interface OutputInput { readonly stdout: string; readonly stderr: string; readonly exitCode: number; readonly delayMs: number; readonly timeoutSeconds?: number }
 async function fixture(t: TestContext, scenario: { outputs: unknown[]; completionOrder: number[] } | { input: OutputInput }, admitRecords = false) {
@@ -217,6 +219,96 @@ test('competing Stop model input follows native reminder and feedback group orde
     'Stop hook feedback:\nNATIVE_STOP_B\n',
     'Stop hook feedback:\nNATIVE_STOP_A',
   ])
+})
+
+test('an admitted synthetic readback preserves the original turn and native Stop transcript records', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+  const row = synthetic()
+  f.transcripts.admitContinuation(f.delivery, row)
+  f.records.push(structuredClone(row), secondAnswer())
+  row.text = 'Changed caller-owned copy'
+  const path = await f.transcripts.prepare({ ...f.event, completionID: 'answer-2' }, f.session, f.session.turnSignal)
+  const entries = parse(await readFile(path, 'utf8'))
+  assert.deepEqual(entries.filter(row => row.type === 'user').map(row => row.message.content), ['Original', 'Stop hook feedback:\nFeedback'])
+  assert.equal(entries.filter(row => row.subtype === 'stop_hook_summary').length, 1)
+  assert.deepEqual(entries.filter(row => row.type === 'assistant').map(row => row.message.id), ['answer', 'answer-2'])
+  assert.ok(!JSON.stringify(entries).includes('transport marker'))
+  for (let index = 1; index < entries.length; index++) assert.equal(entries[index].parentUuid, entries[index - 1].uuid)
+  assert.equal(f.runtime.sessions.get('session').turnID, 'prompt')
+  await f.unchanged()
+})
+
+test('changed, moved or pruned owned synthetic history cannot overwrite the admitted transcript', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+  const row = synthetic()
+  f.transcripts.admitContinuation(f.delivery, row)
+  f.records.push(row, secondAnswer())
+  const event = { ...f.event, completionID: 'answer-2' }
+  await f.transcripts.prepare(event, f.session, f.session.turnSignal)
+  const before = await readFile(f.transcriptPath, 'utf8')
+  for (const changed of [{ ...row, text: 'Changed' }, { ...row, metadata: { source: 'foreign' } }, { ...row, time: { created: CREATED + 99 } }, { ...row, description: 'Changed' }]) {
+    f.records[2] = changed
+    await assert.rejects(f.transcripts.prepare(event, f.session, f.session.turnSignal), { code: 'TRANSCRIPT_STOP_CONTINUATION_CHANGED' })
+    assert.equal(await readFile(f.transcriptPath, 'utf8'), before)
+  }
+  f.records.splice(1, 2, row, f.records[1])
+  await assert.rejects(f.transcripts.prepare(event, f.session, f.session.turnSignal), { code: 'TRANSCRIPT_STOP_CONTINUATION_POSITION' })
+  f.records.splice(1, 2, f.records[2], row)
+  f.records.splice(2, 1)
+  await assert.rejects(f.transcripts.prepare(event, f.session, f.session.turnSignal), { code: 'TRANSCRIPT_STOP_HISTORY_UNAVAILABLE' })
+  assert.equal(await readFile(f.transcriptPath, 'utf8'), before)
+})
+
+test('synthetic admission requires the admitted continuing Stop and rejects conflicting identities atomically', async t => {
+  for (const output of [{}, { continue: false, stopReason: 'Stopped' }, { decision: 'block', reason: 'Feedback' }]) {
+    const f = await fixture(t, { outputs: [output], completionOrder: [0] }, false)
+    assert.throws(() => f.transcripts.admitContinuation(f.delivery, synthetic()), { code: 'TRANSCRIPT_STOP_CONTINUATION_UNAVAILABLE' })
+    f.transcripts.admitStop(f.delivery)
+    const before = f.transcripts.inspect()
+    if (!('decision' in output)) {
+      assert.throws(() => f.transcripts.admitContinuation(f.delivery, synthetic()), { code: 'TRANSCRIPT_STOP_CONTINUATION_UNAVAILABLE' })
+      assert.deepEqual(f.transcripts.inspect(), before)
+      continue
+    }
+    for (const row of [null, { ...synthetic(), type: 'user' }, { ...synthetic(), id: '' }, { ...synthetic(), id: 'prompt' }, { ...synthetic(), id: 'answer' }, { ...synthetic(), text: 123 }, { ...synthetic(), metadata: [] }, { ...synthetic(), time: { created: NaN } }]) {
+      assert.throws(() => f.transcripts.admitContinuation(f.delivery, row))
+      assert.deepEqual(f.transcripts.inspect(), before)
+    }
+    f.transcripts.admitContinuation(f.delivery, synthetic())
+    assert.throws(() => f.transcripts.admitContinuation(f.delivery, synthetic()), { code: 'TRANSCRIPT_STOP_ID_REUSED' })
+  }
+})
+
+test('historical synthetic ownership survives a real prompt without reclaiming its turn', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+  f.transcripts.admitContinuation(f.delivery, synthetic())
+  f.records.push(synthetic(), secondAnswer())
+  f.runtime.sessions.prompt('session', 'next', 'fixture')
+  const session = f.runtime.sessions.get('session')
+  assert.throws(() => f.transcripts.admitContinuation(f.delivery, { ...synthetic(), id: 'stale' }), { code: 'TRANSCRIPT_CANCELLED' })
+  f.records.push({ type: 'user', id: 'next', text: 'Next', time: { created: CREATED + 4 } }, { ...secondAnswer(), id: 'next-answer' })
+  f.transcripts.observeModel({ host: 'v2', sessionID: 'session', messageID: 'next', signal: session.turnSignal }, session)
+  const path = await f.transcripts.prepare({ ...f.event, messageID: 'next', completionID: 'next-answer' }, session, session.turnSignal)
+  assert.deepEqual(parse(await readFile(path, 'utf8')).filter(row => row.type === 'user').map(row => row.message.content), ['Original', 'Stop hook feedback:\nFeedback', 'Next'])
+  assert.equal(f.runtime.sessions.get('session').turnID, 'next')
+})
+
+test('synthetic admission shares retained byte limits and rejects cancelled or foreign owners', async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'Feedback' }], completionOrder: [0] }, true)
+  const before = f.transcripts.inspect()
+  const foreign = new Sessions()
+  t.after(() => foreign.dispose())
+  foreign.prompt('session', 'prompt', 'fixture')
+  assert.throws(() => f.transcripts.admitContinuation({ ...f.delivery, session: foreign.get('session') }, synthetic()), { code: 'TRANSCRIPT_STOP_CONTINUATION_UNAVAILABLE' })
+  const controller = new AbortController()
+  controller.abort()
+  assert.throws(() => f.transcripts.admitContinuation({ ...f.delivery, signal: controller.signal }, synthetic()), { code: 'TRANSCRIPT_CANCELLED' })
+  assert.throws(() => f.transcripts.admitContinuation(f.delivery, { ...synthetic(), text: 'x'.repeat(32 * 1024 * 1024 - 1024) }), { code: 'TRANSCRIPT_STOP_LIMIT' })
+  assert.deepEqual(f.transcripts.inspect(), before)
+  f.transcripts.admitContinuation(f.delivery, synthetic())
+  assert.ok(f.transcripts.inspect().stopBytes > before.stopBytes)
+  f.runtime.sessions.close('session')
+  assert.equal(f.transcripts.inspect().stopBytes, 0)
 })
 
 test('identical decision and additional-context text retains both native record forms', async t => {

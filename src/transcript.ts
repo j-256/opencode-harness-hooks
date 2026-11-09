@@ -39,6 +39,7 @@ export interface TranscriptService {
   observeModel?(event: HostModelEvent, session: SessionSnapshot): void
   admitPrompt?(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void
   admitStop?(delivery: StopDelivery): readonly string[]
+  admitContinuation?(delivery: StopDelivery, readback: unknown): void
   observe(event: HostToolEvent, session: SessionSnapshot): void
   prepare(event: TranscriptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<string>
   dispose(): Promise<void>
@@ -58,7 +59,7 @@ interface Tool {
 }
 interface Message {
   readonly id: string
-  readonly role: 'user' | 'assistant'
+  readonly role: 'user' | 'assistant' | 'synthetic'
   readonly created: number
   readonly turnID: string
   readonly model?: string
@@ -91,9 +92,10 @@ function snapshot<T>(value: T): T {
   } catch (error) { if (error instanceof HostHookError) throw error; return fail('TRANSCRIPT_SCHEMA_INVALID') }
 }
 
-function messages(host: HostVersion, sessionID: string, input: readonly unknown[]): readonly Message[] {
+function messages(host: HostVersion, sessionID: string, input: readonly unknown[], stops: StopRecords): readonly Message[] {
   if (input.length > MAX_MESSAGES) fail('TRANSCRIPT_MESSAGE_LIMIT')
   let turnID: string | undefined
+  let previousID: string | undefined
   const seen = new Set<string>()
   return input.flatMap(raw => {
     const row = object(raw)
@@ -101,15 +103,16 @@ function messages(host: HostVersion, sessionID: string, input: readonly unknown[
     if (host === 'v1' && info.sessionID !== sessionID) fail('TRANSCRIPT_SESSION_MISMATCH')
     const role = host === 'v1' ? info.role : row.type
     if (host === 'v2' && V2_BOOKKEEPING.has(String(role))) return []
-    if (role !== 'user' && role !== 'assistant') return fail('TRANSCRIPT_CONTENT_UNSUPPORTED')
+    if (role !== 'user' && role !== 'assistant' && !(host === 'v2' && role === 'synthetic')) return fail('TRANSCRIPT_CONTENT_UNSUPPORTED')
     const id = string(info.id)
     if (!id || seen.has(id)) fail('TRANSCRIPT_MESSAGE_ID_INVALID')
     seen.add(id)
+    if (role === 'synthetic') stops.validateContinuation(sessionID, row, previousID, turnID)
     if (role === 'user') turnID = id
     if (!turnID || host === 'v1' && role === 'assistant' && info.parentID !== turnID) fail('TRANSCRIPT_TURN_UNAVAILABLE')
     const created = millis(object(info.time).created)
     const content: (string | Tool)[] = []
-    if (host === 'v2' && role === 'user') {
+    if (host === 'v2' && (role === 'user' || role === 'synthetic')) {
       for (const field of ['files', 'agents', 'skills']) if (row[field] !== undefined && array(row[field]).length) fail('TRANSCRIPT_CONTENT_UNSUPPORTED')
       content.push(string(row.text))
     } else {
@@ -128,6 +131,7 @@ function messages(host: HostVersion, sessionID: string, input: readonly unknown[
     }
     const model = role === 'assistant' ? string(host === 'v1' ? info.modelID : object(row.model).id) : undefined
     const finish = info.finish === undefined ? undefined : string(info.finish)
+    previousID = id
     return [{ id, role, created, turnID, content, ...(model ? { model } : {}), ...(finish ? { finish } : {}) }]
   })
 }
@@ -171,6 +175,13 @@ export class ClaudeTranscript implements TranscriptService {
     return this.stops.admit(delivery)
   }
 
+  admitContinuation(delivery: StopDelivery, readback: unknown): void {
+    if (delivery.event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
+    if (this.options.host !== 'v2') fail('TRANSCRIPT_STOP_HOST_UNSUPPORTED')
+    if (delivery.event.cwd !== this.options.directory) fail('TRANSCRIPT_STOP_CWD_UNAVAILABLE')
+    this.stops.admitContinuation(delivery, snapshot(readback) as JsonValue)
+  }
+
   observe(event: HostToolEvent, session: SessionSnapshot): void {
     if (event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
     if (event.sessionID !== session.sessionID) fail('TRANSCRIPT_SESSION_MISMATCH')
@@ -208,7 +219,7 @@ export class ClaudeTranscript implements TranscriptService {
       if (history.parentID !== undefined && (typeof history.parentID !== 'string' || !history.parentID)) fail('TRANSCRIPT_SCHEMA_INVALID')
       if (!session.turnID) fail('TRANSCRIPT_TURN_UNAVAILABLE')
       if (event.event === 'UserPromptSubmit') this.prompts.begin(session)
-      const entries = messages(this.options.host, event.sessionID, array(history.messages))
+      const entries = messages(this.options.host, event.sessionID, array(history.messages), this.stops)
       const rows = this.project(event, entries, history.parentID !== undefined)
       const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
       if (Buffer.byteLength(text) > MAX_BYTES) fail('TRANSCRIPT_SIZE_LIMIT')
@@ -271,7 +282,7 @@ export class ClaudeTranscript implements TranscriptService {
       if (!last || last.role !== 'assistant' || last.id !== event.completionID || last.turnID !== event.messageID || currentTurnID !== event.messageID || !last.finish || last.finish === 'tool-calls' || !Object.hasOwn(FINISH, last.finish)) fail('TRANSCRIPT_STOP_COMPLETION_UNAVAILABLE')
     }
     const modeled = new Set(history.filter(message => message.role === 'assistant').map(message => message.turnID))
-    this.stops.validateHistory(event.sessionID, new Set(history.filter(message => message.role === 'assistant').map(message => message.id)))
+    this.stops.validateHistory(event.sessionID, new Set(history.filter(message => message.role === 'assistant').map(message => message.id)), new Set(history.filter(message => message.role === 'synthetic').map(message => message.id)))
     if (event.event === 'UserPromptSubmit' && history.some(message => message.id === event.messageID)) fail('TRANSCRIPT_PROMPT_ALREADY_ADMITTED')
     const append = (identity: string, created: number, body: Record<string, JsonValue>) => {
       const id = uuid(JSON.stringify([event.sessionID, identity]))
@@ -280,6 +291,7 @@ export class ClaudeTranscript implements TranscriptService {
     }
     const push = (identity: string, created: number, role: 'user' | 'assistant', message: Record<string, JsonValue>) => append(identity, created, { type: role, message })
     for (const entry of history) {
+      if (entry.role === 'synthetic') continue
       if (entry.role === 'user') {
         const content = entry.content.map(part => { if (typeof part !== 'string') return fail('TRANSCRIPT_CONTENT_UNSUPPORTED'); return part })
         push(entry.id, entry.created, 'user', { role: 'user', content: content.length === 1 ? content[0]! : content.map(text => ({ type: 'text', text })) })

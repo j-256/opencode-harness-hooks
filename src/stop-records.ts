@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { HostHookError } from './hosts/tools.js'
 import type { SessionSnapshot } from './sessions.js'
 import type { StopDelivery, StopEvent } from './stop.js'
@@ -9,6 +9,7 @@ const MAX_SESSIONS = 1024
 const MAX_COMPLETIONS = 10000
 const MAX_RECORDS = 50000
 const MAX_BYTES = 32 * 1024 * 1024
+const MAX_ID_BYTES = 4096
 const FEEDBACK_PREFIX = 'Stop hook feedback:\n'
 const SUCCESS_EXIT = 0
 const BLOCKING_EXIT = 2
@@ -23,11 +24,17 @@ interface Completion {
   readonly turnSignal: AbortSignal
   readonly signature: string
   records?: readonly StopRecord[]
+  continuable?: boolean
+  continuationID?: string
   bytes: number
 }
-interface State { readonly signal: AbortSignal; readonly completions: Map<string, Completion>; readonly cleanup: () => void }
+interface Continuation { readonly completionID: string; readonly turnID: string; readonly signature: string }
+interface State { readonly signal: AbortSignal; readonly completions: Map<string, Completion>; readonly continuations: Map<string, Continuation>; readonly cleanup: () => void }
 function fail(code: string): never { throw new HostHookError(code, code === 'TRANSCRIPT_CANCELLED' ? 'cancelled' : 'unsupported') }
-function record(value: JsonValue | undefined): value is Readonly<Record<string, JsonValue>> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
+function record(value: unknown): value is Readonly<Record<string, JsonValue>> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
+function signature(value: unknown): string {
+  return createHash('sha256').update(JSON.stringify(value, (_key, item: unknown) => record(item) ? Object.fromEntries(Object.keys(item).sort().map(key => [key, item[key]])) : item)).digest('hex')
+}
 function freeze<T>(value: T): T {
   if (value !== null && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value) }
   return value
@@ -177,10 +184,33 @@ export class StopRecords {
     const bytes = Buffer.byteLength(JSON.stringify(records))
     if (this.records + records.length > MAX_RECORDS || this.bytes + bytes > MAX_BYTES) fail('TRANSCRIPT_STOP_LIMIT')
     completion.records = records
+    completion.continuable = !delivery.effects.stop && !delivery.effects.cancelled && delivery.effects.continuations.length > 0
     completion.bytes += bytes
     this.records += records.length
     this.bytes += bytes
     return projection
+  }
+
+  admitContinuation({ event, session, signal }: StopDelivery, row: JsonValue): void {
+    if (this.disposed || signal.aborted || session.signal.aborted || session.turnSignal.aborted) fail('TRANSCRIPT_CANCELLED')
+    const state = this.states.get(event.sessionID)
+    const completion = state?.completions.get(event.completionID)
+    if (!state || state.signal !== session.signal || event.sessionID !== session.sessionID || event.messageID !== session.turnID || !completion || completion.turnID !== event.messageID || completion.turnSignal !== session.turnSignal || !completion.records || !completion.continuable) fail('TRANSCRIPT_STOP_CONTINUATION_UNAVAILABLE')
+    if (!record(row) || row.type !== 'synthetic' || typeof row.id !== 'string' || !row.id || row.id.includes('\0') || Buffer.byteLength(row.id) > MAX_ID_BYTES || typeof row.text !== 'string' || !record(row.metadata) || !record(row.time) || typeof row.time.created !== 'number' || !Number.isFinite(row.time.created) || Number.isNaN(new Date(row.time.created).getTime()) || row.description !== undefined && typeof row.description !== 'string') fail('TRANSCRIPT_STOP_CONTINUATION_INVALID')
+    if (completion.continuationID !== undefined || state.continuations.has(row.id) || state.completions.has(row.id) || row.id === event.messageID) fail('TRANSCRIPT_STOP_ID_REUSED')
+    const bytes = Buffer.byteLength(JSON.stringify([event.completionID, event.messageID, row]))
+    if (this.bytes + bytes > MAX_BYTES) fail('TRANSCRIPT_STOP_LIMIT')
+    state.continuations.set(row.id, Object.freeze({ completionID: event.completionID, turnID: event.messageID, signature: signature(row) }))
+    completion.continuationID = row.id
+    completion.bytes += bytes
+    this.bytes += bytes
+  }
+
+  validateContinuation(sessionID: string, row: Readonly<Record<string, unknown>>, previousID: string | undefined, turnID: string | undefined): void {
+    const owned = typeof row.id === 'string' ? this.states.get(sessionID)?.continuations.get(row.id) : undefined
+    if (!owned) fail('TRANSCRIPT_CONTENT_UNSUPPORTED')
+    if (owned.turnID !== turnID || owned.completionID !== previousID) fail('TRANSCRIPT_STOP_CONTINUATION_POSITION')
+    if (owned.signature !== signature(row)) fail('TRANSCRIPT_STOP_CONTINUATION_CHANGED')
   }
 
   read(sessionID: string, completionID: string, turnID: string, signature: string): readonly StopRecord[] {
@@ -190,9 +220,10 @@ export class StopRecords {
     return completion.records ?? []
   }
 
-  validateHistory(sessionID: string, completionIDs: ReadonlySet<string>): void {
+  validateHistory(sessionID: string, completionIDs: ReadonlySet<string>, continuationIDs: ReadonlySet<string>): void {
     const state = this.states.get(sessionID)
     if (state) for (const [id, completion] of state.completions) if (completion.records !== undefined && !completionIDs.has(id)) fail('TRANSCRIPT_STOP_HISTORY_UNAVAILABLE')
+    if (state) for (const id of state.continuations.keys()) if (!continuationIDs.has(id)) fail('TRANSCRIPT_STOP_HISTORY_UNAVAILABLE')
   }
 
   dispose(): void { this.disposed = true; for (const state of this.states.values()) state.cleanup() }
@@ -210,7 +241,7 @@ export class StopRecords {
         this.states.delete(session.sessionID)
         session.signal.removeEventListener('abort', cleanup)
       }
-      state = { signal: session.signal, completions: new Map(), cleanup }
+      state = { signal: session.signal, completions: new Map(), continuations: new Map(), cleanup }
       this.states.set(session.sessionID, state)
       session.signal.addEventListener('abort', cleanup, { once: true })
     }

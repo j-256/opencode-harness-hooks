@@ -33,6 +33,7 @@
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test",
     "test:host:v2": "node scripts/verify-v2.mjs",
+    "test:host:v2:stop": "node scripts/verify-v2-stop.mjs",
     "test:host:plugin": "node scripts/verify-plugin.mjs",
     "test:native:claude": "node scripts/verify-claude-transcript.mjs",
     "test:native:claude:lifecycle": "node scripts/verify-claude-lifecycle.mjs",

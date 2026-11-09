@@ -1,0 +1,265 @@
+#!/usr/bin/env node
+import { execFile, spawn } from 'node:child_process'
+import { createHash, randomBytes } from 'node:crypto'
+import { createServer } from 'node:http'
+import { access, mkdtemp, mkdir, writeFile, readFile, rm, realpath } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { parseArgs, promisify } from 'node:util'
+
+const PINNED_VERSION = '2.2.5'
+const STARTUP_MS = 10000
+const CLIENT_MS = 20000
+const SHUTDOWN_MS = 2000
+const MAX_REQUESTS = 4
+const CORE = new URL('../dist/core.js', import.meta.url).href
+const TRANSPORT = new URL('../dist/prompt-contexts.js', import.meta.url).href
+const MAX_BYTES = 2 * 1024 * 1024
+const run = promisify(execFile)
+const HELP = `Usage: node scripts/verify-v2-stop.mjs [-b PATH]
+
+Verify the explicit core Stop service against OpenCode ${PINNED_VERSION} using an
+unchanged Claude command, owned synthetic history and exact model text blocks.
+This is a foreground core integration fixture, not default-root Stop equivalence.
+Uses isolated HOME/config/state and a loopback provider; live settings stay intact.
+
+Options:
+  -b, --binary PATH  OpenCode executable (OPENCODE_V2_BINARY, then opencode)
+  -h, --help         Show help without dependencies or a package build
+
+Requires Node.js 22+, POSIX, Git, npm run build and the pinned host executable.
+No installation or upgrade is performed. Metadata-only JSON goes to stdout;
+failures go to stderr without native output, commands or local paths.
+Exit status: 0 exercised checks pass; 1 runtime/check; 2 usage/version/platform;
+3 missing dependency or package build. The report retains equivalent:false.
+`
+
+class ProbeError extends Error {
+  constructor(code, status = 1) { super(code); this.status = status }
+}
+function check(condition, code) { if (!condition) throw new ProbeError(code) }
+async function bounded(promise, timeoutMs, code) {
+  let timer
+  try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new ProbeError(code)), timeoutMs) })]) } finally { clearTimeout(timer) }
+}
+async function stop(child, done) {
+  if (!child || !done) return
+  if (child.exitCode === null && child.signalCode === null && child.pid) {
+    try { process.kill(-child.pid, 'SIGTERM') } catch (error) { if (error.code !== 'ESRCH') throw error }
+    try { await bounded(done, SHUTDOWN_MS, 'HOST_SHUTDOWN_TIMEOUT') } catch {
+      try { process.kill(-child.pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
+    }
+  }
+  await bounded(done, SHUTDOWN_MS, 'HOST_CLEANUP_FAILED')
+}
+
+async function dependency(program, args, name) {
+  try { return await run(program, args, { timeout: STARTUP_MS, maxBuffer: MAX_BYTES }) } catch (error) {
+    if (error.code === 'ENOENT' || error.code === 'EACCES') throw new ProbeError('DEPENDENCY_UNAVAILABLE: ' + name, 3)
+    throw new ProbeError('DEPENDENCY_QUERY_FAILED: ' + name)
+  }
+}
+
+async function verify(binary) {
+  if (process.platform === 'win32' || Number(process.versions.node.split('.')[0]) < 22) throw new ProbeError('PLATFORM_UNAVAILABLE: Node.js 22+ and POSIX required', 2)
+  const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
+  if (version !== PINNED_VERSION) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + PINNED_VERSION, 2)
+  await dependency('git', ['--version'], 'Git')
+  try { await Promise.all([access(new URL(CORE)), access(new URL(TRANSPORT))]) } catch { throw new ProbeError('DEPENDENCY_UNAVAILABLE: run npm run build', 3) }
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'harness-v2-stop-')))
+  let gateway
+  let host
+  let hostDone
+  try {
+    const project = join(root, 'project')
+    const config = join(root, 'config/opencode')
+    const plugin = join(root, 'plugin')
+    const trace = join(root, 'trace.jsonl')
+    await Promise.all([mkdir(project), mkdir(config, { recursive: true }), mkdir(plugin)])
+    const env = {
+      PATH: process.env.PATH, SHELL: '/bin/sh', LANG: 'en_US.UTF-8', TMPDIR: process.env.TMPDIR,
+      HOME: root, PWD: project, XDG_CONFIG_HOME: join(root, 'config'), XDG_STATE_HOME: join(root, 'state'), XDG_DATA_HOME: join(root, 'data'), XDG_CACHE_HOME: join(root, 'cache'),
+      OPENCODE_CONFIG_DIR: config, OPENCODE_DISABLE_PROJECT_CONFIG: '1', OPENCODE_DISABLE_CLAUDE_CODE: '1', OPENCODE_DISABLE_EXTERNAL_SKILLS: '1', OPENCODE_DISABLE_MODELS_FETCH: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1',
+      OPENCODE_PASSWORD: randomBytes(32).toString('base64url'),
+    }
+    await run('git', ['init', '-q', project], { env, timeout: STARTUP_MS })
+    const requests = []
+    gateway = createServer(async (req, res) => {
+      try {
+        const chunks = []
+        let bytes = 0
+        for await (const chunk of req) {
+          bytes += chunk.length
+          if (bytes > MAX_BYTES) { res.writeHead(413); res.end(); return }
+          chunks.push(chunk)
+        }
+        if (requests.length >= MAX_REQUESTS) { res.writeHead(429); res.end(); return }
+        const body = JSON.parse(Buffer.concat(chunks).toString())
+        const continued = JSON.stringify(body.messages).includes('V2_STOP_FEEDBACK')
+        requests.push({ at: Date.now(), kind: String(req.headers['x-harness-request-kind'] ?? ''), continued, privateHeaderPresent: Object.hasOwn(req.headers, 'x-opencode-harness-hooks-request'), messages: body.messages })
+        const message = { role: 'assistant', content: continued ? 'V2_SECOND_ANSWER' : 'V2_FIRST_ANSWER' }
+        const chunk = (delta, finish_reason) => ({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta, finish_reason }] })
+        res.writeHead(200, { 'content-type': 'text/event-stream' })
+        res.end('data: ' + JSON.stringify(chunk(message, null)) + '\n\ndata: ' + JSON.stringify({ ...chunk({}, 'stop'), usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } }) + '\n\ndata: [DONE]\n\n')
+      } catch { if (!res.headersSent) res.writeHead(500); res.end() }
+    })
+    await new Promise((resolve, reject) => { gateway.once('error', reject); gateway.listen(0, '127.0.0.1', resolve) })
+    const sourcePath=join(root,'native-hooks.json'), hookScript=join(root,'native-hook.cjs'), hookTrace=join(root,'native-hooks.jsonl')
+    await writeFile(hookScript, `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));fs.appendFileSync(${JSON.stringify(hookTrace)},JSON.stringify(p)+'\\n');const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);if(rows.at(-1).message.role!=='assistant')throw new Error('Missing completed assistant');if(!p.stop_hook_active)console.log(JSON.stringify({decision:'block',reason:'V2_STOP_FEEDBACK',hookSpecificOutput:{hookEventName:'Stop',additionalContext:'V2_STOP_CONTEXT'}}));`)
+    const command={type:'command',command:process.execPath,args:[hookScript]}
+    const dialect='claude-code'
+    const native=JSON.stringify({hooks:{Stop:[{hooks:[command]}]}})
+    await run(process.execPath,['--check',hookScript],{timeout:STARTUP_MS,maxBuffer:MAX_BYTES})
+    await writeFile(sourcePath,native)
+    const sourceSnapshot = await readFile(sourcePath), scriptSnapshot = await readFile(hookScript)
+    const options={sources:[{id:'native',dialect,path:sourcePath}],reviewedDigests:{native:createHash('sha256').update(native).digest('hex')},permissionMode:'default'}
+    await writeFile(join(plugin, 'package.json'), JSON.stringify({ name: 'harness-v2-fixture', type: 'module', exports: { '.': './index.js' } }))
+    await writeFile(join(plugin, 'index.js'), `import assert from 'node:assert/strict'
+import { appendFile, readFile } from 'node:fs/promises'
+import { ClaudeTranscript, createRuntime } from ${JSON.stringify(CORE)}
+import { PromptContexts, PROMPT_REQUEST_HEADER } from ${JSON.stringify(TRANSPORT)}
+export default {
+  id: 'harness-v2-fixture',
+  server() { throw new Error('V2 called V1 entrypoint') },
+  async setup(ctx) {
+    const contexts = new PromptContexts()
+    let pending
+    const log = async value => appendFile(${JSON.stringify(trace)}, JSON.stringify({ ...value, at: Date.now() }) + '\\n')
+    const transcripts = new ClaudeTranscript({ host: 'v2', directory: ctx.location.directory, history: async (event, signal) => {
+      const [info, messages] = await Promise.all([ctx.session.get({ sessionID: event.sessionID }, { signal }), ctx.session.context({ sessionID: event.sessionID }, { signal })])
+      return { id: info.id, ...(info.parentID ? { parentID: info.parentID } : {}), messages }
+    } })
+    const runtime = await createRuntime('v2', ctx.location.directory, ctx.options, {
+      transcripts, report: () => {}, dispatchDiagnostic: () => {},
+      host: { environment: { PATH: process.env.PATH, HOME: process.env.HOME, SHELL: '/bin/sh' } },
+      stop: { diagnostic: () => {}, admit: async delivery => {
+        let stage = 'records'; try { const projection = transcripts.admitStop(delivery)
+        if (delivery.effects.stop || !delivery.effects.continuations.length) return
+        const text = 'V2_OWNED_TRANSPORT_MARKER'
+        const metadata = { source: 'opencode-harness-hooks', completionID: delivery.event.completionID, token: 'controlled-fixture' }
+        stage = 'synthetic'; const admitted = await ctx.session.synthetic({ sessionID: delivery.event.sessionID, text, description: 'Hook continuation', metadata, resume: false }, { signal: delivery.signal })
+        stage = 'readback'; const readback = await ctx.session.context({ sessionID: delivery.event.sessionID }, { signal: delivery.signal })
+        await log({ phase: 'queued', id: admitted.id, readbackVisible: readback.some(row => row.id === admitted.id), returnedKeys: Object.keys(admitted) })
+        pending = { delivery, id: admitted.id, text, metadata, projection }
+         } catch (error) { await log({phase:'admission-failure',stage,code:error.code,name:error.name}); throw error }
+      } },
+    })
+    const sessions = runtime.sessions
+    await ctx.session.hook('prompt', event => {
+      sessions.prompt(event.sessionID, event.messageID)
+      contexts.remember(sessions.get(event.sessionID), [event.prompt.text], [])
+      return log({ phase: 'prompt-observed', sessionID: event.sessionID, messageID: event.messageID })
+    })
+    await ctx.session.hook('context', async event => {
+      if (pending) {
+        const { delivery, id, text, metadata, projection } = pending
+        const readback = await ctx.session.context({ sessionID: event.sessionID }, { signal: delivery.signal })
+        const row = readback.find(row => row.id === id)
+        assert.equal(row.type, 'synthetic'); assert.equal(row.text, text); assert.deepEqual(row.metadata, metadata)
+        transcripts.admitContinuation(delivery, row)
+        contexts.rememberContinuation(delivery.session, id, [text], projection)
+        await log({ phase: 'admitted', id, readbackVisible: true })
+        pending = undefined
+      }
+      contexts.layout(sessions.get(event.sessionID), event.messages.filter(row => row.role === 'user').map(row => ({ id: row.id, text: row.content.map(part => part.text) })))
+      sessions.model(event.sessionID, event.model.id, sessions.get(event.sessionID).turnID)
+    })
+    await ctx.session.hook('title', event => { event.result = 'Fixture' })
+    await ctx.session.hook('model.request', event => {
+      event.headers['x-harness-request-kind'] = event.kind
+      if (event.kind !== 'primary') return
+      const session = sessions.get(event.sessionID)
+      transcripts.observeModel({ host: 'v2', sessionID: event.sessionID, messageID: session.turnID, signal: session.turnSignal }, session)
+      const token = contexts.issue(session, 'openai')
+      if (token) event.headers[PROMPT_REQUEST_HEADER] = token
+    })
+    await ctx.session.hook('http.request', async event => {
+      const token = event.request.headers.get(PROMPT_REQUEST_HEADER)
+      if (event.kind === 'primary' && token) event.request = await contexts.project(event.request, token, sessions.get(event.sessionID))
+    })
+    await ctx.session.hook('experimental.idle', async event => {
+      const session = sessions.get(event.sessionID)
+      const history = await ctx.session.context({ sessionID: event.sessionID }, { signal: session.turnSignal })
+      const completion = history.findLast(row => row.type === 'assistant')
+      const stop = { host: 'v2', event: 'Stop', sessionID: event.sessionID, messageID: session.turnID, completionID: completion.id, cwd: ctx.location.directory }
+      const path = await transcripts.prepare(stop, session, session.turnSignal)
+      const projected = (await readFile(path, 'utf8')).trim().split('\\n').map(JSON.parse)
+      await log({ phase: 'stop-snapshot', status: 'prepared', types: projected.map(row => row.type), rows: projected, last: projected.at(-1).message })
+      const receipt = await runtime.stop({ ...stop, data: { transcript_path: path, last_assistant_message: completion.content.filter(part => part.type === 'text').map(part => part.text).join('\\n'), background_tasks: [], session_crons: [] } })
+      await log({ phase: 'receipt', control: receipt.control, messageID: receipt.messageID })
+    })
+    return async () => { contexts.dispose(); await runtime.dispose() }
+  },
+}
+`)
+    await run(process.execPath,['--check',join(plugin,'index.js')],{timeout:STARTUP_MS,maxBuffer:MAX_BYTES})
+    await writeFile(join(config, 'opencode.json'), JSON.stringify({
+      model: 'fixture/fixture', update: 'disable', snapshots: false, share: 'disabled', warming: false, plugins: [{ package: plugin, options }],
+      providers: { fixture: { package: '@opencode/ai/providers/openai-compatible', settings: { apiKey: 'synthetic', baseURL: 'http://127.0.0.1:' + gateway.address().port + '/v1' }, models: { fixture: { name: 'Fixture', capabilities: { tools: false }, limit: { context: 50000, output: 2000 } } } } },
+    }))
+    host = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: project, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    hostDone = new Promise(resolve => host.once('close', resolve))
+    const diagnostics=[]
+    host.stderr.on('data',chunk=>{for(const line of String(chunk).split('\n'))for(const code of line.match(/\b(?:HOST|SESSION|SOURCE|PLUGIN)_[A-Z_]+\b/g)??[])diagnostics.push(code)})
+    const ready = new Promise((resolve, reject) => {
+      let output = ''
+      host.once('error', reject)
+      host.once('close', () => reject(new ProbeError('HOST_EXITED_BEFORE_READY')))
+      host.stdout.on('data', chunk => {
+        output = (output + chunk).slice(-MAX_BYTES)
+        const address = /http:\/\/127\.0\.0\.1:\d+/.exec(output)?.[0]
+        if (address) resolve(address)
+      })
+    })
+    const address = await bounded(ready, STARTUP_MS, 'HOST_STARTUP_TIMEOUT')
+    const running = run(binary, ['--server', address, 'run', '--format', 'json', '--model', 'fixture/fixture', 'Finish the V2 fixture'], { cwd: project, env, timeout: CLIENT_MS, maxBuffer: MAX_BYTES })
+    running.child.stdin.end()
+    const result = await running.catch(error => ({stdout:error.stdout??'',stderr:error.stderr??'',failure:error.code??'unknown'}))
+    const events = (await readFile(trace, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+    const primary = requests.filter(request => request.kind === 'primary')
+    let hooks=[];try{hooks=(await readFile(hookTrace,'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse)}catch{}
+    const snapshots=events.filter(row=>row.phase==='stop-snapshot')
+    const receipts=events.filter(row=>row.phase==='receipt')
+    check(!diagnostics.length,'HOST_OWNED_STOP_DIAGNOSTICS')
+    check(!result.failure && primary.length===2 && snapshots.length===2 && snapshots.every(row=>row.status==='prepared'),'HOST_OWNED_STOP_SNAPSHOT_FAILED')
+    check(receipts.length===2 && receipts[0].control==='continue' && receipts[1].control==='complete' && receipts[0].messageID===receipts[1].messageID,'HOST_OWNED_STOP_CONTROL_FAILED')
+    check(hooks.length===2 && hooks[0].stop_hook_active===false && hooks[1].stop_hook_active===true && hooks[0].prompt_id===hooks[1].prompt_id,'HOST_OWNED_STOP_PAYLOAD_FAILED')
+    check((await readFile(sourcePath)).equals(sourceSnapshot) && (await readFile(hookScript)).equals(scriptSnapshot),'FIXTURE_SOURCE_CHANGED')
+    check(hooks[0].last_assistant_message==='V2_FIRST_ANSWER' && hooks[1].last_assistant_message==='V2_SECOND_ANSWER','HOST_OWNED_STOP_ASSISTANT_FAILED')
+    const queued=events.find(row=>row.phase==='queued'), admitted=events.find(row=>row.phase==='admitted')
+    check(queued && !queued.readbackVisible && admitted?.readbackVisible && queued.id===admitted.id && admitted.at>=queued.at,'HOST_OWNED_STOP_READBACK_FAILED')
+    const second=snapshots[1].rows
+    check(second.filter(row=>row.type==='user' && !row.isMeta).length===1 && second.filter(row=>row.subtype==='stop_hook_summary').length===1 && !JSON.stringify(second).includes('V2_OWNED_TRANSPORT_MARKER'),'HOST_OWNED_STOP_HISTORY_FAILED')
+    const delivered = primary[1].messages.filter(row => row.role==='user' && Array.isArray(row.content) && row.content.some(part=>part.text?.startsWith('Stop hook feedback:')))
+    check(delivered.length===1,'HOST_OWNED_STOP_MODEL_ROLE_FAILED')
+    const owned=delivered[0].content.map(part=>part.text)
+    const expected=[
+      '<system-reminder>\nStop hook blocking error from command: "'+[process.execPath,hookScript].join(' ')+'": V2_STOP_FEEDBACK\n</system-reminder>',
+      '<system-reminder>\nStop hook additional context: V2_STOP_CONTEXT\n</system-reminder>\n',
+      'Stop hook feedback:\nV2_STOP_FEEDBACK',
+    ]
+    check(JSON.stringify(owned)===JSON.stringify(expected),'HOST_OWNED_STOP_MODEL_FAILED')
+    check(primary.every(row=>!row.privateHeaderPresent) && !JSON.stringify(primary).includes('V2_OWNED_TRANSPORT_MARKER'),'HOST_OWNED_STOP_TRANSPORT_FAILED')
+    check(events.filter(row=>row.phase==='prompt-observed').length===1,'HOST_OWNED_STOP_PROMPT_REPLAYED')
+    return {ownedStopHistory:true,ownedStopModelInput:true,originalTurnRetained:true,stopActiveTransition:true,unchangedCommandExecutedTwice:true,queuedReadbackPhaseVerified:true,foregroundFixture:true,mechanismOnly:true,defaultRootStop:false,equivalent:false}
+  } finally {
+    await stop(host, hostDone)
+    if (gateway?.listening) { gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)) }
+    await rm(root, { recursive: true, force: true })
+  }
+}
+
+try {
+  let parsed
+  try { parsed = parseArgs({ options: { binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  if (parsed.values.help) process.stdout.write(HELP)
+  else {
+    const binary = parsed.values.binary ?? process.env.OPENCODE_V2_BINARY ?? 'opencode'
+    if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
+    process.stdout.write(JSON.stringify(await verify(binary)) + '\n')
+  }
+} catch (error) {
+  const code = error instanceof ProbeError ? error.message : 'HOST_PROBE_FAILED'
+  process.stderr.write(code + '\n')
+  process.exitCode = error instanceof ProbeError ? error.status : 1
+}
