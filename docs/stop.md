@@ -28,6 +28,10 @@ Codex delivers both blocking paths as a user message wrapped in `hook_prompt`, w
 
 The fixture isolates HOME, configuration and project state, uses synthetic credentials and a loopback provider, bounds subprocesses and artifacts, and removes temporary state. Isolation does not remove machine-managed native settings. Claude Stop summaries report additional native handlers separately from the exact generated command. Unexpected aggregate effects still fail the controlled assertions. Codex's controlled fixture explicitly bypasses hook trust and can emit startup diagnostics for that bypass and the synthetic model; their item count is reported. These observations do not establish native trust, managed-policy or complete artifact parity.
 
+## Additional Claude output cases
+
+Claude Code 2.1.318 accepts a parsed `decision: "approve"` at Stop without turning it into an approval or continuation. Empty `additionalContext` does not continue the turn, while whitespace context remains significant. An empty or missing block reason continues with the native fallback `Blocked by hook`; a whitespace reason is preserved. Blocking stderr is preserved without trimming and uses `No stderr output` only when empty. The [focused interpreter cases](../test/protocol.test.ts) retain these observed Stop distinctions. Portable regeneration of these additional native cases and their complete artifact projection remain conformance work.
+
 ## Reproduction
 
 From a repository checkout with Node.js 22+, POSIX process groups and the selected pinned executable:

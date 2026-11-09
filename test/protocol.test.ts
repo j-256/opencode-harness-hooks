@@ -73,6 +73,22 @@ test('Stop continuation and continue:false retain dialect and event semantics', 
   assert.deepEqual(interpretOutput(reg('codex', 'PreCompact'), event('PreCompact'), result({ continue: false })).actions, [{ kind: 'stop-session', reason: '' }])
 })
 
+for (const row of [
+  { name: 'ignores parsed approval', output: { decision: 'approve', reason: 'Ignored' }, exit: 0, actions: [] },
+  { name: 'ignores empty additional context', output: specific('Stop', { additionalContext: '' }), exit: 0, actions: [] },
+  { name: 'defaults an empty block reason', output: { decision: 'block', reason: '' }, exit: 0, actions: [{ kind: 'continue-turn', text: 'Blocked by hook', mode: 'feedback' }] },
+  { name: 'defaults a missing block reason', output: { decision: 'block' }, exit: 0, actions: [{ kind: 'continue-turn', text: 'Blocked by hook', mode: 'feedback' }] },
+  { name: 'preserves a whitespace block reason', output: { decision: 'block', reason: '   ' }, exit: 0, actions: [{ kind: 'continue-turn', text: '   ', mode: 'feedback' }] },
+  { name: 'preserves whitespace additional context', output: specific('Stop', { additionalContext: '   ' }), exit: 0, actions: [{ kind: 'continue-turn', text: '   ', mode: 'feedback' }] },
+  { name: 'defaults empty blocking stderr', output: '', exit: 2, actions: [{ kind: 'continue-turn', text: 'No stderr output', mode: 'feedback' }] },
+  { name: 'preserves whitespace blocking stderr', output: '', exit: 2, stderr: '   ', actions: [{ kind: 'continue-turn', text: '   ', mode: 'feedback' }] },
+]) test(`Claude Stop native output ${row.name}`, async () => {
+  const { interpretOutput } = await import('../src/protocol.js')
+  const effect = interpretOutput(reg('claude-code', 'Stop'), event('Stop'), result(row.output, row.exit, 'stderr' in row ? row.stderr : ''))
+  assert.equal(effect.status, 'success')
+  assert.deepEqual(effect.actions, row.actions)
+})
+
 test('post-tool feedback does not retroactively deny an effect and differs by dialect', async () => {
   const { interpretOutput } = await import('../src/protocol.js')
   const output = { decision: 'block', reason: 'review result' }
