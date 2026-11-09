@@ -12,6 +12,12 @@ Pinned native command-hook captures establish that a transcript can be absent at
 
 An independent native Claude resume experiment reads projected text/tool histories from both pinned OpenCode hosts and includes their prompt, tool-call and earlier failure content in the resumed model request. This establishes acceptance by the exercised native reader. It does not prove byte identity, all transcript consumers, or unsupported content. The default-package probe separately proves that an actual native-contract hook can read the generated file before deciding whether to deny or rewrite a tool call. Portable regeneration of the independent native reader capture remains a conformance gate.
 
+## V2 completion snapshots
+
+The explicit core service can prepare a V2 `StopEvent` before its command hooks execute. The event identifies the original user message and the completed assistant message. Preparation validates the working directory, turn and final completion against native history, then includes the complete assistant response and earlier completed tool results without requiring a current tool call. Original tool arguments and observed model-date requirements remain enforced. Queued preparation captures the event identity before caller mutation, and a replacement user turn cancels the read even when the caller's own signal remains live.
+
+A core I/O fixture runs an unchanged command registration which reads the resulting Claude envelopes through its `transcript_path` payload and returns a Stop decision. This covers preparation before the initial Stop batch. Native Stop feedback, summary/attachment admission and owned synthetic-history projection remain required work; an unowned synthetic row fails validation. The default V2 Stop adapter remains gated, and this service rejects V1 Stop preparation under the accepted host exception. See [Stop coordination and native reference](stop.md).
+
 ## Admitted prompt attachments
 
 Successful foreground Claude command hooks can contribute native `hook_success`, `hook_system_message` and `hook_additional_context` records at `UserPromptSubmit`. They follow the original user record in hook completion order and precede its assistant response. Original user text remains unchanged. Stdout and warning records share the prompt event's hook identifier; additional-context records have independent `hook-` identifiers. Every attachment retains a stable identity across repeated snapshots. Duplicate registrations retain independent records and outputs under the bridge's no-deduplication contract.
