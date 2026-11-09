@@ -74,8 +74,10 @@ for (const host of ['v1', 'v2'] as const) test(`mixed startup runs unchanged dup
   assert.equal(admissions, 1)
   assert.deepEqual(JSON.parse(await readFile(projected, 'utf8')), ['claude:sessionstart-hook-0.sh', 'claude:sessionstart-hook-1.sh', 'codex'])
   const failures = JSON.parse(await readFile(rejected, 'utf8'))
-  assert.deepEqual(failures.map((failure: Record<string, unknown>) => Object.fromEntries(Object.entries(failure).filter(([key]) => key !== 'completedAt'))), [
-    { type: 'hook_non_blocking_error', command: 'Skipped', durationMs: 0, stdout: '', stderr: 'Failed to run: prompt-type hooks are not supported for SessionStart events (no conversation context is available). Use a command-type hook instead.', exitCode: 1 },
+  assert.ok(Number.isSafeInteger(failures[0].durationMs) && failures[0].durationMs >= 0)
+  assert.equal(Object.hasOwn(failures[1], 'durationMs'), false)
+  assert.deepEqual(failures.map((failure: Record<string, unknown>) => Object.fromEntries(Object.entries(failure).filter(([key]) => !['completedAt', 'durationMs'].includes(key)))), [
+    { type: 'hook_non_blocking_error', command: 'Skipped', stdout: '', stderr: 'Failed to run: prompt-type hooks are not supported for SessionStart events (no conversation context is available). Use a command-type hook instead.', exitCode: 1 },
     { type: 'hook_non_blocking_error', stdout: '', stderr: "mcp_tool hooks are not available for the 'SessionStart' hook event (no MCP client context)", exitCode: 1 },
   ])
   const calls = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line))

@@ -191,12 +191,14 @@ test('native startup rejections remain nonblocking artifacts and tool conditions
       assert.equal(result.code, 'NATIVE_HANDLER_EVENT_UNSUPPORTED')
       assert.deepEqual(result.actions, [])
       assert.ok(result.status === 'failed' && result.nativeFailureArtifact)
-      const { completedAt, ...artifact } = result.nativeFailureArtifact
+      const { completedAt, durationMs, ...artifact } = result.nativeFailureArtifact
       assert.ok(Number.isFinite(completedAt) && completedAt > 0)
+      if (type === 'mcp_tool') assert.equal(Object.hasOwn(result.nativeFailureArtifact, 'durationMs'), false)
+      else assert.ok(Number.isSafeInteger(durationMs) && durationMs! >= 0 && durationMs! <= result.diagnostic.durationMs)
       assert.deepEqual(artifact, {
         type: 'hook_non_blocking_error', stdout: '', exitCode: 1,
         stderr: type === 'mcp_tool' ? "mcp_tool hooks are not available for the 'SessionStart' hook event (no MCP client context)" : `Failed to run: ${type}-type hooks are not supported for SessionStart events (no conversation context is available). Use a command-type hook instead.`,
-        ...(type === 'mcp_tool' ? {} : { command: 'PRIVATE_PROMPT', durationMs: 0 }),
+        ...(type === 'mcp_tool' ? {} : { command: 'PRIVATE_PROMPT' }),
       })
       assert.equal(JSON.stringify(result.diagnostic).includes('PRIVATE_PROMPT'), false)
       const conditioned = await executeRegistration(registration('claude-code', { ...handler, if: 'Bash(*)' }, 'SessionStart'), input, host)

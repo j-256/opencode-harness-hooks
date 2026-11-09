@@ -53,11 +53,11 @@ function nativeSkipReason(registration: Registration, event: NativeEvent): strin
 
 export function nativeSkip(registration: Registration, event: NativeEvent): boolean { return nativeSkipReason(registration, event) !== undefined }
 
-function nativeStartRejection(registration: Registration, event: NativeEvent): NativeFailureArtifact | undefined {
+function nativeStartRejection(registration: Registration, event: NativeEvent, started: number): NativeFailureArtifact | undefined {
   if (registration.dialect !== 'claude-code' || event.event !== 'SessionStart' || registration.handler.if !== undefined) return undefined
   const type = registration.handler.type
   if ((type === 'prompt' || type === 'agent') && typeof registration.handler.prompt === 'string') return {
-    type: 'hook_non_blocking_error', completedAt: Date.now(), command: registration.handler.prompt, durationMs: 0, stdout: '',
+    type: 'hook_non_blocking_error', completedAt: Date.now(), command: registration.handler.prompt, durationMs: Math.round(performance.now() - started), stdout: '',
     stderr: `Failed to run: ${type}-type hooks are not supported for SessionStart events (no conversation context is available). Use a command-type hook instead.`, exitCode: 1,
   }
   const source = event.dialectData?.['claude-code']?.source ?? event.data?.source
@@ -73,7 +73,7 @@ export async function executeRegistration(registration: Registration, inputEvent
   if (registration.event !== inputEvent.event) return fail('HANDLER_EVENT_MISMATCH')
   const skipped = nativeSkipReason(registration, inputEvent)
   if (skipped) {
-    const artifact = nativeStartRejection(registration, event)
+    const artifact = nativeStartRejection(registration, event, started)
     if (artifact) {
       const rejected = result(registration, 'failed', 'NATIVE_HANDLER_EVENT_UNSUPPORTED', started)
       return { ...rejected, status: 'failed', nativeFailureArtifact: artifact, diagnostic: { ...rejected.diagnostic, outcome: 'failed' } }

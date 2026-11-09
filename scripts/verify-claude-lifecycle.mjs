@@ -7,12 +7,14 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, join } from 'node:path'
 import { parseArgs, promisify } from 'node:util'
 import { NativeProbeError as ProbeError, NATIVE_CLAUDE_LIMITS as LIMITS, runNativeClaude } from './lib/native-claude.mjs'
+import { nativeCheckError } from './lib/native-process.mjs'
 
 const VERSION = '2.1.318'
 const MODEL = 'claude-sonnet-4-6'
 const MAX_REQUESTS = 12
 const SLOW_HOOK_MS = 400
 const FAST_HOOK_MS = 20
+const HOOK_TIMEOUT_SECONDS = 10
 const FUNCTION_OUTPUT = 'NATIVE_LIFECYCLE_FUNCTION'
 const SOURCES = Object.freeze(['startup', 'resume'])
 const REJECTED_HANDLERS = Object.freeze([
@@ -109,12 +111,15 @@ function validate(source, events, rows, requests, shellRows, commands, resumeMod
   assert.equal(new Set(failures.map(row => row.attachment.toolUseID)).size, 1)
   for (const [index, handler] of REJECTED_HANDLERS.entries()) {
     const row = failures[index]
-    assert.deepEqual(row.attachment, {
+    const { durationMs, ...attachment } = row.attachment
+    assert.deepEqual(attachment, {
       type: 'hook_non_blocking_error', hookEvent: 'SessionStart', hookName: 'SessionStart:startup', toolUseID: failures[0].attachment.toolUseID,
       stdout: '', exitCode: 1,
       stderr: handler.type === 'mcp_tool' ? "mcp_tool hooks are not available for the 'SessionStart' hook event (no MCP client context)" : `Failed to run: ${handler.type}-type hooks are not supported for SessionStart events (no conversation context is available). Use a command-type hook instead.`,
-      ...(handler.type === 'mcp_tool' ? {} : { command: handler.prompt, durationMs: 0 }),
+      ...(handler.type === 'mcp_tool' ? {} : { command: handler.prompt }),
     })
+    if (handler.type === 'mcp_tool') assert.equal(Object.hasOwn(row.attachment, 'durationMs'), false)
+    else assert.ok(Number.isSafeInteger(durationMs) && durationMs >= 0)
     assert.equal(Object.hasOwn(row, 'rendered'), false)
     assert.equal(Object.hasOwn(row, 'renderedRole'), false)
     for (const request of model) for (const part of textParts(request.messages)) {
@@ -165,7 +170,7 @@ async function verify(binary, resumeMode, selectionMode) {
     await writeFile(hook, `const fs=require('node:fs');const input=JSON.parse(fs.readFileSync(0,'utf8'));const mode=process.argv[2];const source=process.env.PROBE_SOURCE;const log=phase=>fs.appendFileSync(process.env.PROBE_TRACE,JSON.stringify({source,phase,mode,input,time:Date.now(),envFile:process.env.CLAUDE_ENV_FILE,envExists:!!process.env.CLAUDE_ENV_FILE&&fs.existsSync(process.env.CLAUDE_ENV_FILE),transcriptExists:fs.existsSync(input.transcript_path),variables:{a:process.env.SESSION_A,b:process.env.SESSION_B,shared:process.env.SESSION_SHARED,tick:process.env.SESSION_TICK}})+'\\n');log('start');if(input.hook_event_name==='SessionStart'){fs.writeFileSync(process.env.PROBE_BARRIER+'-'+mode,'ready');const timer=setInterval(()=>{if(JSON.parse(process.env.PROBE_PARTICIPANTS).some(peer=>!fs.existsSync(process.env.PROBE_BARRIER+'-'+peer)))return;clearInterval(timer);setTimeout(()=>{fs.appendFileSync(process.env.CLAUDE_ENV_FILE,mode==='a'?${JSON.stringify(envA)}+'export SESSION_GENERATION='+source+'\\n':${JSON.stringify(envB)});log('end');console.log('NATIVE_LIFECYCLE_'+source+'_CONTEXT_'+mode)},mode==='a'?${SLOW_HOOK_MS}:${FAST_HOOK_MS})},10)}else{if(input.hook_event_name==='UserPromptSubmit'||input.hook_event_name==='PreToolUse'&&input.tool_use_id.endsWith('-1')){const records=fs.readFileSync(process.env.PROBE_TRACE,'utf8').trim().split('\\n').map(JSON.parse);const owned=records.find(row=>row.source===source&&row.mode==='a'&&row.input.hook_event_name==='SessionStart');fs.appendFileSync(owned.envFile,'export SESSION_DYNAMIC='+(input.hook_event_name==='UserPromptSubmit'?'from-prompt':'from-pretool')+'\\n')}if(input.hook_event_name==='PreToolUse')fs.writeFileSync(process.env.PROBE_CAPTURE,fs.readFileSync(input.transcript_path));log('end')}`)
     await writeFile(shellProbe, `const fs=require('node:fs');const id=process.argv[2];fs.appendFileSync(process.env.PROBE_SHELL_TRACE,JSON.stringify({id,variables:{a:process.env.SESSION_A,b:process.env.SESSION_B,shared:process.env.SESSION_SHARED,tick:process.env.SESSION_TICK,dynamic:process.env.SESSION_DYNAMIC,generation:process.env.SESSION_GENERATION}})+'\\n');if(id.endsWith('-1')){const source=id.split('-')[1];const entry=fs.readFileSync(process.env.PROBE_TRACE,'utf8').trim().split('\\n').map(JSON.parse).find(row=>row.source===source&&row.mode==='a'&&row.input.hook_event_name==='SessionStart');fs.appendFileSync(entry.envFile,'export SESSION_DYNAMIC=updated\\n')}`)
     await Promise.all([hook, shellProbe].map(path => run(process.execPath, ['--check', path], { timeout: LIMITS.durationMs, maxBuffer: LIMITS.maxBytes })))
-    const handler = mode => ({ type: 'command', command: process.execPath, args: [hook, mode], timeout: 3 })
+    const handler = mode => ({ type: 'command', command: process.execPath, args: [hook, mode], timeout: HOOK_TIMEOUT_SECONDS })
     const settings = join(root, 'settings.json'), mcp = join(root, 'mcp.json')
     const inactiveHttp = { type: 'http', url: '' }
     const nonexecuting = [inactiveHttp, ...REJECTED_HANDLERS, ...REJECTED_HANDLERS.map(hook => ({ ...hook, if: 'Bash(*)' })), { ...handler('conditional'), if: 'Bash(*)' }]
@@ -228,7 +233,7 @@ async function verify(binary, resumeMode, selectionMode) {
     assert.equal(results[0].directory === results[1].directory, resumeMode === 'id')
     assert.deepEqual(results[0].failures, results[1].failures)
     return { claude: VERSION, mode: 'headless', sources: SOURCES, resumeMode, selectionMode, nativeConcurrentStartup: SELECTIONS[selectionMode].startup.length > 1, nativeConcurrentResume: SELECTIONS[selectionMode].resume.length > 1, completionOrderedContext: true, configuredEnvironmentOrder: true, perHandlerEnvironmentFiles: true, nonexecutingHandlersExcludedFromOrdinals: true, inactiveHttpNotInvoked: true, startupRejectionsRecorded: true, startupRejectionsNonblocking: true, repeatedStartupFailuresNotReattachedOnResume: true, nativeConditionSkipsUnrecorded: true, freshResumeEnvironmentNamespace: resumeMode === 'path', resumeEnvironmentGeneration: resumeMode === 'id' ? 'current-activation' : 'prior-activation', resumeEnvironmentFilesAppended: resumeMode === 'id', retainedFilesReplayedOnShorterSelection: resumeMode === 'id' && selectionMode === 'fewer', hookEnvironmentIsolated: true, firstPromptAndModelWait: true, shellFunctionsAndRepeatedCommands: true, shellCodeReplayedPerCommand: true, startupPreToolEnvironmentEditsApplied: true, laterEnvironmentEditsNotRefreshed: true, nativeTranscriptAndContext: true, bridgeLifecycleComparison: 'not-implemented', equivalent: false }
-  } catch (error) { if (error instanceof ProbeError) throw error; throw new ProbeError('LIFECYCLE_CHECK_FAILED: ' + stage) } finally {
+  } catch (error) { throw nativeCheckError('LIFECYCLE_CHECK_FAILED', stage, error, import.meta.url) } finally {
     if (gateway) { gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)) }
     await rm(root, { recursive: true, force: true })
   }
