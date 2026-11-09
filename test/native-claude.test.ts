@@ -28,6 +28,44 @@ test('the shared native process runner preserves opaque JSONL without imposing a
   assert.ok(Number.isFinite(result.completedAt) && result.completedAt > 0)
 })
 
+test('native Claude conversations send a new real prompt only after the preceding successful result', async () => {
+  const { runNativeConversation } = await import(processURL.href)
+  const program = `const readline=require('node:readline');let count=0;readline.createInterface({input:process.stdin}).on('line',line=>{const row=JSON.parse(line);count++;console.log(JSON.stringify({type:'observed',row,count}));const bytes=Buffer.from(JSON.stringify({type:'result',is_error:false,result:'雪',ordinal:count})+'\\n');process.stdout.write(bytes.subarray(0,bytes.indexOf(0xe9)+1));setTimeout(()=>process.stdout.write(bytes.subarray(bytes.indexOf(0xe9)+1)),20)})`
+  const result = await runNativeConversation(node, ['-e', program], ['Original', 'Next'], tmpdir(), environment)
+  const rows = result.stdout.trim().split('\n').map((line: string) => JSON.parse(line))
+  assert.deepEqual(rows.map((row: any) => row.type), ['observed', 'result', 'observed', 'result'])
+  assert.deepEqual(rows.filter((row: any) => row.type === 'observed').map((row: any) => row.row), ['Original', 'Next'].map(content => ({ type: 'user', message: { role: 'user', content }, parent_tool_use_id: null, session_id: '' })))
+  assert.ok(rows.filter((row: any) => row.type === 'result').every((row: any) => row.result === '雪'))
+  assert.ok(Number.isFinite(result.completedAt))
+})
+
+test('native conversation failures do not admit a later prompt or disclose private child content', async () => {
+  const { runNativeConversation } = await import(processURL.href)
+  const input = 'process.stdin.once("data",()=>{'
+  for (const [program, message] of [
+    [input + 'console.log("PRIVATE_OUTPUT");process.exit(0)})', 'NATIVE_RESULT_INVALID'],
+    [input + 'console.log(JSON.stringify({type:"result",is_error:true,result:"PRIVATE_OUTPUT"}));process.exit(0)})', 'NATIVE_RESULT_INVALID'],
+    [input + 'process.exit(0)})', 'NATIVE_RESULT_INVALID'],
+    [input + 'console.log(JSON.stringify({type:"result",is_error:false}));console.log(JSON.stringify({type:"result",is_error:false}))})', 'NATIVE_RESULT_INVALID'],
+  ]) {
+    await assert.rejects(runNativeConversation(node, ['-e', program], ['Original'], tmpdir(), environment), (error: unknown) => {
+      assert.ok(error instanceof Error)
+      assert.equal(error.message, message)
+      assert.ok(!error.stack?.includes('PRIVATE_OUTPUT'))
+      return true
+    })
+  }
+  await assert.rejects(runNativeConversation(node, ['-e', 'setInterval(()=>{},1000)'], ['Original'], tmpdir(), environment, { durationMs: 50, graceMs: 10, maxBytes: 128 }), { message: 'NATIVE_TIMEOUT' })
+  await assert.rejects(runNativeConversation(node, ['-e', 'console.log("x".repeat(4096));setInterval(()=>{},1000)'], ['Original'], tmpdir(), environment, { durationMs: 1000, graceMs: 10, maxBytes: 128 }), { message: 'NATIVE_OUTPUT_LIMIT' })
+})
+
+test('native conversation input validation bounds queued prompts before spawning a child', async () => {
+  const { runNativeConversation } = await import(processURL.href)
+  for (const prompts of [[], Array(1), [''], [1], ['one', 'two', 'three', 'four', 'five'], ['x'.repeat(129)]]) {
+    await assert.rejects(runNativeConversation('/missing/native-fixture', [], prompts, tmpdir(), environment, { durationMs: 1000, graceMs: 10, maxBytes: 128 }), { message: 'NATIVE_INPUT_INVALID' })
+  }
+})
+
 test('shared native process startup and exit failures do not disclose subprocess diagnostics', async () => {
   const { runNativeProcess } = await import(processURL.href)
   await assert.rejects(runNativeProcess('/missing/native-fixture', [], '', tmpdir(), environment), { message: 'NATIVE_START_FAILED' })

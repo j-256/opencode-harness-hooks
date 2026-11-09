@@ -58,6 +58,12 @@ The `--aggregation` fixture regenerates [command aggregation observations](../te
 
 The core preserves these continuation orders. With mixed sources, Claude continuations occupy Claude's configured positions in completion order, and Codex positions remain fixed. Any stop request suppresses all continuation delivery while retaining the attributed dispatch for artifact admission. The earliest configured stop request selects which dialect supplies the reason: Claude uses its last completed stop request, and Codex uses its first configured request as an explicit bridge rule. The Codex rule does not claim independently observed native reason selection. These combination rules apply to Stop; they do not infer SubagentStop behavior.
 
+## Retained output at the next real prompt
+
+The Claude `--history` fixture exercises one running stream-JSON process with separate real user turns. Prevention alone, prevention with blocking feedback or additional context, and a following prompt hook retain their native Stop artifacts without requesting an extra model response. The following request merges retained Stop content into the next real user message. Stop reminders precede that prompt's hook reminder, followed by retained feedback and the original prompt. The [running-session oracle](../test/fixtures/claude-stop-history-oracle.json) preserves exact owned roles, text blocks, ordering and significant newlines; unrelated native environment blocks are outside that owned-content comparison. Corresponding executed-command displays are its only owned-text substitution.
+
+A transcript-resume reader can insert a `No response requested.` assistant placeholder after retained Stop feedback. The running-session fixture explicitly rejects that placeholder. Resume-reader acceptance therefore does not establish active-session model delivery. Default-root historical insertion without an owned continuation remains required, including integration with later prompt-hook output and cancellation/reload recovery.
+
 ## Reproduction
 
 From a repository checkout with Node.js 22+, POSIX process groups and the selected pinned executable:
@@ -68,12 +74,13 @@ npm run test:native:stop -- --dialect codex --binary /path/to/codex
 npm run test:native:stop -- --aggregation --dialect claude-code --binary /path/to/claude
 npm run test:native:stop -- --aggregation --dialect codex --binary /path/to/codex
 npm run test:native:stop -- --outputs --binary /path/to/claude
+npm run test:native:stop -- --history --binary /path/to/claude
 npm run build
 npm run test:host:v2:stop -- --binary /path/to/v2/opencode
 npm run test:host:v2:stop -- --default-root --binary /path/to/v2/opencode
 ```
 
-The command supports `-h`/`--help`, `-d`/`--dialect`, `-b`/`--binary`, `--aggregation`, `--outputs`, `CLAUDE_BINARY` and `CODEX_BINARY`. The dialect defaults to `claude-code`. Output characterization requires Claude and cannot combine with aggregation. Generated command scripts pass a syntax check before native execution, and output-characterization waits enforce the timing deadline used by the assertions. The probe requires no package build, model account, installation or live configuration change. Metadata-only JSON goes to stdout; diagnostics go to stderr without commands, outputs, native payloads or local paths. Exit statuses are zero for passing native checks, one for runtime/check failures, two for usage/version/platform preconditions and three for a missing executable.
+The command supports `-h`/`--help`, `-d`/`--dialect`, `-b`/`--binary`, `--aggregation`, `--outputs`, `--history`, `CLAUDE_BINARY` and `CODEX_BINARY`. The dialect defaults to `claude-code`. Output characterization and running-session history require Claude; fixture selectors cannot combine. Generated command scripts pass a syntax check before native execution, and output-characterization waits enforce the timing deadline used by the assertions. The probe requires no package build, model account, installation or live configuration change. Metadata-only JSON goes to stdout; diagnostics go to stderr without commands, outputs, native payloads or local paths. Exit statuses are zero for passing native checks, one for runtime/check failures, two for usage/version/platform preconditions and three for a missing executable.
 
 The native reference result retains `bridgeStopComparison: "not-implemented"` and `equivalent: false`. Complete V2 cancellation, repeated decisions, background work, subagent completion, remaining handler families and the private migration comparison remain required gates. The V1 exception does not waive these V2 requirements.
 

@@ -1,0 +1,45 @@
+{
+  "version": "2.1.318",
+  "scope": "one running stream-json process with two real prompts",
+  "cases": [
+    {
+      "name": "prevent-only",
+      "output": { "continue": false, "stopReason": "LATER_PREVENT" },
+      "nextUser": [
+        "<system-reminder>\nStop hook stopped continuation: LATER_PREVENT\n</system-reminder>",
+        "LATER_NEXT_PROMPT"
+      ]
+    },
+    {
+      "name": "prevent-block",
+      "output": { "continue": false, "stopReason": "LATER_PREVENT", "decision": "block", "reason": "LATER_FEEDBACK" },
+      "nextUser": [
+        "<system-reminder>\nStop hook stopped continuation: LATER_PREVENT\n</system-reminder>",
+        "<system-reminder>\nStop hook blocking error from command: \"FIXTURE_COMMAND\": LATER_FEEDBACK\n</system-reminder>",
+        "Stop hook feedback:\nLATER_FEEDBACK\n",
+        "LATER_NEXT_PROMPT"
+      ]
+    },
+    {
+      "name": "prevent-context",
+      "output": { "continue": false, "stopReason": "LATER_PREVENT", "hookSpecificOutput": { "hookEventName": "Stop", "additionalContext": "LATER_CONTEXT" } },
+      "nextUser": [
+        "<system-reminder>\nStop hook stopped continuation: LATER_PREVENT\n</system-reminder>",
+        "<system-reminder>\nStop hook additional context: LATER_CONTEXT\n</system-reminder>",
+        "LATER_NEXT_PROMPT"
+      ]
+    },
+    {
+      "name": "prevent-block-prompt-context",
+      "output": { "continue": false, "stopReason": "LATER_PREVENT", "decision": "block", "reason": "LATER_FEEDBACK" },
+      "promptContext": "LATER_PROMPT_CONTEXT",
+      "nextUser": [
+        "<system-reminder>\nStop hook stopped continuation: LATER_PREVENT\n</system-reminder>",
+        "<system-reminder>\nStop hook blocking error from command: \"FIXTURE_COMMAND\": LATER_FEEDBACK\n</system-reminder>",
+        "<system-reminder>\nUserPromptSubmit hook additional context: LATER_PROMPT_CONTEXT\n</system-reminder>\n",
+        "Stop hook feedback:\nLATER_FEEDBACK\n",
+        "LATER_NEXT_PROMPT"
+      ]
+    }
+  ]
+}
