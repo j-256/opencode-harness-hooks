@@ -4,6 +4,7 @@ import type { HookAction } from './effect-types.js'
 import { HostHookError } from './hosts/tools.js'
 import { runService } from './service-execution.js'
 import type { SessionSnapshot } from './sessions.js'
+import type { StopModelBlocks } from './stop-records.js'
 
 export const PROMPT_REQUEST_HEADER = 'x-opencode-harness-hooks-request'
 const MAX_ENTRIES = 10000
@@ -16,7 +17,8 @@ type Context = AttributedAction<Extract<HookAction, { kind: 'context' }>>
 export type PromptProtocol = 'openai' | 'anthropic'
 export interface PromptLayout { readonly id: string; readonly text: readonly string[] }
 export interface PromptContinuationReservation { readonly admit: () => void; readonly release: () => void }
-interface Entry { readonly kind: 'prompt' | 'continuation'; readonly turnID: string; readonly turnSignal: AbortSignal; readonly text: readonly string[]; readonly contexts: readonly Context[]; readonly projection?: readonly string[]; readonly bytes: number }
+export interface PromptStopHistory extends StopModelBlocks { readonly completionID: string; readonly assistantText: readonly string[] }
+interface Entry { readonly kind: 'prompt' | 'continuation'; readonly turnID: string; readonly turnSignal: AbortSignal; readonly text: readonly string[]; readonly contexts: readonly Context[]; readonly projection?: readonly string[]; readonly history?: PromptStopHistory; readonly bytes: number }
 interface Layout { readonly turnID: string; readonly turnSignal: AbortSignal; readonly rows: readonly PromptLayout[] }
 interface State { readonly signal: AbortSignal; readonly entries: Map<string, Entry>; readonly reservations: Map<string, Entry>; readonly cleanup: () => void; requests: AbortController; layout?: Layout }
 interface Ticket { readonly sessionID: string; readonly turnID: string; readonly sessionSignal: AbortSignal; readonly turnSignal: AbortSignal; readonly signal: AbortSignal; readonly protocol: PromptProtocol; readonly entries: readonly Entry[]; readonly hashes: Map<string, string> }
@@ -67,6 +69,23 @@ export class PromptContexts {
 
   rememberContinuation(session: SessionSnapshot, messageID: string, text: readonly string[], projection?: readonly string[]): void {
     this.retain(session, messageID, text, [], 'continuation', projection)
+  }
+
+  rememberHistory(session: SessionSnapshot, input: PromptStopHistory): void {
+    session = { ...session }
+    if (this.lifetime.signal.aborted || session.signal.aborted || session.turnSignal.aborted) fail('HOST_PROMPT_CANCELLED')
+    const state = this.sessions.get(session.sessionID), entry = session.turnID ? state?.entries.get(session.turnID) : undefined
+    const strings = (value: unknown): value is readonly string[] => Array.isArray(value) && [...value].every(text => typeof text === 'string')
+    if (!state || state.signal !== session.signal || !entry || entry.kind !== 'prompt' || entry.turnSignal !== session.turnSignal || entry.history || !record(input) || typeof input.completionID !== 'string' || !input.completionID || input.completionID.includes('\0') || Buffer.byteLength(input.completionID) > MAX_ID_BYTES || state.entries.has(input.completionID) || [...state.entries.values()].some(row => row.history?.completionID === input.completionID) || !strings(input.assistantText) || !input.assistantText.length || !strings(input.reminders) || !strings(input.feedback) || !input.reminders.length && !input.feedback.length) fail('HOST_PROMPT_HISTORY_UNAVAILABLE')
+    const history = Object.freeze({ completionID: input.completionID, assistantText: Object.freeze([...input.assistantText]), reminders: Object.freeze([...input.reminders]), feedback: Object.freeze([...input.feedback]) })
+    const bytes = Buffer.byteLength(JSON.stringify(history))
+    if (this.bytes + bytes > MAX_BYTES) fail('HOST_PROMPT_CONTEXT_LIMIT')
+    this.invalidate(state)
+    if (session.signal.aborted || session.turnSignal.aborted || this.lifetime.signal.aborted) fail('HOST_PROMPT_CANCELLED')
+    if (this.sessions.get(session.sessionID) !== state || state.entries.get(session.turnID!) !== entry) fail('HOST_PROMPT_HISTORY_UNAVAILABLE')
+    if (this.bytes + bytes > MAX_BYTES) fail('HOST_PROMPT_CONTEXT_LIMIT')
+    state.entries.set(session.turnID!, { ...entry, history, bytes: entry.bytes + bytes })
+    this.bytes += bytes
   }
 
   reserveContinuation(session: SessionSnapshot, messageID: string, text: readonly string[], projection: readonly string[]): PromptContinuationReservation {
@@ -169,9 +188,10 @@ export class PromptContexts {
     if (state?.reservations.size) fail('HOST_PROMPT_ADMISSION_PENDING')
     if (!state || !session.turnID || !this.ownsCurrentMessage(session, input.at(-1)?.id ?? '') || input.length !== state.entries.size) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
     const seen = new Set<string>()
-    for (const row of input) {
+    const expected = [...state.entries.keys()]
+    for (const [index, row] of input.entries()) {
       const entry = state.entries.get(row.id)
-      if (!entry || seen.has(row.id) || !same(entry.text, row.text)) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
+      if (!entry || seen.has(row.id) || expected[index] !== row.id || !same(entry.text, row.text)) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
       seen.add(row.id)
     }
     state.layout = Object.freeze({ turnID: session.turnID, turnSignal: session.turnSignal, rows: Object.freeze(input.map(row => Object.freeze({ id: row.id, text: Object.freeze([...row.text]) }))) })
@@ -182,7 +202,7 @@ export class PromptContexts {
     if (state?.reservations.size) fail('HOST_PROMPT_ADMISSION_PENDING')
     if (!state || state.signal !== session.signal || !state.layout || !session.turnID || state.layout.turnID !== session.turnID || state.layout.turnSignal !== session.turnSignal || session.signal.aborted || session.turnSignal.aborted || this.lifetime.signal.aborted) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
     const entries = state.layout.rows.map(row => state.entries.get(row.id)!)
-    if (!entries.some(entry => entry.contexts.length || entry.projection)) return undefined
+    if (!entries.some(entry => entry.contexts.length || entry.projection || entry.history)) return undefined
     if (this.tickets.size >= MAX_TICKETS) fail('HOST_PROMPT_REQUEST_LIMIT')
     const id = randomUUID()
     const signal = AbortSignal.any([session.signal, session.turnSignal, this.lifetime.signal, state.requests.signal])
@@ -216,7 +236,7 @@ export class PromptContexts {
       const partType = responses ? 'input_text' : 'text'
       const result: unknown[] = []
       let index = 0
-      for (const raw of source) {
+      for (const [position, raw] of source.entries()) {
         if (!record(raw)) fail('HOST_PROMPT_REQUEST_UNAVAILABLE')
         if (raw.role !== 'user') { result.push(raw); continue }
         const content = typeof raw.content === 'string' ? [{ type: partType, text: raw.content }] : raw.content
@@ -230,7 +250,17 @@ export class PromptContexts {
           continue
         }
         const claude = entry.contexts.filter(row => row.dialect === 'claude-code').sort((a, b) => a.completionOrder - b.completionOrder).map(row => ({ type: partType, text: `<system-reminder>\nUserPromptSubmit hook ${row.action.channel === 'stdout' ? 'success' : 'additional context'}: ${row.action.text}\n</system-reminder>` }))
-        result.push(claude.length ? { ...raw, content: [...claude, ...content] } : raw)
+        const history = entry.history
+        if (history) {
+          const previous = source[position - 1]
+          if (!record(previous) || previous.role !== 'assistant' || previous.function_call != null || previous.tool_calls !== undefined && (!Array.isArray(previous.tool_calls) || previous.tool_calls.length)) fail('HOST_PROMPT_HISTORY_UNAVAILABLE')
+          const parts = typeof previous.content === 'string' ? [{ type: 'text', text: previous.content }] : previous.content
+          if (!Array.isArray(parts) || !parts.every(part => record(part) && ['text', 'output_text'].includes(String(part.type)) && typeof part.text === 'string') || !same(parts.map(part => part.text), history.assistantText)) fail('HOST_PROMPT_HISTORY_UNAVAILABLE')
+          const reminders = history.reminders.map(text => ({ type: partType, text }))
+          const current = claude.map((part, index) => ({ ...part, text: part.text + (history.feedback.length && index === claude.length - 1 ? '\n' : '') }))
+          const feedback = history.feedback.map(text => ({ type: partType, text: text + '\n' }))
+          result.push({ ...raw, content: [...reminders, ...current, ...feedback, ...content] })
+        } else result.push(claude.length ? { ...raw, content: [...claude, ...content] } : raw)
         for (const row of entry.contexts) {
           if (row.dialect !== 'codex') continue
           if (ticket.protocol === 'anthropic') fail('HOST_PROMPT_ROLE_UNAVAILABLE')

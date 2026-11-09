@@ -17,6 +17,7 @@ import { ModelContext } from './model-context.js'
 import type { HostModelEvent } from './model-types.js'
 import type { StopDelivery, StopEvent } from './stop.js'
 import { StopRecords } from './stop-records.js'
+import type { StopModelBlocks } from './stop-records.js'
 
 const HISTORY_MS = 5000
 const MAX_MESSAGES = 10000
@@ -39,6 +40,7 @@ export interface TranscriptService {
   observeModel?(event: HostModelEvent, session: SessionSnapshot): void
   admitPrompt?(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void
   admitStop?(delivery: StopDelivery): readonly string[]
+  stopModelInput?(delivery: StopDelivery): StopModelBlocks
   admitContinuation?(delivery: StopDelivery, readback: unknown): void
   reserveContinuation?(delivery: StopDelivery, input: unknown): TranscriptContinuationReservation
   observe(event: HostToolEvent, session: SessionSnapshot): void
@@ -173,6 +175,11 @@ export class ClaudeTranscript implements TranscriptService {
   admitStop(delivery: StopDelivery): readonly string[] {
     this.stopHost(delivery)
     return this.stops.admit(delivery)
+  }
+
+  stopModelInput(delivery: StopDelivery): StopModelBlocks {
+    this.stopHost(delivery)
+    return this.stops.modelInput(delivery)
   }
 
   admitContinuation(delivery: StopDelivery, readback: unknown): void {

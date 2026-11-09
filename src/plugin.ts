@@ -263,7 +263,7 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
     }
     handles.add(await register('prompt', async event => {
       runtime.sessions.prompt(event.sessionID, event.messageID)
-      stopBridge?.guard(runtime.sessions.get(event.sessionID))
+      stopBridge?.guard(runtime.sessions.get(event.sessionID), false)
       if (!transport) return
       const session = runtime.sessions.get(event.sessionID)
       if (!context.session.get || !event.prompt || ['files', 'agents', 'skills'].some(key => event.prompt![key as 'files']?.length)) unavailable('HOST_PROMPT_INPUT_UNAVAILABLE')
@@ -275,7 +275,7 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
     }))
     handles.add(await register('context', async event => {
       const session = runtime.sessions.get(event.sessionID)
-      await stopBridge?.context(session)
+      await stopBridge?.context(session, event.messages)
       if (runtime.needsModelArtifacts) modelOwners.delete(event.sessionID)
       if (transport) contexts.layout(session, layout('v2', event.messages))
       if (runtime.needsModelArtifacts) {

@@ -37,6 +37,7 @@ type Continuation = { readonly completionID: string; readonly turnID: string } &
 )
 interface State { readonly signal: AbortSignal; readonly completions: Map<string, Completion>; readonly continuations: Map<string, Continuation>; readonly cleanup: () => void }
 export interface StopContinuationReservation { readonly admit: (readback: JsonValue) => void; readonly release: () => void }
+export interface StopModelBlocks { readonly reminders: readonly string[]; readonly feedback: readonly string[] }
 interface ContinuationOwner { readonly event: Pick<StopEvent, 'event' | 'sessionID' | 'messageID' | 'completionID'>; readonly session: SessionSnapshot; readonly signal: AbortSignal }
 function fail(code: string): never { throw new HostHookError(code, code === 'TRANSCRIPT_CANCELLED' ? 'cancelled' : 'unsupported') }
 function record(value: unknown): value is Readonly<Record<string, JsonValue>> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
@@ -137,7 +138,7 @@ function compile({ event, dispatch }: StopDelivery): readonly StopRecord[] {
   return freeze(records)
 }
 
-function model(records: readonly StopRecord[]): readonly string[] {
+function modelBlocks(records: readonly StopRecord[]): StopModelBlocks {
   const reminders: string[] = []
   const feedback: string[] = []
   for (const { body } of records) {
@@ -153,6 +154,11 @@ function model(records: readonly StopRecord[]): readonly string[] {
       feedback.push(message.content)
     }
   }
+  return Object.freeze({ reminders: Object.freeze(reminders), feedback: Object.freeze(feedback) })
+}
+
+function model(records: readonly StopRecord[]): readonly string[] {
+  const { reminders, feedback } = modelBlocks(records)
   return Object.freeze([
     ...reminders.map((text, index) => text + (index === reminders.length - 1 && feedback.length ? '\n' : '')),
     ...feedback.map((text, index) => text + (index < feedback.length - 1 ? '\n' : '')),
@@ -216,6 +222,10 @@ export class StopRecords {
     completion.continuationID = row.id
     completion.bytes += bytes
     this.bytes += bytes
+  }
+
+  modelInput(delivery: StopDelivery): StopModelBlocks {
+    return modelBlocks(this.admittedOwner(delivery, 'TRANSCRIPT_STOP_MODEL_UNAVAILABLE').completion.records!)
   }
 
   reserveContinuation(delivery: StopDelivery, input: JsonValue): StopContinuationReservation {
@@ -284,10 +294,16 @@ export class StopRecords {
   inspect() { return Object.freeze({ stopSessions: this.states.size, stopCompletions: this.completions, stopRecords: this.records, stopBytes: this.bytes }) }
 
   private continuationOwner({ event, session, signal }: ContinuationOwner): { readonly state: State; readonly completion: Completion } {
+    const owned = this.admittedOwner({ event, session, signal }, 'TRANSCRIPT_STOP_CONTINUATION_UNAVAILABLE')
+    if (!owned.completion.continuable) fail('TRANSCRIPT_STOP_CONTINUATION_UNAVAILABLE')
+    return owned
+  }
+
+  private admittedOwner({ event, session, signal }: ContinuationOwner, code: string): { readonly state: State; readonly completion: Completion } {
     if (this.disposed || signal.aborted || session.signal.aborted || session.turnSignal.aborted) fail('TRANSCRIPT_CANCELLED')
     const state = this.states.get(event.sessionID)
     const completion = state?.completions.get(event.completionID)
-    if (event.event !== 'Stop' || !state || state.signal !== session.signal || event.sessionID !== session.sessionID || event.messageID !== session.turnID || !completion || completion.turnID !== event.messageID || completion.turnSignal !== session.turnSignal || !completion.records || !completion.continuable) fail('TRANSCRIPT_STOP_CONTINUATION_UNAVAILABLE')
+    if (event.event !== 'Stop' || !state || state.signal !== session.signal || event.sessionID !== session.sessionID || event.messageID !== session.turnID || !completion || completion.turnID !== event.messageID || completion.turnSignal !== session.turnSignal || !completion.records) fail(code)
     return { state, completion }
   }
 

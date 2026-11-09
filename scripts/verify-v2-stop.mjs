@@ -18,7 +18,7 @@ const TRANSPORT = new URL('../dist/prompt-contexts.js', import.meta.url).href
 const PACKAGE_DIRECTORY = fileURLToPath(new URL('..', import.meta.url))
 const MAX_BYTES = 2 * 1024 * 1024
 const run = promisify(execFile)
-const HELP = `Usage: node scripts/verify-v2-stop.mjs [-b PATH] [--default-root]
+const HELP = `Usage: node scripts/verify-v2-stop.mjs [-b PATH] [--default-root [--history]]
 
 Verify the explicit core Stop service against OpenCode ${PINNED_VERSION} using an
 unchanged Claude command, owned synthetic history and exact model text blocks.
@@ -30,6 +30,7 @@ Uses isolated HOME/config/state and a loopback provider; live settings stay inta
 Options:
   -b, --binary PATH  OpenCode executable (OPENCODE_V2_BINARY, then opencode)
       --default-root  Load the actual package with an independent observer plugin
+      --history       Compare retained output at later real prompts (default root)
   -h, --help         Show help without dependencies or a package build
 
 Requires Node.js 22+, POSIX, Git, npm run build and the pinned host executable.
@@ -65,7 +66,7 @@ async function dependency(program, args, name) {
   }
 }
 
-async function verify(binary, defaultRoot) {
+async function verify(binary, defaultRoot, historical) {
   if (process.platform === 'win32' || Number(process.versions.node.split('.')[0]) < 22) throw new ProbeError('PLATFORM_UNAVAILABLE: Node.js 22+ and POSIX required', 2)
   const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
   if (version !== PINNED_VERSION) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + PINNED_VERSION, 2)
@@ -100,7 +101,7 @@ async function verify(binary, defaultRoot) {
         }
         if (requests.length >= MAX_REQUESTS) { res.writeHead(429); res.end(); return }
         const body = JSON.parse(Buffer.concat(chunks).toString())
-        const continued = JSON.stringify(body.messages).includes('V2_STOP_FEEDBACK')
+        const continued = JSON.stringify(body.messages).includes(historical ? 'LATER_NEXT_PROMPT' : 'V2_STOP_FEEDBACK')
         requests.push({ at: Date.now(), kind: String(req.headers['x-harness-request-kind'] ?? ''), continued, privateHeaderPresent: Object.hasOwn(req.headers, 'x-opencode-harness-hooks-request'), messages: body.messages })
         const message = { role: 'assistant', content: continued ? 'V2_SECOND_ANSWER' : 'V2_FIRST_ANSWER' }
         const chunk = (delta, finish_reason) => ({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta, finish_reason }] })
@@ -110,10 +111,11 @@ async function verify(binary, defaultRoot) {
     })
     await new Promise((resolve, reject) => { gateway.once('error', reject); gateway.listen(0, '127.0.0.1', resolve) })
     const sourcePath=join(root,'native-hooks.json'), hookScript=join(root,'native-hook.cjs'), hookTrace=join(root,'native-hooks.jsonl')
-    await writeFile(hookScript, `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);fs.appendFileSync(${JSON.stringify(hookTrace)},JSON.stringify({...p,fixtureRecords:rows})+'\\n');if(rows.at(-1).message.role!=='assistant')throw new Error('Missing completed assistant');if(!p.stop_hook_active)console.log(JSON.stringify({decision:'block',reason:'V2_STOP_FEEDBACK',hookSpecificOutput:{hookEventName:'Stop',additionalContext:'V2_STOP_CONTEXT'}}));`)
+    const decision = historical ? `if(!ordinal)console.log(JSON.stringify(${JSON.stringify(historical.output)}));` : `if(!p.stop_hook_active)console.log(JSON.stringify({decision:'block',reason:'V2_STOP_FEEDBACK',hookSpecificOutput:{hookEventName:'Stop',additionalContext:'V2_STOP_CONTEXT'}}));`
+    await writeFile(hookScript, `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));if(p.hook_event_name==='UserPromptSubmit'){if(p.prompt==='LATER_NEXT_PROMPT')console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'UserPromptSubmit',additionalContext:${JSON.stringify(historical?.promptContext ?? '')}}}));return}const ordinal=fs.existsSync(${JSON.stringify(hookTrace)})?fs.readFileSync(${JSON.stringify(hookTrace)},'utf8').trim().split('\\n').length:0;const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);fs.appendFileSync(${JSON.stringify(hookTrace)},JSON.stringify({...p,fixtureRecords:rows})+'\\n');if(rows.at(-1).message.role!=='assistant')throw new Error('Missing completed assistant');${decision}`)
     const command={type:'command',command:process.execPath,args:[hookScript]}
     const dialect='claude-code'
-    const native=JSON.stringify({hooks:{Stop:[{hooks:[command]}]}})
+    const native=JSON.stringify({hooks:{Stop:[{hooks:[command]}],...(historical?.promptContext?{UserPromptSubmit:[{hooks:[command]}]}:{})}})
     await run(process.execPath,['--check',hookScript],{timeout:STARTUP_MS,maxBuffer:MAX_BYTES})
     await writeFile(sourcePath,native)
     const sourceSnapshot = await readFile(sourcePath), scriptSnapshot = await readFile(hookScript)
@@ -243,9 +245,17 @@ export default { id: 'harness-stop-observer', async setup(ctx) {
       })
     })
     const address = await bounded(ready, STARTUP_MS, 'HOST_STARTUP_TIMEOUT')
-    const running = run(binary, ['--server', address, 'run', '--format', 'json', '--model', 'fixture/fixture', 'Finish the V2 fixture'], { cwd: project, env, timeout: CLIENT_MS, maxBuffer: MAX_BYTES })
+    const running = run(binary, ['--server', address, 'run', '--format', 'json', '--model', 'fixture/fixture', historical ? 'LATER_ORIGINAL_PROMPT' : 'Finish the V2 fixture'], { cwd: project, env, timeout: CLIENT_MS, maxBuffer: MAX_BYTES })
     running.child.stdin.end()
-    const result = await running.catch(error => ({stdout:error.stdout??'',stderr:error.stderr??'',failure:error.code??'unknown'}))
+    let result = await running.catch(error => ({stdout:error.stdout??'',stderr:error.stderr??'',failure:error.code??'unknown'}))
+    if (historical) {
+      check(!result.failure, 'HOST_STOP_HISTORY_FIRST_PROMPT_FAILED')
+      const first = JSON.parse((await readFile(hookTrace, 'utf8')).trim().split('\n')[0])
+      check(typeof first.session_id === 'string' && first.session_id, 'HOST_STOP_HISTORY_SESSION_UNAVAILABLE')
+      const follow = run(binary, ['--server', address, 'run', '--session', first.session_id, '--format', 'json', '--model', 'fixture/fixture', 'LATER_NEXT_PROMPT'], { cwd: project, env, timeout: CLIENT_MS, maxBuffer: MAX_BYTES })
+      follow.child.stdin.end()
+      result = await follow.catch(error => ({stdout:error.stdout??'',stderr:error.stderr??'',failure:error.code??'unknown'}))
+    }
     const events = (await readFile(trace, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
     const primary = requests.filter(request => request.kind === 'primary')
     let hooks=[];try{hooks=(await readFile(hookTrace,'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse)}catch{}
@@ -253,6 +263,20 @@ export default { id: 'harness-stop-observer', async setup(ctx) {
     const receipts=events.filter(row=>row.phase==='receipt')
     check(!diagnostics.length,'HOST_OWNED_STOP_DIAGNOSTICS:'+ [...new Set(diagnostics)].join(','))
     check(!result.failure && primary.length===2 && snapshots.length===2 && snapshots.every(row=>row.status==='prepared'),'HOST_OWNED_STOP_SNAPSHOT_FAILED')
+    if (historical) {
+      check(hooks.length===2 && hooks.every(row=>row.stop_hook_active===false) && hooks[0].prompt_id!==hooks[1].prompt_id && hooks[0].session_id===hooks[1].session_id,'HOST_STOP_HISTORY_REAL_TURNS_FAILED')
+      check((await readFile(sourcePath)).equals(sourceSnapshot) && (await readFile(hookScript)).equals(scriptSnapshot),'FIXTURE_SOURCE_CHANGED')
+      check(hooks[0].last_assistant_message==='V2_FIRST_ANSWER' && hooks[1].last_assistant_message==='V2_SECOND_ANSWER','HOST_STOP_HISTORY_ASSISTANT_FAILED')
+      const idles=events.filter(row=>row.phase==='root-idle'), prompts=events.filter(row=>row.phase==='prompt-observed')
+      check(idles.length===2 && idles.every(row=>!row.synthetics.length) && prompts.length===2 && prompts[0].messageID!==prompts[1].messageID,'HOST_STOP_HISTORY_SYNTHETIC_OR_REPLAYED')
+      const messages=primary[1].messages.filter(row=>['user','assistant'].includes(row.role))
+      check(JSON.stringify(messages.map(row=>row.role))===JSON.stringify(['user','assistant','user']),'HOST_STOP_HISTORY_ROLES_FAILED')
+      const content=messages[2].content
+      check(Array.isArray(content) && content.every(part=>part.type==='text') && JSON.stringify(content.map(part=>part.text))===JSON.stringify(historical.nextUser.map(text=>text.replaceAll('FIXTURE_COMMAND',[process.execPath,hookScript].join(' ')))),'HOST_STOP_HISTORY_MODEL_FAILED')
+      check(snapshots[1].rows.filter(row=>row.subtype==='stop_hook_summary').length===1 && snapshots[1].rows.some(row=>row.attachment?.type==='hook_stopped_continuation'),'HOST_STOP_HISTORY_ARTIFACT_FAILED')
+      check(primary.every(row=>!row.privateHeaderPresent) && !/opencode-harness-hooks:Stop:/.test(JSON.stringify(primary)),'HOST_STOP_HISTORY_TRANSPORT_FAILED')
+      return {mode:historical.name,defaultPackageEntrypoint:true,independentObserver:true,distinctRealTurns:true,noSyntheticContinuation:true,ownedNextPromptBlocks:true,retainedStopArtifacts:true,fixtureSourceUnchanged:true,foregroundFixture:true,mechanismOnly:false,defaultRootStop:true,equivalent:false}
+    }
     if (!defaultRoot) check(receipts.length===2 && receipts[0].control==='continue' && receipts[1].control==='complete' && receipts[0].messageID===receipts[1].messageID,'HOST_OWNED_STOP_CONTROL_FAILED')
     check(hooks.length===2 && hooks[0].stop_hook_active===false && hooks[1].stop_hook_active===true && hooks[0].prompt_id===hooks[1].prompt_id,'HOST_OWNED_STOP_PAYLOAD_FAILED')
     check((await readFile(sourcePath)).equals(sourceSnapshot) && (await readFile(hookScript)).equals(scriptSnapshot),'FIXTURE_SOURCE_CHANGED')
@@ -288,12 +312,17 @@ export default { id: 'harness-stop-observer', async setup(ctx) {
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { binary: { type: 'string', short: 'b' }, 'default-root': { type: 'boolean' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { binary: { type: 'string', short: 'b' }, 'default-root': { type: 'boolean' }, history: { type: 'boolean' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const binary = parsed.values.binary ?? process.env.OPENCODE_V2_BINARY ?? 'opencode'
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    process.stdout.write(JSON.stringify(await verify(binary, parsed.values['default-root'] ?? false)) + '\n')
+    if (parsed.values.history && !parsed.values['default-root']) throw new ProbeError('USAGE_HISTORY: --history requires --default-root', 2)
+    if (parsed.values.history) {
+      const oracle=JSON.parse(await readFile(new URL('../test/fixtures/claude-stop-history-oracle.json',import.meta.url),'utf8')),cases=[]
+      for (const scenario of oracle.cases) cases.push(await verify(binary,true,scenario))
+      process.stdout.write(JSON.stringify({defaultRootStopHistory:true,cases,equivalent:false})+'\n')
+    } else process.stdout.write(JSON.stringify(await verify(binary, parsed.values['default-root'] ?? false)) + '\n')
   }
 } catch (error) {
   const code = error instanceof ProbeError ? error.message : 'HOST_PROBE_FAILED'

@@ -13,6 +13,10 @@ import { StopRecords } from '../src/stop-records.js'
 import { Sessions } from '../src/sessions.js'
 
 const CREATED = Date.parse('2026-01-01T00:00:00Z')
+const FAST_COMPLETION_MS = 25
+const SLOW_COMPLETION_MS = 350
+const READY_LIMIT_MS = 5000
+const READY_POLL_MS = 10
 const oracle = JSON.parse(readFileSync(new URL('./fixtures/claude-stop-aggregation-oracle.json', import.meta.url), 'utf8'))
 const outputs = JSON.parse(readFileSync(new URL('./fixtures/claude-stop-output-oracle.json', import.meta.url), 'utf8'))
 const parse = (text: string) => text.trim().split('\n').map(line => JSON.parse(line))
@@ -20,11 +24,11 @@ const synthetic = () => ({ type: 'synthetic', id: 'synthetic', text: 'Owned tran
 const secondAnswer = () => ({ type: 'assistant', id: 'answer-2', model: { id: 'fixture' }, finish: 'stop', time: { created: CREATED + 3 }, content: [{ type: 'text', text: 'Second answer' }] })
 
 interface OutputInput { readonly stdout: string; readonly stderr: string; readonly exitCode: number; readonly delayMs: number; readonly timeoutSeconds?: number }
-async function fixture(t: TestContext, scenario: { outputs: unknown[]; completionOrder: number[] } | { input: OutputInput }, admitRecords = false) {
+async function fixture(t: TestContext, scenario: { outputs: unknown[]; completionOrder: number[]; startupDelays?: number[] } | { input: OutputInput }, admitRecords = false) {
   const directory = await mkdtemp(join(tmpdir(), 'harness-stop-records-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const script = join(directory, 'hook.cjs')
-  const body = 'input' in scenario ? `require('node:fs').readFileSync(0,'utf8');setTimeout(()=>{process.stdout.write(${JSON.stringify(scenario.input.stdout)});process.stderr.write(${JSON.stringify(scenario.input.stderr)});process.exitCode=${scenario.input.exitCode}},${scenario.input.delayMs})` : `const index=Number(process.argv[2]);const outputs=${JSON.stringify(scenario.outputs)};const order=${JSON.stringify(scenario.completionOrder)};setTimeout(()=>console.log(JSON.stringify(outputs[index])),order.indexOf(index)?350:25)`
+  const body = 'input' in scenario ? `require('node:fs').readFileSync(0,'utf8');setTimeout(()=>{process.stdout.write(${JSON.stringify(scenario.input.stdout)});process.stderr.write(${JSON.stringify(scenario.input.stderr)});process.exitCode=${scenario.input.exitCode}},${scenario.input.delayMs})` : `const index=Number(process.argv[2]);const outputs=${JSON.stringify(scenario.outputs)};const fs=require('node:fs');const order=${JSON.stringify(scenario.completionOrder)};const startup=${JSON.stringify(scenario.startupDelays ?? [])};const started=Date.now();const ready=()=>{if(outputs.every((_,candidate)=>fs.existsSync(process.argv[1]+'.ready.'+candidate)))setTimeout(()=>console.log(JSON.stringify(outputs[index])),order.indexOf(index)?${SLOW_COMPLETION_MS}:${FAST_COMPLETION_MS});else if(Date.now()-started>${READY_LIMIT_MS})process.exit(9);else setTimeout(ready,${READY_POLL_MS})};setTimeout(()=>{fs.writeFileSync(process.argv[1]+'.ready.'+index,'');ready()},startup[index]??0)`
   await writeFile(script, body)
   const indices = 'input' in scenario ? [0] : scenario.outputs.map((_, index) => index)
   const commands = indices.map(index => [process.execPath, script, String(index)].join(' '))
@@ -51,6 +55,25 @@ async function fixture(t: TestContext, scenario: { outputs: unknown[]; completio
   const receipt = await runtime.stop({ ...event, data: { transcript_path: transcriptPath, last_assistant_message: 'Answer', background_tasks: [], session_crons: [] } })
   return { directory, transcripts, runtime, session, event, delivery, receipt, records, transcriptPath, commands, modelProjection, unchanged: async () => { assert.equal(await readFile(script, 'utf8'), body); assert.equal(await readFile(path, 'utf8'), source) } }
 }
+
+test('delayed subprocess startup cannot change the requested aggregation fixture order', async t => {
+  const f = await fixture(t, { outputs: [{ continue: false, stopReason: 'First' }, { continue: false, stopReason: 'Second' }], completionOrder: [0, 1], startupDelays: [600, 0] }, true)
+  assert.deepEqual([...f.delivery.dispatch.entries].sort((left, right) => left.completionOrder - right.completionOrder).map(row => row.configuredOrder), [0, 1])
+})
+
+test('typed Stop model groups require admitted live ownership and preserve suppressed feedback', async t => {
+  const scenario = oracle.cases.find((row: any) => row.name === 'block-then-stop')
+  const missing = await fixture(t, scenario, false)
+  assert.throws(() => missing.transcripts.stopModelInput(missing.delivery), { code: 'TRANSCRIPT_STOP_MODEL_UNAVAILABLE' })
+  const f = await fixture(t, scenario, true)
+  const blocks = f.transcripts.stopModelInput(f.delivery)
+  assert.ok(Object.isFrozen(blocks) && Object.isFrozen(blocks.reminders) && Object.isFrozen(blocks.feedback))
+  assert.ok(blocks.reminders.some(text => text.includes('Stop hook stopped continuation:')))
+  assert.deepEqual(blocks.feedback, ['Stop hook feedback:\nNATIVE_STOP_A'])
+  assert.throws(() => f.transcripts.stopModelInput({ ...f.delivery, event: { ...f.event, completionID: 'foreign' } }), { code: 'TRANSCRIPT_STOP_MODEL_UNAVAILABLE' })
+  f.runtime.sessions.prompt('session', 'replacement')
+  assert.throws(() => f.transcripts.stopModelInput(f.delivery), { code: 'TRANSCRIPT_CANCELLED' })
+})
 
 for (const scenario of oracle.cases) test(`Claude Stop transcript retains native ${scenario.name} records`, async t => {
   const f = await fixture(t, scenario, true)

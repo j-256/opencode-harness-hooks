@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { HostHookError } from './tools.js'
 import { runService } from '../service-execution.js'
 import type { createRuntime } from '../runtime.js'
-import type { PromptContexts, PromptContinuationReservation } from '../prompt-contexts.js'
+import type { PromptContexts, PromptContinuationReservation, PromptStopHistory } from '../prompt-contexts.js'
 import type { SessionSnapshot } from '../sessions.js'
 import type { StopDelivery } from '../stop.js'
 import type { TranscriptHistory, TranscriptService, TranscriptContinuationReservation } from '../transcript.js'
@@ -10,6 +10,8 @@ import type { TranscriptHistory, TranscriptService, TranscriptContinuationReserv
 const SERVICE_MS = 5000
 const MAX_SESSIONS = 1024
 const MAX_BYTES = 32 * 1024 * 1024
+const MAX_HISTORY = 10000
+const MAX_CONTEXT_MESSAGES = 10000
 type Runtime = Awaited<ReturnType<typeof createRuntime>>
 export interface V2IdleEvent { readonly sessionID: string; readonly background: readonly unknown[] }
 export interface V2SyntheticInput { readonly id: string; readonly sessionID: string; readonly text: string; readonly description: string; readonly metadata: Readonly<Record<string, string>>; readonly delivery: 'steer'; readonly resume: false }
@@ -25,7 +27,8 @@ interface Pending {
   failure?: HostHookError
   reading?: Promise<void>
 }
-interface State { readonly signal: AbortSignal; readonly cleanup: () => void; pending?: Pending; historical: boolean }
+interface Historical extends PromptStopHistory { readonly turnID: string; readonly bytes: number; nextPromptID?: string }
+interface State { readonly signal: AbortSignal; readonly cleanup: () => void; readonly histories: Map<string, Historical>; pending?: Pending; failure?: HostHookError }
 interface Options {
   readonly directory: string
   readonly runtime: Pick<Runtime, 'sessions' | 'stop'>
@@ -46,6 +49,7 @@ export class V2StopBridge {
   private readonly submissions = new Set<Promise<void>>()
   private readonly lifetime = new AbortController()
   private bytes = 0
+  private historicalCount = 0
   private disposing: Promise<void> | undefined
 
   constructor(private readonly options: Options) {}
@@ -55,7 +59,8 @@ export class V2StopBridge {
     if (session.signal.aborted || session.turnSignal.aborted) fail('HOST_STOP_CANCELLED', 'cancelled')
     const state = this.states.get(session.sessionID)
     if (state && state.signal !== session.signal) fail('HOST_STOP_SESSION_MISMATCH')
-    if (state?.historical) fail('HOST_STOP_HISTORY_PROJECTION_UNAVAILABLE')
+    if (state?.failure) throw state.failure
+    if (ready && state && [...state.histories.values()].some(row => !row.nextPromptID)) fail('HOST_STOP_HISTORY_UNAVAILABLE')
     const pending = state?.pending
     if (!pending) return
     if (pending.failure) throw pending.failure
@@ -88,10 +93,26 @@ export class V2StopBridge {
     this.guard(session)
     if (effects.cancelled || delivery.signal.aborted) fail('HOST_STOP_CANCELLED', 'cancelled')
     if (effects.permission || effects.input || effects.block || effects.context.length || effects.feedback.length || effects.warnings.length || effects.extensions.length || effects.resultReplacements.length || effects.unresolved.length) fail('HOST_STOP_EFFECT_UNAVAILABLE')
-    if (!this.options.transcripts.admitStop || !this.options.transcripts.reserveContinuation) fail('HOST_STOP_ARTIFACT_UNAVAILABLE')
+    if (!this.options.transcripts.admitStop || !this.options.transcripts.reserveContinuation || !this.options.transcripts.stopModelInput) fail('HOST_STOP_ARTIFACT_UNAVAILABLE')
     const projection = this.options.transcripts.admitStop(delivery)
     if (effects.stop || !effects.continuations.length) {
-      if (projection.length) this.state(session).historical = true
+      if (projection.length) {
+        const state = this.state(session)
+        try {
+          const blocks = this.options.transcripts.stopModelInput(delivery)
+          const text = event.data?.last_assistant_message
+          if (typeof text !== 'string' || state.histories.has(event.completionID)) fail('HOST_STOP_HISTORY_UNAVAILABLE')
+          const input = { completionID: event.completionID, turnID: event.messageID, assistantText: Object.freeze([text]), reminders: Object.freeze([...blocks.reminders]), feedback: Object.freeze([...blocks.feedback]) }
+          const bytes = Buffer.byteLength(JSON.stringify(input))
+          if (this.historicalCount >= MAX_HISTORY || this.bytes + bytes > MAX_BYTES) fail('HOST_STOP_LIMIT')
+          state.histories.set(event.completionID, { ...input, bytes })
+          this.historicalCount++
+          this.bytes += bytes
+        } catch (error) {
+          state.failure = error instanceof HostHookError ? error : new HostHookError('HOST_STOP_HISTORY_UNAVAILABLE', 'unsupported')
+          throw state.failure
+        }
+      }
       return
     }
     if (!projection.length) fail('HOST_STOP_MODEL_INPUT_UNAVAILABLE')
@@ -124,10 +145,10 @@ export class V2StopBridge {
     await work
   }
 
-  async context(session: SessionSnapshot): Promise<void> {
+  async context(session: SessionSnapshot, messages?: readonly unknown[]): Promise<void> {
     this.guard(session, false)
     const state = this.states.get(session.sessionID), pending = state?.pending
-    if (!pending) return
+    if (!pending) { this.history(session, messages); return }
     if (pending.phase !== 'queued') fail('HOST_STOP_ADMISSION_PENDING')
     pending.reading ??= (async () => {
       const started = performance.now()
@@ -150,6 +171,28 @@ export class V2StopBridge {
       }
     })()
     await pending.reading
+    this.history(session, messages)
+  }
+
+  private history(session: SessionSnapshot, messages: readonly unknown[] | undefined): void {
+    const state = this.states.get(session.sessionID)
+    if (!state?.histories.size) return
+    if (!Array.isArray(messages) || messages.length > MAX_CONTEXT_MESSAGES || !messages.every(record) || Buffer.byteLength(JSON.stringify(messages)) > MAX_BYTES) fail('HOST_STOP_HISTORY_UNAVAILABLE')
+    const frames = new Map<string, { readonly row: Record<string, unknown>; readonly index: number }>()
+    for (const [index, row] of messages.entries()) if (typeof row.id === 'string') {
+      if (frames.has(row.id)) fail('HOST_STOP_HISTORY_UNAVAILABLE')
+      frames.set(row.id, { row, index })
+    }
+    for (const history of state.histories.values()) {
+      const original = frames.get(history.turnID), answer = frames.get(history.completionID)
+      const nextID = history.nextPromptID ?? session.turnID
+      const next = nextID ? frames.get(nextID) : undefined, completion = answer?.row
+      if (!nextID || nextID === history.turnID || original?.row.role !== 'user' || !answer || answer.index <= original.index || next?.row.role !== 'user' || next.index !== answer.index + 1 || !completion || completion.role !== 'assistant' || !Array.isArray(completion.content) || !completion.content.every(part => record(part) && part.type === 'text' && typeof part.text === 'string') || !same(completion.content.map(part => part.text), history.assistantText)) fail('HOST_STOP_HISTORY_UNAVAILABLE')
+      if (!history.nextPromptID) {
+        this.options.contexts.rememberHistory(session, history)
+        history.nextPromptID = nextID
+      }
+    }
   }
 
   dispose(): Promise<void> {
@@ -177,10 +220,11 @@ export class V2StopBridge {
         const state = this.states.get(session.sessionID)
         if (!state) return
         if (state.pending) { state.pending.model.release(); state.pending.transcript.release(); this.bytes -= state.pending.bytes }
+        for (const history of state.histories.values()) { this.bytes -= history.bytes; this.historicalCount-- }
         this.states.delete(session.sessionID)
         session.signal.removeEventListener('abort', cleanup)
       }
-      state = { signal: session.signal, cleanup, historical: false }
+      state = { signal: session.signal, cleanup, histories: new Map() }
       this.states.set(session.sessionID, state)
       session.signal.addEventListener('abort', cleanup, { once: true })
     }

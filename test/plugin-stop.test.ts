@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -7,13 +8,17 @@ import { test } from 'node:test'
 import plugin from '../src/index.js'
 
 const CREATED = Date.parse('2026-01-01T00:00:00Z')
+const historyCases = JSON.parse(readFileSync(new URL('./fixtures/claude-stop-history-oracle.json', import.meta.url), 'utf8')).cases
 type Callback = (event: any) => Promise<void>
 async function fixture(t: { after: (callback: () => Promise<void>) => void }, mode = 'continue', repeats = 1) {
   const directory = await mkdtemp(join(tmpdir(), 'harness-plugin-stop-'))
   const capture = join(directory, 'calls.jsonl'), script = join(directory, 'hook.cjs'), path = join(directory, 'hooks.json')
+  const history = historyCases.find((row: any) => row.name === mode)
   const source = `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify({input:p,rows})+'\\n');if(${JSON.stringify(mode)}==='prevent')console.log(JSON.stringify({continue:false,stopReason:'Stopped'}));else if(${JSON.stringify(mode)}==='warning')console.log(JSON.stringify({systemMessage:'Warning'}));else if(!p.stop_hook_active)console.log(JSON.stringify({decision:'block',reason:'Feedback',hookSpecificOutput:{hookEventName:'Stop',additionalContext:'Context'}}));`
-  await writeFile(script, source)
-  const native = JSON.stringify({ hooks: { Stop: [{ hooks: Array.from({ length: repeats }, () => ({ type: 'command', command: process.execPath, args: [script] })) }] } })
+  const executable = history ? `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));if(p.hook_event_name==='UserPromptSubmit'){if(p.prompt==='Blocked')console.log(JSON.stringify({decision:'block',reason:'Rejected'}));else if(p.prompt==='LATER_NEXT_PROMPT')console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'UserPromptSubmit',additionalContext:${JSON.stringify(history.promptContext ?? '')}}}));return}const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify({input:p,rows})+'\\n');console.log(JSON.stringify(${JSON.stringify(history.output)}));` : source
+  await writeFile(script, executable)
+  const hooks = Array.from({ length: repeats }, () => ({ type: 'command', command: process.execPath, args: [script] }))
+  const native = JSON.stringify({ hooks: { Stop: [{ hooks }], ...(history?.promptContext ? { UserPromptSubmit: [{ hooks }] } : {}) } })
   await writeFile(path, native)
   const callbacks = new Map<string, Callback>()
   const hook = (domain: string) => async (name: string, callback: Callback) => { const key = domain + '.' + name; callbacks.set(key, callback); return { dispose: () => { callbacks.delete(key) } } }
@@ -55,7 +60,7 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }, mo
   }
   const idle = (background: unknown[] = []) => callbacks.get('session.experimental.idle')!({ sessionID: 'session', background })
   const promote = () => { for (const row of queued) if (!records.some(message => message.id === row.id)) records.push({ type: 'synthetic', id: row.id, text: row.text, metadata: row.metadata, ...(row.description === undefined ? {} : { description: row.description }), time: { created: CREATED + 2 } }) }
-  return { directory, path, script, context, callbacks, records, queued, connect, prompt, answer, model, idle, promote, acknowledge, setEnqueue: (value: typeof enqueue) => { enqueue = value }, calls: async () => (await readFile(capture, 'utf8')).trim().split('\n').map(row => JSON.parse(row)), unchanged: async () => { assert.equal(await readFile(path, 'utf8'), native); assert.equal(await readFile(script, 'utf8'), source) }, command: [process.execPath, script].join(' ') }
+  return { directory, path, script, context, callbacks, records, queued, connect, prompt, answer, model, idle, promote, acknowledge, setEnqueue: (value: typeof enqueue) => { enqueue = value }, calls: async () => (await readFile(capture, 'utf8')).trim().split('\n').map(row => JSON.parse(row)), unchanged: async () => { assert.equal(await readFile(path, 'utf8'), native); assert.equal(await readFile(script, 'utf8'), executable) }, command: [process.execPath, script].join(' ') }
 }
 
 test('default V2 Stop continues the original turn with exact Claude input and readable retained records', async t => {
@@ -148,7 +153,42 @@ test('V2 Stop prevention ends completion without enqueuing a corrective prompt',
   await f.connect(); await f.prompt(); await f.model(); f.answer(); await f.idle()
   assert.equal(f.queued.length, 0)
   assert.equal((await f.calls()).length, 1)
-  await assert.rejects(f.prompt('next', 'Next'), { code: 'HOST_STOP_HISTORY_PROJECTION_UNAVAILABLE' })
+  await f.prompt('next', 'Next')
+  const body = await f.model()
+  assert.deepEqual(body.messages.at(-1).content, [{ type: 'text', text: '<system-reminder>\nStop hook stopped continuation: Stopped\n</system-reminder>' }, { type: 'text', text: 'Next' }])
+})
+
+for (const scenario of historyCases) test(`default V2 retained Stop history agrees with native ${scenario.name}`, async t => {
+  const f = await fixture(t, scenario.name)
+  await f.connect(); await f.prompt('prompt', 'LATER_ORIGINAL_PROMPT'); await f.model(); f.answer('answer', 'NATIVE_STOP_ANSWER_1'); await f.idle()
+  assert.equal(f.queued.length, 0)
+  if (scenario.promptContext) await assert.rejects(f.prompt('blocked', 'Blocked'), { code: 'HOOK_PROMPT_BLOCKED' })
+  await f.prompt('next', 'LATER_NEXT_PROMPT')
+  const body = await f.model()
+  const expected = scenario.nextUser.map((text: string) => ({ type: 'text', text: text.replaceAll('FIXTURE_COMMAND', f.command) }))
+  assert.deepEqual(body.messages.at(-1), { role: 'user', content: expected })
+  f.answer('answer-next', 'Next answer'); await f.idle()
+  await f.prompt('third', 'Third')
+  const third = await f.model()
+  assert.deepEqual(third.messages[2], body.messages[2])
+  assert.equal(f.queued.length, 0)
+  const calls = await f.calls()
+  assert.deepEqual(calls.map(row => [row.input.prompt_id, row.input.stop_hook_active]), [['prompt', false], ['next', false]])
+  assert.ok(calls[1].rows.some((row: any) => row.attachment?.type === 'hook_stopped_continuation'))
+  await f.unchanged()
+})
+
+test('retained Stop history rejects changed, moved and pruned native assistant ownership', async t => {
+  for (const change of ['text', 'id', 'position', 'pruned', 'duplicate']) {
+    const f = await fixture(t, 'prevent')
+    await f.connect(); await f.prompt(); await f.model(); f.answer(); await f.idle(); await f.prompt('next', 'Next')
+    if (change === 'text') f.records[1].content[0].text = 'Changed'
+    else if (change === 'id') f.records[1].id = 'foreign'
+    else if (change === 'position') f.records.push(f.records.splice(1, 1)[0])
+    else if (change === 'pruned') f.records.splice(1, 1)
+    else f.records.push(structuredClone(f.records[1]))
+    await assert.rejects(f.model(), { code: 'HOST_STOP_HISTORY_UNAVAILABLE' })
+  }
 })
 
 test('unmapped V2 Stop warning effects reject instead of disappearing', async t => {
