@@ -31,6 +31,7 @@
     "verify": "npm run typecheck && npm run build && node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
+    "rregex": "1.12.1",
     "smol-toml": "1.9.1"
   },
   "devDependencies": {
