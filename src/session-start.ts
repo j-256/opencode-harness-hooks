@@ -53,7 +53,7 @@ export interface SessionStartDiagnostic {
   readonly registrationID?: string
   readonly dialect?: Dialect
   readonly field?: string
-  readonly phase: 'preflight' | 'environment' | 'dispatch' | 'admission' | 'barrier'
+  readonly phase: 'preflight' | 'environment' | 'dispatch' | 'admission' | 'barrier' | 'drain'
   readonly code: string
   readonly outcome: HostHookError['outcome'] | 'success'
   readonly durationMs: number
@@ -80,6 +80,7 @@ interface State {
   readonly pending: Promise<SessionStartReceipt>
   phase: 'pending' | 'ready' | 'failed'
   error?: HostHookError
+  admission?: Promise<void>
 }
 type Attribution = Pick<SessionStartDiagnostic, 'sourceID' | 'registrationID' | 'dialect' | 'field'>
 
@@ -105,7 +106,7 @@ function normalize(error: unknown, phase: SessionStartDiagnostic['phase'], signa
   if (signal?.aborted || error instanceof HookServiceError && error.code === 'EXECUTION_CANCELLED' || error instanceof SessionError && ['SESSION_CLOSED', 'SESSION_DISPOSED'].includes(error.code)) return new HostHookError('HOST_SESSION_START_CANCELLED', 'cancelled')
   if (error instanceof HostHookError) return new HostHookError(error.code, error.outcome)
   if (error instanceof ClaudeEnvironmentError) return new HostHookError(error.code, 'unsupported')
-  if (error instanceof HookServiceError && error.code === 'EXECUTION_TIMEOUT') return new HostHookError(phase === 'admission' ? 'HOST_SESSION_START_ADMISSION_TIMEOUT' : 'HOST_SESSION_START_ENVIRONMENT_TIMEOUT', 'failed')
+  if (error instanceof HookServiceError && error.code === 'EXECUTION_TIMEOUT') return new HostHookError(phase === 'admission' ? 'HOST_SESSION_START_ADMISSION_TIMEOUT' : phase === 'drain' ? 'HOST_SESSION_START_ADMISSION_DRAIN_FAILED' : 'HOST_SESSION_START_ENVIRONMENT_TIMEOUT', 'failed')
   return new HostHookError(phase === 'admission' ? 'HOST_SESSION_START_ADMISSION_FAILED' : 'HOST_SESSION_START_FAILED', 'failed')
 }
 
@@ -121,7 +122,9 @@ export class SessionStarts {
   private readonly states = new Map<string, State>()
   private readonly current = new Map<string, string>()
   private readonly active = new Set<Promise<SessionStartReceipt>>()
+  private readonly admissions = new Set<Promise<void>>()
   private observerFailures = 0
+  private disposing: Promise<void> | undefined
 
   constructor(private readonly options: Options) {
     this.limit = options.services.maxActivations ?? DEFAULT_ACTIVATIONS
@@ -153,8 +156,9 @@ export class SessionStarts {
         return existing.pending
       }
       if (this.states.size >= this.limit) fail('HOST_SESSION_START_LIMIT')
-      const previous = this.current.get(event.sessionID)
-      if (previous && this.states.get(previous)?.phase === 'pending') fail('HOST_SESSION_START_OVERLAP_UNVERIFIED')
+      const previousKey = this.current.get(event.sessionID)
+      const previous = previousKey === undefined ? undefined : this.states.get(previousKey)
+      if (previous?.phase === 'pending' || previous?.admission && this.admissions.has(previous.admission)) fail('HOST_SESSION_START_OVERLAP_UNVERIFIED')
       for (const source of this.sources) {
         if (!source.enabled || !source.registrations.some(registration => registration.event === 'SessionStart')) continue
         const value = { ...event.data, ...event.dialectData?.[source.dialect] }.source
@@ -185,7 +189,16 @@ export class SessionStarts {
         if (signal.aborted) fail('HOST_SESSION_START_CANCELLED', 'cancelled')
         if (dispatch.diagnostic.unsupported) fail('HOST_SESSION_START_HANDLER_UNAVAILABLE')
         phase = 'admission'
-        await runService(this.serviceTimeout, signal, current => this.admit({ event, session, dispatch, ...(environment ? { environment } : {}), signal: current }))
+        await runService(this.serviceTimeout, signal, current => {
+          const admission = Promise.resolve().then(() => {
+            if (current.aborted) fail('HOST_SESSION_START_CANCELLED', 'cancelled')
+            return this.admit({ event, session, dispatch, ...(environment ? { environment } : {}), signal: current })
+          })
+          this.states.get(key)!.admission = admission
+          this.admissions.add(admission)
+          void admission.finally(() => { this.admissions.delete(admission) }).catch(() => {})
+          return admission
+        })
         if (signal.aborted) fail('HOST_SESSION_START_CANCELLED', 'cancelled')
         const receipt = Object.freeze({ host: event.host, sessionID: event.sessionID, activationID: event.activationID, dispatchID: dispatch.diagnostic.dispatchID, handlers: dispatch.entries.length, failed: dispatch.diagnostic.failed, background: dispatch.diagnostic.background })
         this.states.get(key)!.phase = 'ready'
@@ -224,13 +237,22 @@ export class SessionStarts {
     } catch (error) { throw this.barrierError(sessionID, error, started) }
   }
 
-  async dispose(): Promise<void> {
-    this.lifetime.abort()
-    await Promise.allSettled([...this.active])
-    this.states.clear(); this.current.clear()
+  dispose(): Promise<void> {
+    this.disposing ??= (async () => {
+      const started = performance.now()
+      this.lifetime.abort()
+      await Promise.allSettled([...this.active])
+      try { await runService(this.serviceTimeout, undefined, async () => { await Promise.allSettled([...this.admissions]) }) } catch (error) {
+        const failure = normalize(error, 'drain')
+        this.emit(undefined, 'drain', failure.code, failure.outcome, started)
+        throw failure
+      }
+      this.states.clear(); this.current.clear()
+    })().finally(() => { this.disposing = undefined })
+    return this.disposing
   }
 
-  inspect() { return Object.freeze({ active: this.active.size, retained: this.states.size, limit: this.limit, disposed: this.lifetime.signal.aborted, observerFailures: this.observerFailures }) }
+  inspect() { return Object.freeze({ active: this.active.size, admissions: this.admissions.size, retained: this.states.size, limit: this.limit, disposed: this.lifetime.signal.aborted, observerFailures: this.observerFailures }) }
 
   private state(sessionID: string): State {
     if (this.lifetime.signal.aborted) fail('HOST_SESSION_START_DISPOSED', 'cancelled')

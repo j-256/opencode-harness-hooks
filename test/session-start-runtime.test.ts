@@ -13,6 +13,11 @@ import type { SessionStartDiagnostic, SessionStartEvent } from '../src/session-s
 
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
 const quiet = { report: () => {}, dispatchDiagnostic: () => {}, host: { environment: { PATH: process.env.PATH, SHELL: '/bin/sh' } } }
+function deferred() {
+  let resolve!: () => void
+  const promise = new Promise<void>(done => { resolve = done })
+  return { promise, resolve }
+}
 
 async function fixture(t: TestContext) {
   const directory = await mkdtemp(join(tmpdir(), 'harness-start-'))
@@ -307,7 +312,7 @@ test('admission deadlines are bounded and observer failures cannot change comple
   const f = await fixture(t)
   const calls = join(f.directory, 'calls')
   await f.add('codex', { SessionStart: [{ hooks: [{ type: 'command', command: "printf 'called\\n' >> " + quote(calls) }] }] })
-  const runtime = await connect(t, f, { sessionStart: { serviceTimeoutMs: 20, admit: async () => new Promise(() => {}) } })
+  const runtime = await connect(t, f, { sessionStart: { serviceTimeoutMs: 20, admit: async delivery => new Promise<void>(resolve => delivery.signal.addEventListener('abort', () => resolve(), { once: true })) } })
   await assert.rejects(runtime.start(event(f.directory)), { code: 'HOST_SESSION_START_ADMISSION_TIMEOUT' })
   await assert.rejects(runtime.start(event(f.directory)), { code: 'HOST_SESSION_START_ADMISSION_TIMEOUT' })
   assert.equal(await readFile(calls, 'utf8'), 'called\n')
@@ -357,12 +362,19 @@ test('session closure cancels a running startup and prevents late admission', as
   assert.equal(runtime.inspect().sessionStarts?.active, 0)
 })
 
-test('a stalled admission is cancelled and drained when the runtime is disposed', async t => {
+test('a cooperative startup admission is cancelled and drained when the runtime is disposed', async t => {
   const f = await fixture(t)
   const entered = join(f.directory, 'entered')
   await f.add('codex', { SessionStart: [{ hooks: [{ type: 'command', command: ':' }] }] })
   let signal: AbortSignal | undefined
-  const runtime = await connect(t, f, { sessionStart: { admit: async delivery => { signal = delivery.signal; await writeFile(entered, 'entered'); return new Promise(() => {}) } } })
+  const runtime = await connect(t, f, { sessionStart: { admit: async delivery => {
+    signal = delivery.signal
+    await writeFile(entered, 'entered')
+    await new Promise<void>(resolve => {
+      if (delivery.signal.aborted) resolve()
+      else delivery.signal.addEventListener('abort', () => resolve(), { once: true })
+    })
+  } } })
   const starting = runtime.start(event(f.directory))
   void starting.catch(() => {})
   await waitFor(entered)
@@ -371,6 +383,54 @@ test('a stalled admission is cancelled and drained when the runtime is disposed'
   assert.equal(signal?.aborted, true)
   assert.equal(runtime.inspect().sessionStarts?.active, 0)
   assert.equal(runtime.inspect().sessionStarts?.retained, 0)
+})
+
+test('an uncooperative startup admission reports failed drain and permits cleanup retry', async t => {
+  const f = await fixture(t)
+  await f.add('codex', { SessionStart: [{ hooks: [{ type: 'command', command: ':' }] }] })
+  const entered = deferred(), release = deferred()
+  t.after(() => release.resolve())
+  const diagnostics: SessionStartDiagnostic[] = []
+  let signal: AbortSignal | undefined
+  const runtime = await connect(t, f, { sessionStart: { serviceTimeoutMs: 100, diagnostic: value => { diagnostics.push(value) }, admit: async delivery => {
+    signal = delivery.signal
+    entered.resolve()
+    await release.promise
+  } } })
+  const starting = runtime.start(event(f.directory))
+  void starting.catch(() => {})
+  await entered.promise
+  await assert.rejects(runtime.dispose(), { code: 'HOST_SESSION_START_ADMISSION_DRAIN_FAILED' })
+  await assert.rejects(starting, { code: 'HOST_SESSION_START_CANCELLED' })
+  assert.equal(signal!.aborted, true)
+  assert.equal(runtime.inspect().sessionStarts!.admissions, 1)
+  assert.equal(diagnostics.at(-1)!.phase, 'drain')
+  release.resolve()
+  await runtime.dispose()
+  assert.equal(runtime.inspect().sessionStarts!.admissions, 0)
+  assert.equal(runtime.inspect().sessionStarts!.retained, 0)
+})
+
+test('an undrained startup admission retains overlap protection after timeout', async t => {
+  const f = await fixture(t)
+  const calls = join(f.directory, 'calls')
+  await f.add('codex', { SessionStart: [{ hooks: [{ type: 'command', command: "printf 'called\\n' >> " + quote(calls) }] }] })
+  const release = deferred()
+  t.after(() => release.resolve())
+  let first = true
+  const runtime = await connect(t, f, { sessionStart: { serviceTimeoutMs: 20, admit: async () => {
+    if (!first) return
+    first = false
+    await release.promise
+  } } })
+  await assert.rejects(runtime.start(event(f.directory)), { code: 'HOST_SESSION_START_ADMISSION_TIMEOUT' })
+  const resume = { ...event(f.directory, 'session', 'resume'), data: { ...event(f.directory).data, source: 'resume' } }
+  await assert.rejects(runtime.start(resume), { code: 'HOST_SESSION_START_OVERLAP_UNVERIFIED' })
+  assert.equal(await readFile(calls, 'utf8'), 'called\n')
+  release.resolve()
+  await new Promise<void>(resolve => setImmediate(resolve))
+  await runtime.start(resume)
+  assert.equal(await readFile(calls, 'utf8'), 'called\ncalled\n')
 })
 
 for (const host of ['v1', 'v2'] as const) test(`default host factory rejects core startup services until its host adapter is connected (${host})`, async t => {

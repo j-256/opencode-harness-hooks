@@ -226,8 +226,9 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     inspect: () => Object.freeze({ activeDispatches: active.size, observerFailures, sessions: sessions.inspect(), ...(starts ? { sessionStarts: starts.inspect() } : {}), ...(stops ? { stops: stops.inspect() } : {}) }),
     async dispose() {
       sessions.dispose()
-      const [, , stopped] = await Promise.allSettled([Promise.allSettled([...active]), starts?.dispose(), stops?.dispose()])
+      const [, started, stopped] = await Promise.allSettled([Promise.allSettled([...active]), starts?.dispose(), stops?.dispose()])
       await services.transcripts?.dispose()
+      if (started.status === 'rejected') throw started.reason
       if (stopped.status === 'rejected') throw stopped.reason
     },
   }
