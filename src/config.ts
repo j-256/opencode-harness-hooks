@@ -1,4 +1,5 @@
 import { open } from 'node:fs/promises'
+import { constants } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve, extname } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
@@ -56,7 +57,7 @@ function validateSpec(spec: SourceSpec): void {
 async function readSource(spec: SourceSpec, maxBytes: number): Promise<Buffer> {
   let file
   try {
-    file = await open(spec.path, 'r')
+    file = await open(spec.path, constants.O_RDONLY | constants.O_NONBLOCK)
     const stat = await file.stat()
     if (!stat.isFile()) throw new SourceError('SOURCE_READ', spec.id)
     if (stat.size > maxBytes) throw new SourceError('SOURCE_SIZE', spec.id)

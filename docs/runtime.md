@@ -26,6 +26,8 @@ Both hosts accept the same plugin options object. V1 passes it as the second ele
 
 Each source needs a unique ID, a dialect (`codex` or `claude-code`), and a native configuration path. Source selection, `projectRoot` and `pluginRoot` use the loader's existing `SourceSpec` contract. Relative paths resolve against the host's project directory. Sources retain their configured order and independent registrations.
 
+The [read-only inspector](inspection.md) loads these options without executing hooks. It reports selected and excluded registrations, review matches and capability gaps using the same metadata report as activation.
+
 `reviewedDigests` pins the exact configuration bytes that the caller reviewed. An absent or different digest prevents activation. The runtime emits a metadata-only source report before execution, including the digest, enabled state, selected events, exclusions and unwired events. This review layer is a bridge extension. It does not implement or certify native Codex hook trust, managed configuration rules, plugin content fingerprints, or Claude project trust. Native trust remains an acceptance gate.
 
 The runtime retains its immutable source snapshot for the lifetime of that plugin activation, including subsequent sessions. Editing a configuration file does not replace that snapshot or execute its new registrations. Reactivation reads the source again and requires a matching reviewed digest. The digest covers configuration bytes, not the contents of referenced executables or scripts. No source file is modified.

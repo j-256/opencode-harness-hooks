@@ -34,6 +34,7 @@
     "test": "node --import tsx --test",
     "test:host:v2": "node scripts/verify-v2.mjs",
     "test:host:plugin": "node scripts/verify-plugin.mjs",
+    "test:package": "node scripts/verify-package.mjs",
     "verify": "npm run typecheck && npm run build && node --import tsx --test test/*.test.ts"
   },
   "dependencies": {
