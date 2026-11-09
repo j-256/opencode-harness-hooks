@@ -12,6 +12,7 @@ export type { RuntimeOptions, RuntimeReport, RuntimeServices } from './runtime.j
 export { Sessions, SessionError } from './sessions.js'
 export type { SessionSnapshot } from './sessions.js'
 export type { SessionStartEvent, SessionStartReceipt, SessionStartDelivery, SessionStartDiagnostic, SessionStartServices } from './session-start.js'
+export type { StopEvent, StopReceipt, StopDelivery, StopDiagnostic, StopServices } from './stop.js'
 export { HostHookError } from './hosts/tools.js'
 export type { HostToolEvent, ToolHostOptions } from './hosts/tools.js'
 export type { HostPromptEvent, PromptDiagnostic } from './prompt-types.js'

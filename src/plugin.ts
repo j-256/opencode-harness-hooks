@@ -208,6 +208,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
 
 export async function setupHarnessHooks(context: V2Context, services: RuntimeServices = {}) {
   if (services.sessionStart) throw new HostHookError('HOST_SESSION_START_HOST_UNAVAILABLE', 'unsupported')
+  if (services.stop) throw new HostHookError('HOST_STOP_HOST_UNAVAILABLE', 'unsupported')
   services = { ...services }
   const transcripts = services.transcripts ?? new ClaudeTranscript({ host: 'v2', directory: context.location.directory, history: async (event, signal) => {
     if (!context.session.get || !context.session.context) throw new HostHookError('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE', 'unsupported')
