@@ -1,0 +1,33 @@
+{
+  "oracle": "native-cli-loopback",
+  "runtime": "Claude Code",
+  "version": "2.1.318",
+  "reference": "https://code.claude.com/docs/en/hooks",
+  "scope": "UserPromptSubmit redirect handling with isolated settings and a deterministic local provider",
+  "redirects": [
+    {
+      "location": "relative",
+      "statuses": [
+        301,
+        302,
+        303,
+        307,
+        308
+      ],
+      "followed": false,
+      "continued": true
+    },
+    {
+      "location": "absolute",
+      "statuses": [
+        301,
+        302,
+        303,
+        307,
+        308
+      ],
+      "followed": false,
+      "continued": true
+    }
+  ]
+}

@@ -202,3 +202,16 @@ test('Codex honors the deprecated feature alias while preferring the canonical f
   }
 })
 
+test('validates Claude model selectors and prompt continuation flags before execution', async t => {
+  const { loadSources } = await import('../src/config.js')
+  const root = await fixture(t)
+  const path = join(root, 'settings.json')
+  for (const handler of [
+    { type: 'prompt', prompt: 'Check', model: 7 },
+    { type: 'agent', prompt: 'Check', model: false },
+    { type: 'prompt', prompt: 'Check', continueOnBlock: 'true' },
+  ]) {
+    await writeFile(path, JSON.stringify({ hooks: { Stop: [{ hooks: [handler] }] } }))
+    await assert.rejects(loadSources([{ id: 'claude', dialect: 'claude-code', path }]), /SOURCE_HANDLER/)
+  }
+})

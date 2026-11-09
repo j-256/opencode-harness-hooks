@@ -44,6 +44,12 @@ Foreground command handlers use an explicit session environment snapshot and sou
 
 Handler results distinguish native skips from unavailable host capabilities. Intentionally skipped prompt, agent, HTTP, or MCP registrations do not call an unavailable service. A required condition evaluator, PowerShell launcher, or background scheduler that is absent produces an explicit unsupported result. These command tests do not establish full condition, administrator environment policy, background, other handler-family, or host integration conformance.
 
+## HTTP and model handlers
+
+HTTP handlers POST the native JSON payload and interpolate only explicitly allowed header environment variables. Direct responses distinguish empty success, JSON object output, invalid bodies, transport errors, and non-success status codes. Response streaming stays inside the execution deadline and byte budget; partial output is discarded on cancellation or limits. The pinned native CLI probes do not follow relative or absolute HTTP redirects; redirects follow the non-success response policy. The native redirect observations are retained in an independent fixture.
+
+Prompt and agent handlers call explicit host evaluation services. They preserve requested model selectors, prompt input, structured response validation, event-specific blocking and continuation, and the agent turn limit. Service deadlines cancel the supplied signal and discard late results. Native model selection, exact prompt rendering, agent tool access and lifecycle still require separate host and native conformance evidence. Task completion decisions retain an explicit extension request for trigger-specific host adjudication.
+
 ## Host boundaries under investigation
 
 The pinned V1 host calls plugin event handlers without awaiting their promises. An asynchronous completion observer therefore does not itself provide an awaited final-turn veto. Completion control requires separate execution evidence and must not be inferred from an event name.

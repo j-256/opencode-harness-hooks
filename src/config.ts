@@ -100,6 +100,8 @@ function validateHandler(raw: unknown, sourceID: string, dialect: Dialect): Hand
   const required = skipped ? [] : value.type === 'command' ? ['command'] : value.type === 'http' ? ['url'] : value.type === 'mcp_tool' ? ['server', 'tool'] : ['prompt']
   for (const key of required) if (typeof value[key] !== 'string' || (dialect !== 'codex' && !(value[key] as string).trim())) fail()
   if (value.timeout !== undefined && (typeof value.timeout !== 'number' || !Number.isFinite(value.timeout) || (dialect === 'codex' ? !Number.isSafeInteger(value.timeout) || value.timeout < 0 : value.timeout <= 0))) fail()
+  if (dialect === 'claude-code' && ['prompt', 'agent'].includes(String(value.type)) && value.model !== undefined && typeof value.model !== 'string') fail()
+  if (dialect === 'claude-code' && value.type === 'prompt' && value.continueOnBlock !== undefined && typeof value.continueOnBlock !== 'boolean') fail()
   for (const key of ['statusMessage', 'commandWindows']) if (value[key] !== undefined && typeof value[key] !== 'string') fail()
   for (const key of ['args', 'allowedEnvVars']) {
     if (value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some(item => typeof item !== 'string'))) fail()

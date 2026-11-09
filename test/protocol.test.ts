@@ -227,3 +227,19 @@ test('Claude validates each permission-update family before requesting host effe
     assert.deepEqual(effect.actions, [])
   }
 })
+
+test('Claude model-switch timeout blocks the switch without an explicit failure policy', async () => {
+  const { interpretOutput } = await import('../src/protocol.js')
+  const effect = interpretOutput(reg('claude-code', 'PreModelSwitch'), event('PreModelSwitch'), { ...result(''), status: 'timeout', exitCode: null })
+  assert.equal(effect.status, 'failed')
+  assert.equal(effect.actions[0]?.kind, 'permission')
+})
+
+test('Claude worktree creation fails closed when its command cannot start', async () => {
+  const { interpretOutput } = await import('../src/protocol.js')
+  const effect = interpretOutput(reg('claude-code', 'WorktreeCreate'), event('WorktreeCreate'), { ...result(''), status: 'spawn-error', exitCode: null })
+  assert.equal(effect.status, 'failed')
+  assert.equal(effect.actions[0]?.kind, 'block-event')
+  const exited = interpretOutput(reg('claude-code', 'WorktreeCreate'), event('WorktreeCreate'), { ...result(''), exitCode: 1, stderr: 'Creation failed' })
+  assert.equal(exited.actions.length, 1)
+})

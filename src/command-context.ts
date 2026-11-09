@@ -1,14 +1,11 @@
 import { stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
+import { handlerTimeoutMs } from './timeouts.js'
 import type { HostServices } from './host-services.js'
 import type { CommandInvocation } from './runner.js'
 import type { JsonValue, NativeEvent, Registration } from './types.js'
 
-const SECOND_MS = 1000
-const DEFAULT_TIMEOUT_SECONDS = 600
-const CLAUDE_SHORT_TIMEOUT_EVENTS = new Set(['UserPromptSubmit', 'PreModelSwitch', 'PostModelSwitch'])
 const CLAUDE_ENV_FILE_EVENTS = new Set(['SessionStart', 'Setup', 'CwdChanged', 'FileChanged'])
-const CODEX_SHUTDOWN_EVENTS = new Set(['SessionEnd', 'Interrupt'])
 const CODEX_RESTRICTED_ENV = new Set([
   'CODEX_EXEC_SERVER_NOISE_AUTH_TOKEN', 'NODE_REPL_AUTH_TOKEN', 'CODEX_GUARDIAN_DECISIONS_API_KEY',
   'OPENAI_FEDERATION_RULE_ID', 'OPENAI_IDENTITY_TOKEN_FILE', 'OPENAI_WORKLOAD_IDENTITY_CONTEXT',
@@ -17,18 +14,6 @@ const CLAUDE_PATH_VARIABLES = new Set(['CLAUDE_PROJECT_DIR', 'CLAUDE_PLUGIN_ROOT
 
 export class CommandContextError extends Error {
   constructor(readonly code: string) { super(code); this.name = 'CommandContextError' }
-}
-
-function deadline(registration: Registration, host: HostServices): number {
-  let seconds: number
-  const configured = registration.handler.timeout
-  if (registration.dialect === 'codex') {
-    seconds = CODEX_SHUTDOWN_EVENTS.has(registration.event) ? Math.max(1, Math.min(3, configured ?? 1)) : Math.max(1, configured ?? DEFAULT_TIMEOUT_SECONDS)
-  } else {
-    const fallback = registration.event === 'SessionEnd' ? 1.5 : registration.event === 'MessageDisplay' ? 10 : CLAUDE_SHORT_TIMEOUT_EVENTS.has(registration.event) ? 30 : DEFAULT_TIMEOUT_SECONDS
-    seconds = configured ?? fallback
-  }
-  return Math.min(seconds * SECOND_MS, host.remainingBudgetMs ?? Infinity)
 }
 
 function commandEnvironment(registration: Registration, payload: Readonly<Record<string, JsonValue>>, host: HostServices): NodeJS.ProcessEnv {
@@ -104,7 +89,7 @@ export async function prepareCommand(registration: Registration, event: NativeEv
   const args = exec ? registration.handler.args?.map(value => substituteExec(value, registration, environment, host)) : undefined
   return {
     command, ...(args === undefined ? {} : { args }), cwd: await commandCwd(registration, event, host), env: environment,
-    stdin: JSON.stringify(payload), timeoutMs: deadline(registration, host),
+    stdin: JSON.stringify(payload), timeoutMs: handlerTimeoutMs(registration, host),
     shell: context?.shell ?? (registration.dialect === 'codex' ? { program: environment.SHELL ?? '/bin/sh', args: ['-lc'] } : { program: '/bin/sh', args: ['-c'] }),
     ...(host.signal ? { signal: host.signal } : {}),
     ...(host.maxInputBytes === undefined ? {} : { maxInputBytes: host.maxInputBytes }),

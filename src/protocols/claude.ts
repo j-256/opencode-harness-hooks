@@ -38,6 +38,10 @@ export function failurePolicyApplies(registration: Registration): boolean {
     registration.handler.async !== true && registration.handler.asyncRewake !== true && !FAILURE_POLICY_IGNORED.has(registration.event)
 }
 
+export function claudeFailureBlocks(registration: Registration, code: string): boolean {
+  return failurePolicyApplies(registration) || registration.event === 'WorktreeCreate' || (registration.event === 'PreModelSwitch' && code === 'EXECUTION_TIMEOUT')
+}
+
 export function claudeBlock(event: NativeEvent, reason: string, failurePolicy = false): readonly HookAction[] {
   const name = event.event
   if (name === 'PermissionRequest') return failurePolicy ? [{ kind: 'permission', decision: 'deny', reason }] : []

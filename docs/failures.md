@@ -7,3 +7,7 @@ Input and combined stdout/stderr have explicit byte budgets. An input-limit fail
 The runner receives an explicit duration, including a nullable deadline for callers that own background lifetime. The dialect adapter owns native defaults and seconds-to-duration conversion. The runner does not inherit an arbitrary short timeout from another integration. Deadlines include stdin delivery and stream draining, and long deadlines are scheduled without overflowing Node's timer range.
 
 On POSIX systems, cancellation, deadlines, and output-limit failures send SIGTERM to the subprocess group, then SIGKILL after a short grace period. Escalation still runs when the original process has exited but descendants remain. Descendants that deliberately leave the group require a different containment boundary. Windows descendant cleanup needs separate execution evidence.
+
+HTTP and model evaluation use cancellable service scopes with the same explicit resource budgets. A timeout or cancellation aborts the service signal, releases timers and parent listeners, and prevents a late response from producing effects. A remote service can perform work before observing cancellation; cancellation does not undo an HTTP request or completed remote operation. Host evaluation services must honor the supplied signal.
+
+Claude model-switch timeouts block the switch even without an explicit failure policy. Worktree creation fails when its hook fails. These event-specific rules remain separate from a configured `onFailure` policy.

@@ -7,6 +7,18 @@ export interface SourceContext {
   readonly shell?: { readonly program: string; readonly args: readonly string[] }
 }
 
+export interface ModelHookRequest {
+  readonly prompt: string
+  readonly sessionID: string
+  readonly cwd: string
+  readonly model?: string
+  readonly signal: AbortSignal
+}
+
+export interface AgentHookRequest extends ModelHookRequest {
+  readonly maxTurns: number
+}
+
 export interface HostServices {
   readonly environment: Readonly<NodeJS.ProcessEnv>
   readonly projectRoot: string
@@ -16,5 +28,7 @@ export interface HostServices {
   readonly remainingBudgetMs?: number
   readonly maxInputBytes?: number
   readonly maxOutputBytes?: number
+  readonly evaluatePrompt?: (request: ModelHookRequest) => Promise<unknown>
+  readonly runAgent?: (request: AgentHookRequest) => Promise<unknown>
   readonly evaluateCondition?: (rule: string, payload: Readonly<Record<string, JsonValue>>, signal?: AbortSignal) => Promise<boolean | undefined>
 }

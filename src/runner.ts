@@ -7,8 +7,7 @@ export const EXECUTION_STATUS = Object.freeze({
 } as const)
 export type ExecutionStatus = typeof EXECUTION_STATUS[keyof typeof EXECUTION_STATUS]
 
-const DEFAULT_INPUT_BYTES = 1024 * 1024
-const DEFAULT_OUTPUT_BYTES = 2 * 1024 * 1024
+export const EXECUTION_LIMITS = Object.freeze({ inputBytes: 1024 * 1024, outputBytes: 2 * 1024 * 1024 })
 const TERMINATION_GRACE_MS = 100
 const MAX_TIMER_MS = 2 ** 31 - 1
 
@@ -39,8 +38,8 @@ export async function runCommand(invocation: CommandInvocation): Promise<Executi
   const result = (status: ExecutionStatus, exitCode: number | null = null, signal: NodeJS.Signals | null = null, stdout = '', stderr = ''): ExecutionResult => ({
     status, exitCode, signal, stdout, stderr, durationMs: Math.round(performance.now() - started),
   })
-  const inputLimit = invocation.maxInputBytes ?? DEFAULT_INPUT_BYTES
-  const outputLimit = invocation.maxOutputBytes ?? DEFAULT_OUTPUT_BYTES
+  const inputLimit = invocation.maxInputBytes ?? EXECUTION_LIMITS.inputBytes
+  const outputLimit = invocation.maxOutputBytes ?? EXECUTION_LIMITS.outputBytes
   if (!Number.isSafeInteger(inputLimit) || inputLimit < 1 || !Number.isSafeInteger(outputLimit) || outputLimit < 1 ||
       (invocation.timeoutMs !== null && (!Number.isFinite(invocation.timeoutMs) || invocation.timeoutMs < 0))) {
     return result(EXECUTION_STATUS.INVALID)
