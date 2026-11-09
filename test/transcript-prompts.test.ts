@@ -33,7 +33,7 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }, ho
     { type: 'user', id: 'turn', text: promptText, time: { created: CREATED } },
     { type: 'assistant', id: 'answer', model: { id: 'fixture' }, time: { created: CREATED + 1 }, content: [{ type: 'tool', name: 'shell', id: 'call', state: { status: 'running' } }] },
   ] }
-  return { directory, runtime, transcripts, prompt, tool, admitHistory }
+  return { directory, runtime, transcripts, prompt, tool, admitHistory, modes }
 }
 
 test('both hosts publish admitted Claude prompt attachments with raw command data and stable native identities', async t => {
@@ -51,9 +51,10 @@ test('both hosts publish admitted Claude prompt attachments with raw command dat
     const rows = (await readFile(reserved, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
     assert.equal(rows[0].message.content, 'User prompt')
     const attachments = rows.filter(row => row.type === 'attachment' && row.attachment.hookEvent === 'UserPromptSubmit')
-    assert.deepEqual(attachments.map(row => row.attachment.type), ['hook_success', 'hook_system_message', 'hook_additional_context', 'hook_system_message', 'hook_additional_context'])
+    const expectedTypes = [...dispatch.entries].sort((left, right) => left.completionOrder - right.completionOrder).flatMap(entry => f.modes[entry.configuredOrder] === 'stdout' ? ['hook_success'] : ['hook_system_message', 'hook_additional_context'])
+    assert.deepEqual(attachments.map(row => row.attachment.type), expectedTypes)
     assert.equal(attachments.filter(row => row.attachment.type === 'hook_additional_context').length, 2)
-    const success = attachments[0]
+    const success = attachments.find(row => row.attachment.type === 'hook_success')
     assert.equal(success.attachment.stdout, 'Context stdout\n')
     assert.equal(success.attachment.stderr, 'Captured stderr\n')
     assert.equal(success.attachment.content, 'Context stdout')

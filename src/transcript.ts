@@ -15,7 +15,8 @@ import type { DispatchResult } from './engine.js'
 import { PromptAttachments } from './prompt-attachments.js'
 import { ModelContext } from './model-context.js'
 import type { HostModelEvent } from './model-types.js'
-import type { StopEvent } from './stop.js'
+import type { StopDelivery, StopEvent } from './stop.js'
+import { StopRecords } from './stop-records.js'
 
 const HISTORY_MS = 5000
 const MAX_MESSAGES = 10000
@@ -37,6 +38,7 @@ export interface TranscriptHistory {
 export interface TranscriptService {
   observeModel?(event: HostModelEvent, session: SessionSnapshot): void
   admitPrompt?(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void
+  admitStop?(delivery: StopDelivery): void
   observe(event: HostToolEvent, session: SessionSnapshot): void
   prepare(event: TranscriptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<string>
   dispose(): Promise<void>
@@ -70,6 +72,7 @@ function string(value: unknown): string { return typeof value === 'string' ? val
 function array(value: unknown): readonly unknown[] { return Array.isArray(value) ? value : fail('TRANSCRIPT_SCHEMA_INVALID') }
 function millis(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime()) ? value : fail('TRANSCRIPT_SCHEMA_INVALID') }
 function key(sessionID: string, turnID: string, callID: string): string { return JSON.stringify([sessionID, turnID, callID]) }
+function completionSignature(message: Message): string { return createHash('sha256').update(JSON.stringify(message)).digest('hex') }
 function uuid(value: string): string {
   const bytes = createHash('sha1').update(TRANSCRIPT_NAMESPACE).update(value).digest().subarray(0, 16)
   bytes[6] = (bytes[6]! & 0x0f) | 0x50
@@ -135,6 +138,7 @@ export class ClaudeTranscript implements TranscriptService {
   private readonly serial = new Map<string, Promise<unknown>>()
   private readonly published = new Set<string>()
   private readonly prompts = new PromptAttachments()
+  private readonly stops = new StopRecords()
   private readonly models: ModelContext
   private readonly lifetime = new AbortController()
   private directory: Promise<string> | undefined
@@ -158,6 +162,13 @@ export class ClaudeTranscript implements TranscriptService {
   admitPrompt(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void {
     if (event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
     this.prompts.admit(event, session, dispatch)
+  }
+
+  admitStop(delivery: StopDelivery): void {
+    if (delivery.event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
+    if (this.options.host !== 'v2') fail('TRANSCRIPT_STOP_HOST_UNSUPPORTED')
+    if (delivery.event.cwd !== this.options.directory) fail('TRANSCRIPT_STOP_CWD_UNAVAILABLE')
+    this.stops.admit(delivery)
   }
 
   observe(event: HostToolEvent, session: SessionSnapshot): void {
@@ -197,7 +208,8 @@ export class ClaudeTranscript implements TranscriptService {
       if (history.parentID !== undefined && (typeof history.parentID !== 'string' || !history.parentID)) fail('TRANSCRIPT_SCHEMA_INVALID')
       if (!session.turnID) fail('TRANSCRIPT_TURN_UNAVAILABLE')
       if (event.event === 'UserPromptSubmit') this.prompts.begin(session)
-      const rows = this.project(event, messages(this.options.host, event.sessionID, array(history.messages)), history.parentID !== undefined)
+      const entries = messages(this.options.host, event.sessionID, array(history.messages))
+      const rows = this.project(event, entries, history.parentID !== undefined)
       const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
       if (Buffer.byteLength(text) > MAX_BYTES) fail('TRANSCRIPT_SIZE_LIMIT')
       if (signal.aborted) fail('TRANSCRIPT_CANCELLED')
@@ -215,6 +227,7 @@ export class ClaudeTranscript implements TranscriptService {
         try { await file.writeFile(text) } finally { await file.close() }
         if (signal.aborted) fail('TRANSCRIPT_CANCELLED')
         await rename(temporary, path)
+        if (event.event === 'Stop') this.stops.prepare(event, session, completionSignature(entries.at(-1)!))
         this.published.add(event.sessionID)
         return path
       } finally { await rm(temporary, { force: true }) }
@@ -232,6 +245,7 @@ export class ClaudeTranscript implements TranscriptService {
   dispose(): Promise<void> {
     this.lifetime.abort()
     this.prompts.dispose()
+    this.stops.dispose()
     this.models.dispose()
     this.disposing ??= (async () => {
       await Promise.allSettled([...this.serial.values()])
@@ -245,7 +259,7 @@ export class ClaudeTranscript implements TranscriptService {
     return this.disposing
   }
 
-  inspect() { return Object.freeze({ created: this.directoryPath !== undefined, disposed: this.lifetime.signal.aborted, originals: this.originals.size, originalBytes: this.originalBytes, pending: this.pendingCount, ...this.prompts.inspect(), ...this.models.inspect() }) }
+  inspect() { return Object.freeze({ created: this.directoryPath !== undefined, disposed: this.lifetime.signal.aborted, originals: this.originals.size, originalBytes: this.originalBytes, pending: this.pendingCount, ...this.prompts.inspect(), ...this.stops.inspect(), ...this.models.inspect() }) }
 
   private project(event: TranscriptEvent, history: readonly Message[], sidechain: boolean): readonly Record<string, JsonValue>[] {
     const rows: Record<string, JsonValue>[] = []
@@ -257,6 +271,7 @@ export class ClaudeTranscript implements TranscriptService {
       if (!last || last.role !== 'assistant' || last.id !== event.completionID || last.turnID !== event.messageID || currentTurnID !== event.messageID || !last.finish || last.finish === 'tool-calls' || !Object.hasOwn(FINISH, last.finish)) fail('TRANSCRIPT_STOP_COMPLETION_UNAVAILABLE')
     }
     const modeled = new Set(history.filter(message => message.role === 'assistant').map(message => message.turnID))
+    this.stops.validateHistory(event.sessionID, new Set(history.filter(message => message.role === 'assistant').map(message => message.id)))
     if (event.event === 'UserPromptSubmit' && history.some(message => message.id === event.messageID)) fail('TRANSCRIPT_PROMPT_ALREADY_ADMITTED')
     const append = (identity: string, created: number, body: Record<string, JsonValue>) => {
       const id = uuid(JSON.stringify([event.sessionID, identity]))
@@ -293,6 +308,7 @@ export class ClaudeTranscript implements TranscriptService {
       const stop = entry.finish === undefined ? content.some(item => record(item) && item.type === 'tool_use') ? 'tool_use' : null : Object.hasOwn(FINISH, entry.finish) ? FINISH[entry.finish]! : fail('TRANSCRIPT_FINISH_UNSUPPORTED')
       push(entry.id, entry.created, 'assistant', { id: entry.id, type: 'message', role: 'assistant', content, model: entry.model!, stop_reason: stop, stop_sequence: null })
       for (const result of results) push(`${entry.id}/${result.id}/result`, result.created, 'user', { role: 'user', content: [{ type: 'tool_result', tool_use_id: result.id, content: result.content, ...(result.error ? { is_error: true } : {}) }] })
+      for (const record of this.stops.read(event.sessionID, entry.id, entry.turnID, completionSignature(entry))) append('stop/' + record.id, record.created, { ...record.body })
     }
     if (!current && event.event !== 'UserPromptSubmit' && event.event !== 'Stop') fail('TRANSCRIPT_CURRENT_CALL_MISSING')
     return rows
