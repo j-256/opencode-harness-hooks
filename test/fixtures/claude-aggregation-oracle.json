@@ -1,0 +1,156 @@
+{
+  "oracle": "native-cli-loopback",
+  "runtime": "Claude Code",
+  "version": "2.1.318",
+  "reference": "https://code.claude.com/docs/en/hooks",
+  "scope": "PreToolUse whole-input replacement, completion ordering, denial and non-execution for defer; resuming deferred calls is outside this capture",
+  "original": {
+    "value": "original",
+    "left": "original-left",
+    "right": "original-right"
+  },
+  "cases": [
+    {
+      "name": "first-completes-last",
+      "outputs": [
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": {
+              "value": "first"
+            }
+          }
+        },
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": {
+              "value": "second"
+            }
+          }
+        }
+      ],
+      "completionOrder": [
+        1,
+        0
+      ],
+      "executedInput": {
+        "value": "first"
+      }
+    },
+    {
+      "name": "second-completes-last",
+      "outputs": [
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": {
+              "value": "first"
+            }
+          }
+        },
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": {
+              "value": "second"
+            }
+          }
+        }
+      ],
+      "completionOrder": [
+        0,
+        1
+      ],
+      "executedInput": {
+        "value": "second"
+      }
+    },
+    {
+      "name": "partial-rewrites",
+      "outputs": [
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": {
+              "left": "first-left"
+            }
+          }
+        },
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": {
+              "value": "second",
+              "right": "second-right"
+            }
+          }
+        }
+      ],
+      "completionOrder": [
+        1,
+        0
+      ],
+      "executedInput": {
+        "left": "first-left"
+      }
+    },
+    {
+      "name": "denial-before-allow",
+      "outputs": [
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "deny",
+            "permissionDecisionReason": "Fixture denial"
+          }
+        },
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": {
+              "value": "second"
+            }
+          }
+        }
+      ],
+      "completionOrder": [
+        0,
+        1
+      ],
+      "executedInput": null
+    },
+    {
+      "name": "defer-before-allow",
+      "outputs": [
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "defer"
+          }
+        },
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "PreToolUse",
+            "permissionDecision": "allow",
+            "updatedInput": {
+              "value": "second"
+            }
+          }
+        }
+      ],
+      "completionOrder": [
+        0,
+        1
+      ],
+      "executedInput": null
+    }
+  ]
+}

@@ -81,7 +81,11 @@ Results retain configuration order for reporting and a separate completion order
 
 Cancellation drains handlers and suppresses foreground action delivery. Diagnostics identify the dispatch, source revision, registration, outcome and duration without commands, source paths or output. Missing services remain unsupported, intentionally skipped native handlers remain skipped, and invalid matchers produce registration-specific failures while other registrations continue.
 
-Conflicting input rewrites, continuation precedence, shared SessionEnd budgets and installed-host effect application remain aggregation and integration gates. Preserving their input actions and completion order does not establish those effects.
+The effect resolver selects the last-completed whole input replacement, preserving its source attribution. It does not merge the replacement with the original input. Native Claude MCP executions establish completion ordering, whole-object replacement and suppression by denial; Codex's pinned PreToolUse implementation selects by completion order too. The same rule combines rewrites across dialects. Superseded actions remain in the dispatch trace with metadata-only suppression records.
+
+Approval requests preserve rewritten input for review and do not authorize direct execution. Deferred calls preserve a distinct `defer` control, suppress input application and require a host implementation that can resume the call later. Session stopping suppresses continuation actions while retaining their original dispatch trace. Claude feedback continuations and Codex user-prompt continuations remain separate.
+
+Competing post-tool result replacements remain an explicit unresolved conflict; the resolver retains every request instead of selecting an unverified outcome. Shared SessionEnd budgets and installed-host application of resolved effects remain integration gates. Native oracle regeneration remains a delivery gate.
 
 ## Host boundaries under investigation
 
@@ -89,5 +93,5 @@ The pinned V1 host calls plugin event handlers without awaiting their promises. 
 
 Source-native handler families include command, HTTP, MCP tool, prompt, and agent hooks. Their availability and intentional skip behavior differ by dialect and event. Recognition, execution, and equivalent native effects are separate checks.
 
-V2 exposes an awaited `experimental.idle` session hook. Its continuation behavior requires independent execution evidence and does not repair V1's missing awaited completion hook. Windows is not covered by macOS execution evidence.
+V2 exposes an awaited `experimental.idle` session hook. An isolated probe of the pinned V2 binary with a deterministic local provider verifies that the hook can admit synthetic input with `resume: false`, continue the same execution and return the continued answer only after the final idle hook completes. This establishes the host mechanism; the plugin's Stop translation, lifecycle limits and migration behavior still require integration evidence. V1's missing awaited completion hook remains a separate gap. Windows is not covered by macOS execution evidence.
 
