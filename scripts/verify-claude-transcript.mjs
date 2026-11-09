@@ -2,6 +2,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { NativeProbeError as ProbeError, NATIVE_CLAUDE_LIMITS, runNativeClaude as native } from './lib/native-claude.mjs'
+import { nativeCheckError } from './lib/native-process.mjs'
 import { createHash } from 'node:crypto'
 import { access, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -258,7 +259,7 @@ async function verify(binary) {
     }
     const requiredFailures = Object.entries(generated).filter(([_host, value]) => !value.nativeContextTextEquivalent).map(([host]) => ({ host, code: 'NATIVE_READER_CONTEXT_TEXT_DIFFERENCE' }))
     return { claude: VERSION, nativePromptAttachments: true, nativeNonblockingErrors: true, nativeTimeoutArtifacts: true, nativeTimeoutFailurePolicy: true, nativeSignalArtifacts: true, nativeCompletionOrder: true, nativeExecCommandDisplay: true, nativeReaderReference: true, nativeRepeatedCommandExecutions: nativeRepeated, approvedNoDeduplicationDifference: true, generated, requiredFailures, equivalent: false }
-  } catch (error) { if (error instanceof ProbeError) throw error; throw new ProbeError('TRANSCRIPT_CHECK_FAILED: ' + stage) } finally {
+  } catch (error) { throw nativeCheckError('TRANSCRIPT_CHECK_FAILED', stage, error, import.meta.url) } finally {
     try { await runtime?.dispose() } finally {
       if (gateway) { gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)) }
       await rm(root, { recursive: true, force: true })

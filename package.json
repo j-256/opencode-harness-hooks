@@ -36,6 +36,7 @@
     "test:host:plugin": "node scripts/verify-plugin.mjs",
     "test:native:claude": "node scripts/verify-claude-transcript.mjs",
     "test:native:claude:lifecycle": "node scripts/verify-claude-lifecycle.mjs",
+    "test:native:stop": "node scripts/verify-native-stop.mjs",
     "test:package": "node scripts/verify-package.mjs",
     "verify": "npm run typecheck && npm run build && node --import tsx --test test/*.test.ts"
   },

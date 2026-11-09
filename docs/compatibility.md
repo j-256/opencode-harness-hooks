@@ -22,6 +22,8 @@ OpenCode V1 cannot load configurations containing enabled `Stop` registrations. 
 
 The V1 acceptance case tests rejection before any hook or model execution through the actual default entrypoint. A passing rejection test does not make those configurations compatible with V1. V2 Stop parity, all other native behavior and the remaining migration acceptance requirements are unchanged. See [runtime configuration and reproduction](runtime.md) for the diagnostic contract and executable fixture.
 
+The independent [native Stop reference](stop.md) characterizes continuation payloads, feedback, artifacts and ordering for both source dialects. Its success does not enable the unfinished V2 Stop adapter or claim bridge parity.
+
 ## Source references
 
 - [Claude Code hook reference](https://code.claude.com/docs/en/hooks)
