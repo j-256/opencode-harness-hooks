@@ -32,6 +32,8 @@ The fixture isolates HOME, configuration and project state, uses synthetic crede
 
 Claude Code 2.1.318 accepts a parsed `decision: "approve"` at Stop without turning it into an approval or continuation. Empty `additionalContext` does not continue the turn, while whitespace context remains significant. An empty or missing block reason continues with the native fallback `Blocked by hook`; a whitespace reason is preserved. Blocking stderr is preserved without trimming and uses `No stderr output` only when empty. The [focused interpreter cases](../test/protocol.test.ts) retain these observed Stop distinctions. Portable regeneration of these additional native cases and their complete artifact projection remain conformance work.
 
+Interpreted Claude Stop continuations retain `channel: "decision"`, `"stderr"` or `"additionalContext"` through shared dispatch and effect resolution. Identical text can come from different fields, including two fields in the same handler result. Artifact delivery needs that distinction: additional context produces a native reminder block, while blocking decisions and stderr produce Stop feedback. Other handlers do not acquire a channel inferred from their text; model verdicts remain distinct from process stderr.
+
 ## Reproduction
 
 From a repository checkout with Node.js 22+, POSIX process groups and the selected pinned executable:

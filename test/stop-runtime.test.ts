@@ -60,6 +60,7 @@ test('core Stop awaits feedback admission and keeps independent registrations in
   await new Promise<void>(resolve => setImmediate(resolve))
   assert.equal(finished, false)
   assert.equal(deliveries[0]!.effects.continuations.length, 2)
+  assert.deepEqual(deliveries[0]!.effects.continuations.map(row => row.action.mode), ['user', 'user'])
   assert.equal(deliveries[0]!.dispatch.entries.length, 2)
   assert.ok(deliveries[0]!.dispatch.entries.every(entry => 'commandArtifact' in entry.result))
   assert.equal(deliveries[0]!.event.data!.stop_hook_active, false)
@@ -76,6 +77,16 @@ test('core Stop awaits feedback admission and keeps independent registrations in
   runtime.sessions.prompt('session', 'next', 'next-model')
   await runtime.stop({ ...f.event('next-answer'), messageID: 'next' })
   assert.equal((await f.payloads()).at(-1).stop_hook_active, false)
+})
+
+test('Claude Stop continuation channels survive shared dispatch and effect admission', async t => {
+  const f = await fixture(t, 2, 'claude-code')
+  const deliveries: StopDelivery[] = []
+  const runtime = await connect(t, f, { admit: async delivery => { deliveries.push(delivery) } })
+  assert.equal((await runtime.stop(f.event())).control, 'continue')
+  assert.deepEqual(deliveries[0]!.effects.continuations.map(row => row.action.channel), ['decision', 'decision'])
+  assert.deepEqual(deliveries[0]!.dispatch.actions.map(row => row.action.kind === 'continue-turn' ? row.action.channel : undefined), ['decision', 'decision'])
+  assert.equal((await f.payloads()).length, 2)
 })
 
 test('completion conflicts and overlaps reject without replaying the native hook', async t => {

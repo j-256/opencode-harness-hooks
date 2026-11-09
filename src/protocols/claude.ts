@@ -78,6 +78,7 @@ export function interpretClaude(registration: Registration, event: NativeEvent, 
   const name = event.event
   const stdout = result.stdout.trim()
   const stderr = name === 'Stop' ? result.stderr || EMPTY_STOP_STDERR : result.stderr.trim()
+  const exitActions = (): readonly HookAction[] => claudeBlock(event, stderr).map(action => name === 'Stop' && action.kind === 'continue-turn' ? { ...action, channel: 'stderr' as const } : action)
   if (name === 'WorktreeCreate' && registration.handler.type === 'command') {
     if (result.exitCode !== 0 || !stdout || !isAbsolute(stdout)) return failure('WORKTREE_CREATE_FAILED', claudeBlock(event, stderr))
     return success([{ kind: 'native-extension', name: 'worktreePath', value: stdout }])
@@ -99,9 +100,9 @@ export function interpretClaude(registration: Registration, event: NativeEvent, 
   const actions: HookAction[] = []
   if (record(body) && typeof body.terminalSequence === 'string' && TERMINAL_SEQUENCE.test(body.terminalSequence)) actions.push({ kind: 'native-extension', name: 'terminalSequence', value: body.terminalSequence })
   if (DISCARD_OUTPUT.has(name)) return success(actions)
-  if (invalid) return result.exitCode === 2 ? success([...actions, ...claudeBlock(event, stderr)]) : failure('INVALID_OUTPUT', actions)
+  if (invalid) return result.exitCode === 2 ? success([...actions, ...exitActions()]) : failure('INVALID_OUTPUT', actions)
   if (!record(body)) {
-    if (result.exitCode === 2) return success([...actions, ...claudeBlock(event, stderr)])
+    if (result.exitCode === 2) return success([...actions, ...exitActions()])
     if (result.exitCode !== 0) return failure('COMMAND_FAILED', actions)
     if (stdout && (TEXT_CONTEXT.has(name) || name === 'PreCompact')) actions.push({ kind: 'context', text: stdout, placement: name === 'PreCompact' ? 'compaction' : 'model', channel: 'stdout' })
     return success(actions)
@@ -132,18 +133,18 @@ export function interpretClaude(registration: Registration, event: NativeEvent, 
     if (CONTINUATION_EVENTS.has(name)) {
       const reason = name === 'Stop' ? text(body.reason) || DEFAULT_STOP_REASON : text(body.reason)
       if (name !== 'Stop' && !reason.trim()) return failure('MISSING_BLOCK_REASON', actions)
-      actions.push({ kind: 'continue-turn', text: reason, mode: 'feedback' })
+      actions.push({ kind: 'continue-turn', text: reason, mode: 'feedback', ...(name === 'Stop' ? { channel: 'decision' as const } : {}) })
     } else if (name === 'PostToolUse' || name === 'PostToolUseFailure') actions.push({ kind: 'feedback', text: text(body.reason) })
     else if (TOP_BLOCK_EVENTS.has(name) || name === 'Elicitation' || name === 'ElicitationResult') actions.push(...claudeBlock(event, text(body.reason)))
   }
-  if (result.exitCode === 2 && name !== 'PreToolUse' && name !== 'PreModelSwitch' && body.decision !== 'block') actions.push(...claudeBlock(event, stderr))
+  if (result.exitCode === 2 && name !== 'PreToolUse' && name !== 'PreModelSwitch' && body.decision !== 'block') actions.push(...exitActions())
   if (name === 'PostToolUse') {
     const output = hook.updatedToolOutput ?? (event.tool?.startsWith('mcp__') ? hook.updatedMCPToolOutput : undefined)
     if (output !== undefined) actions.push({ kind: 'replace-result', output: structuredClone(output), rejectNested: false })
   }
   if (typeof hook.additionalContext === 'string' && hook.permissionDecision !== 'defer') {
     if (CONTINUATION_EVENTS.has(name)) {
-      if (name !== 'Stop' || hook.additionalContext.length > 0) actions.push({ kind: 'continue-turn', text: hook.additionalContext, mode: 'feedback' })
+      if (name !== 'Stop' || hook.additionalContext.length > 0) actions.push({ kind: 'continue-turn', text: hook.additionalContext, mode: 'feedback', ...(name === 'Stop' ? { channel: 'additionalContext' as const } : {}) })
     } else if (['SessionStart', 'SubagentStart', 'UserPromptSubmit', 'UserPromptExpansion', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'PostModelSwitch'].includes(name)) actions.push({ kind: 'context', text: hook.additionalContext, placement: 'model', channel: 'additionalContext' })
   }
   for (const field of EXTENSIONS[name] ?? []) if (hook[field] !== undefined) actions.push({ kind: 'native-extension', name: field, value: structuredClone(hook[field]) })

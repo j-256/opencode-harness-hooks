@@ -23,7 +23,7 @@ export type HookAction =
   | { readonly kind: 'permission'; readonly decision: PermissionDecision; readonly reason: string }
   | { readonly kind: 'replace-input'; readonly input: Readonly<Record<string, JsonValue>> }
   | { readonly kind: 'replace-result'; readonly output: JsonValue; readonly rejectNested: boolean }
-  | { readonly kind: 'continue-turn'; readonly text: string; readonly mode: 'feedback' | 'user' }
+  | { readonly kind: 'continue-turn'; readonly text: string; readonly mode: 'feedback' | 'user'; readonly channel?: 'decision' | 'stderr' | 'additionalContext' }
   | { readonly kind: 'stop-session'; readonly reason: string }
   | { readonly kind: 'block-event'; readonly reason: string }
   | { readonly kind: 'context'; readonly text: string; readonly placement: 'model' | 'compaction'; readonly channel?: 'systemMessage' | 'additionalContext' | 'stdout' }

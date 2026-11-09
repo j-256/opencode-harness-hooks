@@ -58,12 +58,15 @@ test('legacy decisions and source exit-code precedence follow the pinned native 
 
 test('Stop continuation and continue:false retain dialect and event semantics', async () => {
   const { interpretOutput } = await import('../src/protocol.js')
-  for (const name of ['Stop', 'SubagentStop']) {
+  for (const { name, decision, additional } of [
+    { name: 'Stop', decision: { kind: 'continue-turn', text: 'continue', mode: 'feedback', channel: 'decision' }, additional: { kind: 'continue-turn', text: 'feedback', mode: 'feedback', channel: 'additionalContext' } },
+    { name: 'SubagentStop', decision: { kind: 'continue-turn', text: 'continue', mode: 'feedback' }, additional: { kind: 'continue-turn', text: 'feedback', mode: 'feedback' } },
+  ]) {
     const claude = interpretOutput(reg('claude-code', name), event(name), result({ decision: 'block', reason: 'continue' }))
     const codex = interpretOutput(reg('codex', name), event(name), result({ decision: 'block', reason: 'continue' }))
-    assert.deepEqual(claude.actions, [{ kind: 'continue-turn', text: 'continue', mode: 'feedback' }])
+    assert.deepEqual(claude.actions, [decision])
     assert.deepEqual(codex.actions, [{ kind: 'continue-turn', text: 'continue', mode: 'user' }])
-    assert.deepEqual(interpretOutput(reg('claude-code', name), event(name), result(specific(name, { additionalContext: 'feedback' }))).actions, [{ kind: 'continue-turn', text: 'feedback', mode: 'feedback' }])
+    assert.deepEqual(interpretOutput(reg('claude-code', name), event(name), result(specific(name, { additionalContext: 'feedback' }))).actions, [additional])
     for (const dialect of ['claude-code', 'codex'] as const) {
       const stopped = interpretOutput(reg(dialect, name), event(name), result({ continue: false, stopReason: 'stop', decision: 'block', reason: 'ignored' }))
       assert.deepEqual(stopped.actions, [{ kind: 'stop-session', reason: 'stop' }])
@@ -76,17 +79,40 @@ test('Stop continuation and continue:false retain dialect and event semantics', 
 for (const row of [
   { name: 'ignores parsed approval', output: { decision: 'approve', reason: 'Ignored' }, exit: 0, actions: [] },
   { name: 'ignores empty additional context', output: specific('Stop', { additionalContext: '' }), exit: 0, actions: [] },
-  { name: 'defaults an empty block reason', output: { decision: 'block', reason: '' }, exit: 0, actions: [{ kind: 'continue-turn', text: 'Blocked by hook', mode: 'feedback' }] },
-  { name: 'defaults a missing block reason', output: { decision: 'block' }, exit: 0, actions: [{ kind: 'continue-turn', text: 'Blocked by hook', mode: 'feedback' }] },
-  { name: 'preserves a whitespace block reason', output: { decision: 'block', reason: '   ' }, exit: 0, actions: [{ kind: 'continue-turn', text: '   ', mode: 'feedback' }] },
-  { name: 'preserves whitespace additional context', output: specific('Stop', { additionalContext: '   ' }), exit: 0, actions: [{ kind: 'continue-turn', text: '   ', mode: 'feedback' }] },
-  { name: 'defaults empty blocking stderr', output: '', exit: 2, actions: [{ kind: 'continue-turn', text: 'No stderr output', mode: 'feedback' }] },
-  { name: 'preserves whitespace blocking stderr', output: '', exit: 2, stderr: '   ', actions: [{ kind: 'continue-turn', text: '   ', mode: 'feedback' }] },
+  { name: 'defaults an empty block reason', output: { decision: 'block', reason: '' }, exit: 0, actions: [{ kind: 'continue-turn', text: 'Blocked by hook', mode: 'feedback', channel: 'decision' }] },
+  { name: 'defaults a missing block reason', output: { decision: 'block' }, exit: 0, actions: [{ kind: 'continue-turn', text: 'Blocked by hook', mode: 'feedback', channel: 'decision' }] },
+  { name: 'preserves a whitespace block reason', output: { decision: 'block', reason: '   ' }, exit: 0, actions: [{ kind: 'continue-turn', text: '   ', mode: 'feedback', channel: 'decision' }] },
+  { name: 'preserves whitespace additional context', output: specific('Stop', { additionalContext: '   ' }), exit: 0, actions: [{ kind: 'continue-turn', text: '   ', mode: 'feedback', channel: 'additionalContext' }] },
+  { name: 'defaults empty blocking stderr', output: '', exit: 2, actions: [{ kind: 'continue-turn', text: 'No stderr output', mode: 'feedback', channel: 'stderr' }] },
+  { name: 'preserves whitespace blocking stderr', output: '', exit: 2, stderr: '   ', actions: [{ kind: 'continue-turn', text: '   ', mode: 'feedback', channel: 'stderr' }] },
 ]) test(`Claude Stop native output ${row.name}`, async () => {
   const { interpretOutput } = await import('../src/protocol.js')
   const effect = interpretOutput(reg('claude-code', 'Stop'), event('Stop'), result(row.output, row.exit, 'stderr' in row ? row.stderr : ''))
   assert.equal(effect.status, 'success')
   assert.deepEqual(effect.actions, row.actions)
+})
+
+test('Claude Stop retains the native output field when continuation text is identical', async () => {
+  const { interpretOutput } = await import('../src/protocol.js')
+  const cases = [
+    { output: { decision: 'block', reason: 'Same' }, exit: 0, stderr: '', channel: 'decision' },
+    { output: specific('Stop', { additionalContext: 'Same' }), exit: 0, stderr: '', channel: 'additionalContext' },
+    { output: '', exit: 2, stderr: 'Same', channel: 'stderr' },
+  ]
+  for (const row of cases) {
+    const effect = interpretOutput(reg('claude-code', 'Stop'), event('Stop'), result(row.output, row.exit, row.stderr))
+    assert.equal(effect.status, 'success')
+    assert.deepEqual(effect.actions, [{ kind: 'continue-turn', text: 'Same', mode: 'feedback', channel: row.channel }])
+  }
+  const body = { decision: 'block', reason: 'Same', ...specific('Stop', { additionalContext: 'Same' }) }
+  assert.deepEqual(interpretOutput(reg('claude-code', 'Stop'), event('Stop'), result(body)).actions, [
+    { kind: 'continue-turn', text: 'Same', mode: 'feedback', channel: 'decision' },
+    { kind: 'continue-turn', text: 'Same', mode: 'feedback', channel: 'additionalContext' },
+  ])
+  assert.deepEqual(interpretOutput(reg('claude-code', 'Stop'), event('Stop'), result(specific('Stop', { additionalContext: 'Same' }), 2, 'Same')).actions, [
+    { kind: 'continue-turn', text: 'Same', mode: 'feedback', channel: 'stderr' },
+    { kind: 'continue-turn', text: 'Same', mode: 'feedback', channel: 'additionalContext' },
+  ])
 })
 
 test('post-tool feedback does not retroactively deny an effect and differs by dialect', async () => {
