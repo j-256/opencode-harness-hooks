@@ -49,10 +49,11 @@ export function matchesPattern(dialect: Dialect, event: string, pattern: string 
 }
 
 function candidates(registration: Registration, event: NativeEvent): readonly string[] | undefined {
+  const data = { ...event.data, ...event.dialectData?.[registration.dialect] }
   if (registration.dialect === 'claude-code') {
     if (event.event === 'PreModelSwitch' || event.event === 'PostModelSwitch') return event.matcherValue === undefined ? undefined : [event.matcherValue]
     if (event.event === 'FileChanged') {
-      const path = event.data?.file_path
+      const path = data.file_path
       return typeof path === 'string' ? [basename(path)] : []
     }
   }
@@ -63,7 +64,7 @@ function candidates(registration: Registration, event: NativeEvent): readonly st
   }
   const field = (registration.dialect === 'claude-code' ? CLAUDE_FIELDS : COMMON_FIELDS)[event.event]
   if (field === undefined) return undefined
-  const value = event.data?.[field]
+  const value = data[field]
   return typeof value === 'string' ? [value] : []
 }
 

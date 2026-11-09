@@ -96,3 +96,10 @@ test('unknown tool identities remain unchanged across arbitrary namespaces', asy
     assert.equal(toolIdentity('codex', tool), tool)
   }))
 })
+
+test('each dialect matches its own lifecycle metadata when both sources share an event', async () => {
+  const { selectRegistrations } = await import('../src/matchers.js')
+  const sources = [source('claude-code', 'SessionStart', 'resume'), source('codex', 'SessionStart', 'startup')]
+  const result = selectRegistrations(sources, { ...event, event: 'SessionStart', data: { source: 'common' }, dialectData: { 'claude-code': { source: 'resume' }, codex: { source: 'startup' } } })
+  assert.deepEqual(result.map(registration => registration.dialect), ['claude-code', 'codex'])
+})

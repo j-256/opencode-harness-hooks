@@ -25,7 +25,7 @@ export type HandlerResult = HookEffect | {
 }
 
 function result(registration: Registration, status: InactiveStatus | 'failed' | 'success', code: string, started: number, actions: readonly HookAction[] = []): HandlerResult {
-  const diagnostic = { sourceID: registration.sourceID, registrationID: registration.id, dialect: registration.dialect, event: registration.event, code, durationMs: Math.round(performance.now() - started) }
+  const diagnostic = { sourceID: registration.sourceID, ...(registration.sourceDigest ? { sourceDigest: registration.sourceDigest } : {}), registrationID: registration.id, dialect: registration.dialect, event: registration.event, code, durationMs: Math.round(performance.now() - started) }
   if (status === 'failed' || status === 'success') return { status, code, actions, diagnostic: { ...diagnostic, outcome: status } }
   return { status, code, actions, diagnostic: { ...diagnostic, outcome: status } }
 }

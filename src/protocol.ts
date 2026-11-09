@@ -23,6 +23,6 @@ export function interpretOutput(registration: Registration, event: NativeEvent, 
   }
   return {
     ...interpreted,
-    diagnostic: { sourceID: registration.sourceID, registrationID: registration.id, dialect: registration.dialect, event: event.event, code: interpreted.code, outcome: interpreted.status, durationMs: result.durationMs, ...(interpreted.invalidFields ? { invalidFields: interpreted.invalidFields } : {}) },
+    diagnostic: { sourceID: registration.sourceID, ...(registration.sourceDigest ? { sourceDigest: registration.sourceDigest } : {}), registrationID: registration.id, dialect: registration.dialect, event: event.event, code: interpreted.code, outcome: interpreted.status, durationMs: result.durationMs, ...(interpreted.invalidFields ? { invalidFields: interpreted.invalidFields } : {}) },
   }
 }

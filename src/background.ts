@@ -189,7 +189,7 @@ export class BackgroundManager implements BackgroundExecutor {
       cancelled = execution.status === 'cancelled'
       effect = interpretOutput(registration, event, execution, { mode: 'background' })
       if (!state.closed && effect.actions.length) {
-        const delivery = freeze({ id: job.id, sourceID: registration.sourceID, registrationID: registration.id, dialect: registration.dialect, event: registration.event, mode: effect.actions.some(action => action.kind === 'native-extension' && action.name === 'asyncRewake') ? 'wake' as const : 'safe-point' as const, actions: structuredClone(effect.actions) })
+        const delivery = freeze({ id: job.id, sourceID: registration.sourceID, ...(registration.sourceDigest ? { sourceDigest: registration.sourceDigest } : {}), registrationID: registration.id, dialect: registration.dialect, event: registration.event, mode: effect.actions.some(action => action.kind === 'native-extension' && action.name === 'asyncRewake') ? 'wake' as const : 'safe-point' as const, actions: structuredClone(effect.actions) })
         const bytes = Buffer.byteLength(JSON.stringify(delivery.actions))
         if (state.pendingBytes + bytes > this.maxBytes) {
           effect = { ...effect, status: 'failed', code: 'BACKGROUND_DELIVERY_LIMIT', actions: [] }
@@ -239,11 +239,11 @@ export class BackgroundManager implements BackgroundExecutor {
 
   private record(state: SessionState, job: Job, phase: BackgroundRecord['phase'], code: string, outcome?: BackgroundRecord['outcome'], durationMs = 0, invalidFields?: readonly string[]): void {
     const registration = job.work.registration
-    this.emit(state, freeze({ jobID: job.id, sourceID: registration.sourceID, registrationID: registration.id, dialect: registration.dialect, event: registration.event, phase, code, queuedMs: Math.round((job.startedAt ?? performance.now()) - job.queuedAt), durationMs, ...(outcome ? { outcome } : {}), ...(invalidFields ? { invalidFields } : {}) }))
+    this.emit(state, freeze({ jobID: job.id, sourceID: registration.sourceID, ...(registration.sourceDigest ? { sourceDigest: registration.sourceDigest } : {}), registrationID: registration.id, dialect: registration.dialect, event: registration.event, phase, code, queuedMs: Math.round((job.startedAt ?? performance.now()) - job.queuedAt), durationMs, ...(outcome ? { outcome } : {}), ...(invalidFields ? { invalidFields } : {}) }))
   }
 
   private deliveryFailure(state: SessionState, delivery: BackgroundDelivery, phase: 'delivery-failed' | 'wake-failed', code: string): void {
-    this.emit(state, Object.freeze({ jobID: delivery.id, sourceID: delivery.sourceID, registrationID: delivery.registrationID, dialect: delivery.dialect, event: delivery.event, phase, code, queuedMs: 0, durationMs: 0, outcome: 'failed' }))
+    this.emit(state, Object.freeze({ jobID: delivery.id, sourceID: delivery.sourceID, ...(delivery.sourceDigest ? { sourceDigest: delivery.sourceDigest } : {}), registrationID: delivery.registrationID, dialect: delivery.dialect, event: delivery.event, phase, code, queuedMs: 0, durationMs: 0, outcome: 'failed' }))
   }
 
   private emit(state: SessionState, record: BackgroundRecord): void {

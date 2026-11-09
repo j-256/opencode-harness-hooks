@@ -24,6 +24,7 @@ export interface InterpretedOutput {
 export interface HookEffect extends InterpretedOutput {
   readonly diagnostic: {
     readonly sourceID: string
+    readonly sourceDigest?: string
     readonly registrationID: string
     readonly dialect: Dialect
     readonly event: string

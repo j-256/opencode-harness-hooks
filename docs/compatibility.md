@@ -4,7 +4,7 @@ The native reference versions are Claude Code 2.1.318 and Codex CLI 0.167.0. The
 
 ## Dual host architecture
 
-One package exposes a default definition with `id`, V1's `server()` entrypoint, and V2's `setup()` entrypoint. The host adapters register hooks through their respective APIs and share source loading, matching, execution, and protocol translation. Supporting both package loaders does not establish equivalent host capabilities; each host needs separate effect and lifecycle evidence.
+The package contract uses one default definition with `id`, V1's `server()` entrypoint, and V2's `setup()` entrypoint. The host adapters register hooks through their respective APIs and share source loading, matching, execution, and protocol translation. Supporting both package loaders does not establish equivalent host capabilities; each host needs separate effect and lifecycle evidence.
 
 ## Evidence and completion
 
@@ -23,6 +23,7 @@ Each required capability is classified as verified, unsupported, or unresolved, 
 - [Codex MCP executor contract at the pinned release](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/mcp.rs)
 - [Codex MCP expansion at the pinned release](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/engine/mcp_runner.rs)
 - [Codex matcher implementation at the pinned release](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/engine/matcher.rs)
+- [Codex dispatch and completion ordering at the pinned release](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/engine/dispatcher.rs)
 
 ## Source loading and matching
 
@@ -71,6 +72,16 @@ Claude `asyncRewake` has a distinct contract: exit code 2 requests an immediate 
 The background manager snapshots command input, source identity and environment. It separates session lifetime from turn cancellation, cancels running children and queued work on disposal, and discards undelivered output. Host delivery is acknowledged only after the delivery callback succeeds; concurrent claims are serialized and failed delivery remains retryable. Session reactivation is explicit. Metadata inspection and telemetry exclude commands and output, and queue, deferred-output and history retention limits are plugin limits rather than native limits.
 
 Native repeated SessionStart delivery suppression, conversation resets, source reloads and installed-host context projection remain lifecycle conformance gates. Every matching registration still executes independently; source-level delivery rules must not become deduplication between registrations or dialects.
+
+## Concurrent dispatch
+
+The shared dispatcher snapshots sources, native event data and host context before starting work. Matching registrations execute independently, including repeated commands and registrations from both dialects. Claude prompt and agent hooks share their native concurrency limit for that event; waiting hooks begin handler execution and its deadline only after receiving a slot. Other foreground handlers start independently of that queue. Lifecycle matchers use the corresponding dialect's metadata.
+
+Results retain configuration order for reporting and a separate completion order for native adjudication. Every action carries the source revision, registration and both orders; background output retains the same revision after the foreground dispatch returns. Permission selection preserves `deny` above `defer`, `ask` and `allow`, with stable configuration order for ties. This is also the bridge's combination rule across independently configured dialects. It does not deduplicate registrations or discard the original decisions.
+
+Cancellation drains handlers and suppresses foreground action delivery. Diagnostics identify the dispatch, source revision, registration, outcome and duration without commands, source paths or output. Missing services remain unsupported, intentionally skipped native handlers remain skipped, and invalid matchers produce registration-specific failures while other registrations continue.
+
+Conflicting input rewrites, continuation precedence, shared SessionEnd budgets and installed-host effect application remain aggregation and integration gates. Preserving their input actions and completion order does not establish those effects.
 
 ## Host boundaries under investigation
 

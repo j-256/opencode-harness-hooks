@@ -29,6 +29,7 @@ export interface SourceSpec {
 export interface Registration {
   readonly id: string
   readonly sourceID: string
+  readonly sourceDigest?: string
   readonly dialect: Dialect
   readonly event: string
   readonly groupIndex: number

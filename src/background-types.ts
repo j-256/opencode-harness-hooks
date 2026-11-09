@@ -22,6 +22,7 @@ export interface BackgroundExecutor {
 export interface BackgroundDelivery {
   readonly id: string
   readonly sourceID: string
+  readonly sourceDigest?: string
   readonly registrationID: string
   readonly dialect: Dialect
   readonly event: string
@@ -32,6 +33,7 @@ export interface BackgroundDelivery {
 export interface BackgroundRecord {
   readonly jobID: string
   readonly sourceID: string
+  readonly sourceDigest?: string
   readonly registrationID: string
   readonly dialect: Dialect
   readonly event: string
