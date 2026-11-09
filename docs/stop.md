@@ -34,6 +34,10 @@ Claude Code 2.1.318 accepts a parsed `decision: "approve"` at Stop without turni
 
 Interpreted Claude Stop continuations retain `channel: "decision"`, `"stderr"` or `"additionalContext"` through shared dispatch and effect resolution. Identical text can come from different fields, including two fields in the same handler result. Artifact delivery needs that distinction: additional context produces a native reminder block, while blocking decisions and stderr produce Stop feedback. Other handlers do not acquire a channel inferred from their text; model verdicts remain distinct from process stderr.
 
+The `--aggregation` fixture regenerates [command aggregation observations](../test/fixtures/claude-stop-aggregation-oracle.json) with handlers that complete in a different order from their configuration. Claude retains separate meta feedback records in completion order, including when another handler prevents continuation, and selects the last completed stop request's reason. In the cases combining blocking feedback and prevention, its CLI result is empty even though the transcript retains the preceding assistant answer. Codex combines blocking fragments in configuration order and creates no HookPrompt when another handler prevents continuation. Its fixture does not expose the competing stop reasons. Native retained artifacts remain separate from the resolved permission to continue.
+
+The core preserves these continuation orders. With mixed sources, Claude continuations occupy Claude's configured positions in completion order, and Codex positions remain fixed. Any stop request suppresses all continuation delivery while retaining the attributed dispatch for artifact admission. The earliest configured stop request selects which dialect supplies the reason: Claude uses its last completed stop request, and Codex uses its first configured request as an explicit bridge rule. The Codex rule does not claim independently observed native reason selection. These combination rules apply to Stop; they do not infer SubagentStop behavior.
+
 ## Reproduction
 
 From a repository checkout with Node.js 22+, POSIX process groups and the selected pinned executable:
@@ -41,6 +45,8 @@ From a repository checkout with Node.js 22+, POSIX process groups and the select
 ```sh
 npm run test:native:stop -- --dialect claude-code --binary /path/to/claude
 npm run test:native:stop -- --dialect codex --binary /path/to/codex
+npm run test:native:stop -- --aggregation --dialect claude-code --binary /path/to/claude
+npm run test:native:stop -- --aggregation --dialect codex --binary /path/to/codex
 ```
 
 The command supports `-h`/`--help`, `-d`/`--dialect`, `-b`/`--binary`, `CLAUDE_BINARY` and `CODEX_BINARY`. The dialect defaults to `claude-code`. It requires no package build, model account, installation or live configuration change. Metadata-only JSON goes to stdout; diagnostics go to stderr without commands, outputs, native payloads or local paths. Exit statuses are zero for passing native checks, one for runtime/check failures, two for usage/version/platform preconditions and three for a missing executable.

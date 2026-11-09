@@ -105,6 +105,8 @@ The effect resolver selects the last-completed whole input replacement, preservi
 
 Approval requests preserve rewritten input for review and do not authorize direct execution. Deferred calls preserve a distinct `defer` control, suppress input application and require a host implementation that can resume the call later. Session stopping suppresses continuation actions while retaining their original dispatch trace. Claude feedback continuations and Codex user-prompt continuations remain separate.
 
+At Stop, Claude continuations follow completion order and Codex continuations follow configuration order. The [Stop combination rules](stop.md) define their ordering and reason selection when sources are mixed, and distinguish suppressed model delivery from native feedback artifacts which must still be retained.
+
 Competing post-tool result replacements remain an explicit unresolved conflict; the resolver retains every request instead of selecting an unverified outcome. Shared SessionEnd budgets and installed-host application of resolved effects remain integration gates. Native oracle regeneration remains a delivery gate.
 
 ## Host boundaries under investigation

@@ -1,0 +1,306 @@
+{
+  "oracle": "native-cli-loopback",
+  "runtime": "Claude Code",
+  "version": "2.1.318",
+  "scope": "Command Stop aggregation, completion order, retained feedback and continuation prevention",
+  "cases": [
+    {
+      "name": "two-blocks",
+      "outputs": [
+        {
+          "decision": "block",
+          "reason": "NATIVE_STOP_A"
+        },
+        {
+          "decision": "block",
+          "reason": "NATIVE_STOP_B"
+        }
+      ],
+      "completionOrder": [
+        1,
+        0
+      ],
+      "modelRequests": 2,
+      "hookErrors": [
+        "NATIVE_STOP_B",
+        "NATIVE_STOP_A"
+      ],
+      "hookAdditionalContext": [],
+      "feedback": [
+        "NATIVE_STOP_B",
+        "NATIVE_STOP_A"
+      ],
+      "preventedContinuation": false,
+      "stopReason": "",
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "recordOrder": [
+        [
+          "feedback",
+          1
+        ],
+        [
+          "hook_blocking_error",
+          1
+        ],
+        [
+          "feedback",
+          0
+        ],
+        [
+          "hook_blocking_error",
+          0
+        ]
+      ],
+      "hookInfoDuration": [
+        false,
+        false
+      ]
+    },
+    {
+      "name": "block-then-stop",
+      "outputs": [
+        {
+          "decision": "block",
+          "reason": "NATIVE_STOP_A"
+        },
+        {
+          "continue": false,
+          "stopReason": "NATIVE_STOP_B"
+        }
+      ],
+      "completionOrder": [
+        1,
+        0
+      ],
+      "modelRequests": 1,
+      "hookErrors": [
+        "NATIVE_STOP_A"
+      ],
+      "hookAdditionalContext": [],
+      "feedback": [
+        "NATIVE_STOP_A"
+      ],
+      "preventedContinuation": true,
+      "stopReason": "NATIVE_STOP_B",
+      "cliResult": "",
+      "recordOrder": [
+        [
+          "hook_stopped_continuation",
+          1
+        ],
+        [
+          "hook_success",
+          1
+        ],
+        [
+          "feedback",
+          0
+        ],
+        [
+          "hook_blocking_error",
+          0
+        ]
+      ],
+      "hookInfoDuration": [
+        false,
+        true
+      ]
+    },
+    {
+      "name": "stop-then-block",
+      "outputs": [
+        {
+          "continue": false,
+          "stopReason": "NATIVE_STOP_A"
+        },
+        {
+          "decision": "block",
+          "reason": "NATIVE_STOP_B"
+        }
+      ],
+      "completionOrder": [
+        1,
+        0
+      ],
+      "modelRequests": 1,
+      "hookErrors": [
+        "NATIVE_STOP_B"
+      ],
+      "hookAdditionalContext": [],
+      "feedback": [
+        "NATIVE_STOP_B"
+      ],
+      "preventedContinuation": true,
+      "stopReason": "NATIVE_STOP_A",
+      "cliResult": "",
+      "recordOrder": [
+        [
+          "feedback",
+          1
+        ],
+        [
+          "hook_blocking_error",
+          1
+        ],
+        [
+          "hook_stopped_continuation",
+          0
+        ],
+        [
+          "hook_success",
+          0
+        ]
+      ],
+      "hookInfoDuration": [
+        true,
+        false
+      ]
+    },
+    {
+      "name": "two-stops-slow-a",
+      "outputs": [
+        {
+          "continue": false,
+          "stopReason": "NATIVE_STOP_A"
+        },
+        {
+          "continue": false,
+          "stopReason": "NATIVE_STOP_B"
+        }
+      ],
+      "completionOrder": [
+        1,
+        0
+      ],
+      "modelRequests": 1,
+      "hookErrors": [],
+      "hookAdditionalContext": [],
+      "feedback": [],
+      "preventedContinuation": true,
+      "stopReason": "NATIVE_STOP_A",
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "recordOrder": [
+        [
+          "hook_stopped_continuation",
+          1
+        ],
+        [
+          "hook_success",
+          1
+        ],
+        [
+          "hook_stopped_continuation",
+          0
+        ],
+        [
+          "hook_success",
+          0
+        ]
+      ],
+      "hookInfoDuration": [
+        true,
+        true
+      ]
+    },
+    {
+      "name": "two-stops-slow-b",
+      "outputs": [
+        {
+          "continue": false,
+          "stopReason": "NATIVE_STOP_A"
+        },
+        {
+          "continue": false,
+          "stopReason": "NATIVE_STOP_B"
+        }
+      ],
+      "completionOrder": [
+        0,
+        1
+      ],
+      "modelRequests": 1,
+      "hookErrors": [],
+      "hookAdditionalContext": [],
+      "feedback": [],
+      "preventedContinuation": true,
+      "stopReason": "NATIVE_STOP_B",
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "recordOrder": [
+        [
+          "hook_stopped_continuation",
+          0
+        ],
+        [
+          "hook_success",
+          0
+        ],
+        [
+          "hook_stopped_continuation",
+          1
+        ],
+        [
+          "hook_success",
+          1
+        ]
+      ],
+      "hookInfoDuration": [
+        true,
+        true
+      ]
+    },
+    {
+      "name": "context-then-block",
+      "outputs": [
+        {
+          "hookSpecificOutput": {
+            "hookEventName": "Stop",
+            "additionalContext": "NATIVE_STOP_A"
+          }
+        },
+        {
+          "decision": "block",
+          "reason": "NATIVE_STOP_B"
+        }
+      ],
+      "completionOrder": [
+        1,
+        0
+      ],
+      "modelRequests": 2,
+      "hookErrors": [
+        "NATIVE_STOP_B"
+      ],
+      "hookAdditionalContext": [
+        "NATIVE_STOP_A"
+      ],
+      "feedback": [
+        "NATIVE_STOP_B"
+      ],
+      "preventedContinuation": false,
+      "stopReason": "",
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "recordOrder": [
+        [
+          "feedback",
+          1
+        ],
+        [
+          "hook_blocking_error",
+          1
+        ],
+        [
+          "hook_success",
+          0
+        ],
+        [
+          "hook_additional_context",
+          0
+        ]
+      ],
+      "hookInfoDuration": [
+        true,
+        false
+      ]
+    }
+  ]
+}

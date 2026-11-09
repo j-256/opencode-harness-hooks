@@ -29,8 +29,8 @@ test('native Stop invalid options and values fail before dependency checks', asy
   }
 })
 
-test('native Stop dialect and binary argument forms reject the wrong executable version', async () => {
-  for (const args of [['-dclaude-code', '-b', node], ['--dialect=codex', '--binary=' + node], ['-dcodex', '-b' + node], ['--dialect', 'claude-code', '--binary', node]]) {
+test('native Stop dialect, aggregation and binary argument forms reject the wrong executable version', async () => {
+  for (const args of [['-dclaude-code', '-b', node], ['--dialect=codex', '--binary=' + node], ['-dcodex', '-b' + node], ['--dialect', 'claude-code', '--binary', node], ['--aggregation', '-dclaude-code', '-b', node], ['--aggregation', '-dcodex', '-b', node]]) {
     const result = await invoke(args)
     assert.equal(result.status, 2)
     assert.equal(result.stdout, '')

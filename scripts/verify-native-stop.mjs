@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { parseArgs, promisify } from 'node:util'
 import { NativeProbeError as ProbeError, NATIVE_PROCESS_LIMITS as LIMITS, nativeCheckError, runNativeProcess } from './lib/native-process.mjs'
+import { createStopAggregationFixture, stopAggregationCases, validateStopAggregation } from './lib/native-stop-aggregation.mjs'
 
 const VERSIONS = Object.freeze({ 'claude-code': '2.1.318', codex: '0.167.0' })
 const MODES = Object.freeze(['block-json', 'block-stderr', 'failure-policy', 'stop-output'])
@@ -21,7 +22,7 @@ const HOOK_TIMEOUT_SECONDS = 10
 const MAX_REQUESTS = 4
 const run = promisify(execFile)
 const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'"
-const HELP = `Usage: node scripts/verify-native-stop.mjs [-d claude-code|codex] [-b PATH]
+const HELP = `Usage: node scripts/verify-native-stop.mjs [-d claude-code|codex] [-b PATH] [--aggregation]
 
 Verify native Stop payloads, awaited decisions, continuation input and artifacts.
 Requires Node.js 22+, POSIX and the selected pinned executable: Claude Code
@@ -33,6 +34,7 @@ not verify native trust. Machine-managed native settings can remain active.
 Options:
   -d, --dialect NAME  claude-code (default) or codex
   -b, --binary PATH   Executable (CLAUDE_BINARY/CODEX_BINARY, then claude/codex)
+      --aggregation  Exercise competing Stop outputs and native ordering
   -h, --help          Show help without binaries or dependencies
 
 Metadata-only JSON goes to stdout; diagnostics go to stderr without native
@@ -179,7 +181,7 @@ function validate(dialect, mode, trace, rows, requests, execution, command, sour
   return { mode, awaitedCompletion: true, modelRequests: expected, stopInvocations: expected, stableTurnIdentity: true, continuationActiveFlag: expected === 2, additionalNativeHandlers, nativeDiagnosticItems }
 }
 
-async function verify(dialect, binary) {
+async function verify(dialect, binary, aggregation) {
   if (process.platform === 'win32') throw new ProbeError('PLATFORM_UNAVAILABLE: POSIX process groups', 2)
   let version
   try { version = (await run(binary, ['--version'], { timeout: LIMITS.durationMs, maxBuffer: LIMITS.maxBytes })).stdout.trim().replace(/^codex-cli /, '') } catch (error) { throw new ProbeError(error.code === 'ENOENT' || error.code === 'EACCES' ? 'DEPENDENCY_UNAVAILABLE: ' + dialect : 'DEPENDENCY_QUERY_FAILED: ' + dialect, error.code === 'ENOENT' || error.code === 'EACCES' ? 3 : 1) }
@@ -213,14 +215,16 @@ async function verify(dialect, binary) {
       } catch { if (!response.headersSent) response.writeHead(500); response.end('{}') }
     })
     await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve))
-    for (mode of MODES) {
+    for (const scenario of aggregation ? await stopAggregationCases(dialect) : MODES.map(name => ({ name }))) {
+      mode = scenario.name
       stage = mode
       const state = join(root, mode), project = join(state, 'project'), home = join(state, 'home'), config = join(state, 'config')
       await Promise.all([project, home, config].map(path => mkdir(path, { recursive: true })))
       const trace = join(state, 'hooks.jsonl'), hook = join(state, 'hook.cjs'), settings = join(state, 'settings.json'), mcp = join(state, 'mcp.json')
-      await writeFile(hook, `const fs=require('node:fs');const input=JSON.parse(fs.readFileSync(0,'utf8'));const path=${JSON.stringify(trace)};const rows=fs.existsSync(path)?fs.readFileSync(path,'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse):[];const ordinal=rows.filter(row=>row.phase==='start').length;if(ordinal>=${MAX_REQUESTS})process.exit(9);const transcriptExists=typeof input.transcript_path==='string'&&fs.existsSync(input.transcript_path);const log=phase=>fs.appendFileSync(path,JSON.stringify({phase,ordinal,input,transcriptExists,time:Date.now()})+'\\n');log('start');setTimeout(()=>{log('end');if(ordinal)return;if(${JSON.stringify(mode)}==='block-json')console.log(JSON.stringify({decision:'block',reason:${JSON.stringify(FEEDBACK)}}));else if(${JSON.stringify(mode)}==='block-stderr'){process.stderr.write(${JSON.stringify(FEEDBACK)});process.exit(2)}else if(${JSON.stringify(mode)}==='failure-policy'){process.stderr.write(${JSON.stringify(FAILURE)});process.exit(1)}else console.log(JSON.stringify({continue:false,stopReason:${JSON.stringify(REASON)}}))},${DELAY_MS})`)
+      if (!aggregation) await writeFile(hook, `const fs=require('node:fs');const input=JSON.parse(fs.readFileSync(0,'utf8'));const path=${JSON.stringify(trace)};const rows=fs.existsSync(path)?fs.readFileSync(path,'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse):[];const ordinal=rows.filter(row=>row.phase==='start').length;if(ordinal>=${MAX_REQUESTS})process.exit(9);const transcriptExists=typeof input.transcript_path==='string'&&fs.existsSync(input.transcript_path);const log=phase=>fs.appendFileSync(path,JSON.stringify({phase,ordinal,input,transcriptExists,time:Date.now()})+'\\n');log('start');setTimeout(()=>{log('end');if(ordinal)return;if(${JSON.stringify(mode)}==='block-json')console.log(JSON.stringify({decision:'block',reason:${JSON.stringify(FEEDBACK)}}));else if(${JSON.stringify(mode)}==='block-stderr'){process.stderr.write(${JSON.stringify(FEEDBACK)});process.exit(2)}else if(${JSON.stringify(mode)}==='failure-policy'){process.stderr.write(${JSON.stringify(FAILURE)});process.exit(1)}else console.log(JSON.stringify({continue:false,stopReason:${JSON.stringify(REASON)}}))},${DELAY_MS})`)
       const command = { type: 'command', command: dialect === 'claude-code' ? process.execPath : [process.execPath, hook].map(quote).join(' '), ...(dialect === 'claude-code' ? { args: [hook] } : {}), timeout: HOOK_TIMEOUT_SECONDS, ...(mode === 'failure-policy' ? { onFailure: 'block' } : {}) }
-      await writeFile(settings, JSON.stringify({ hooks: { Stop: [{ hooks: [command] }] } })); await writeFile(mcp, '{"mcpServers":{}}')
+      const commands = aggregation ? await createStopAggregationFixture(scenario, trace, hook, dialect) : [command]
+      await writeFile(settings, JSON.stringify({ hooks: { Stop: [{ hooks: commands }] } })); await writeFile(mcp, '{"mcpServers":{}}')
       const env = { PATH: process.env.PATH, HOME: home, SHELL: '/bin/sh', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_NON_ESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' }
       let args, sourcePath = settings
       if (dialect === 'claude-code') {
@@ -237,7 +241,8 @@ async function verify(dialect, binary) {
       assert.deepEqual(await readFile(sourcePath), sourceSnapshot)
       assert.deepEqual(await readFile(hook), commandSnapshot)
       const events = await readRecords(trace)
-      cases.push(validate(dialect, mode, events, await readRecords(events[0].input.transcript_path), requests.filter(row => row.mode === mode), execution, [process.execPath, hook].join(' '), sourcePath, project))
+      const nativeRows = await readRecords(events[0].input.transcript_path), nativeRequests = requests.filter(row => row.mode === mode)
+      cases.push(aggregation ? validateStopAggregation(dialect, scenario, events, nativeRows, nativeRequests, execution, commands.map((_, index) => [process.execPath, hook, String(index)].join(' ')), sourcePath, project) : validate(dialect, mode, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), sourcePath, project))
     }
     return { dialect, version: VERSIONS[dialect], cases, codexTrustBypassed: dialect === 'codex', fixtureSourceUnchanged: true, nativeContinuationInputAndArtifacts: true, bridgeStopComparison: 'not-implemented', equivalent: false }
   } catch (error) { throw nativeCheckError('NATIVE_STOP_CHECK_FAILED', stage, error, import.meta.url) } finally {
@@ -248,13 +253,13 @@ async function verify(dialect, binary) {
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { dialect: { type: 'string', short: 'd' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { dialect: { type: 'string', short: 'd' }, binary: { type: 'string', short: 'b' }, aggregation: { type: 'boolean' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const dialect = parsed.values.dialect ?? 'claude-code'
     if (!Object.hasOwn(VERSIONS, dialect)) throw new ProbeError('USAGE_DIALECT: expected claude-code or codex', 2)
     const binary = parsed.values.binary ?? process.env[dialect === 'claude-code' ? 'CLAUDE_BINARY' : 'CODEX_BINARY'] ?? (dialect === 'claude-code' ? 'claude' : 'codex')
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    process.stdout.write(JSON.stringify(await verify(dialect, binary)) + '\n')
+    process.stdout.write(JSON.stringify(await verify(dialect, binary, parsed.values.aggregation ?? false)) + '\n')
   }
 } catch (error) { process.stderr.write((error instanceof ProbeError ? error.message : 'NATIVE_STOP_PROBE_FAILED') + '\n'); process.exitCode = error instanceof ProbeError ? error.status : 1 }

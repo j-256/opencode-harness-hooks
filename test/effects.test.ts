@@ -6,8 +6,8 @@ import type { AttributedAction, DispatchResult } from '../src/engine.js'
 import type { HookAction } from '../src/effect-types.js'
 import type { NativeEvent, Registration } from '../src/types.js'
 
-function dispatch(actions: readonly AttributedAction[], permission?: DispatchResult['permission']): DispatchResult {
-  return { actions, entries: [], ...(permission ? { permission } : {}), cancelled: false, diagnostic: { dispatchID: 'dispatch', sessionID: 'session', event: 'PreToolUse', durationMs: 0, cancelled: false, failed: 0, unsupported: 0, skipped: 0, background: 0, handlers: [] } }
+function dispatch(actions: readonly AttributedAction[], permission?: DispatchResult['permission'], event = 'PreToolUse'): DispatchResult {
+  return { actions, entries: [], ...(permission ? { permission } : {}), cancelled: false, diagnostic: { dispatchID: 'dispatch', sessionID: 'session', event, durationMs: 0, cancelled: false, failed: 0, unsupported: 0, skipped: 0, background: 0, handlers: [] } }
 }
 function row<T extends HookAction>(action: T, configuredOrder = 0, completionOrder = configuredOrder, dialect: Dialect = 'claude-code'): AttributedAction<T> {
   return { action, sourceID: dialect, sourceDigest: 'revision', registrationID: `hook-${configuredOrder}`, dialect, configuredOrder, completionOrder }
@@ -58,6 +58,53 @@ test('session stopping takes precedence over continuations and input changes wit
   assert.equal(plan.input, undefined)
   assert.equal(plan.permission?.action.decision, 'ask')
   assert.deepEqual(plan.suppressed.map(value => value.code), ['CONTINUATION_STOPPED', 'CONTINUATION_STOPPED', 'REWRITE_BLOCKED'])
+})
+
+const stopOracle = JSON.parse(readFileSync(new URL('./fixtures/claude-stop-aggregation-oracle.json', import.meta.url), 'utf8'))
+for (const scenario of stopOracle.cases) test(`Claude Stop native aggregation ${scenario.name}`, async () => {
+  const { resolveEffects } = await import('../src/effects.js')
+  const { interpretOutput } = await import('../src/protocol.js')
+  const event: NativeEvent = { event: 'Stop', sessionID: 'session', cwd: '/fixture' }
+  const actions: AttributedAction[] = scenario.outputs.flatMap((output: unknown, index: number) => {
+    const registration: Registration = { id: `hook-${index}`, sourceID: 'claude-code', dialect: 'claude-code', event: 'Stop', groupIndex: 0, handlerIndex: index, handler: { type: 'command', command: 'unused' } }
+    const effect = interpretOutput(registration, event, { status: 'exited', exitCode: 0, signal: null, stdout: JSON.stringify(output), stderr: '', durationMs: 0 })
+    assert.equal(effect.status, 'success', scenario.name)
+    return effect.actions.map(action => row(action, index, scenario.completionOrder.indexOf(index)))
+  })
+  const plan = resolveEffects(dispatch(actions, undefined, 'Stop'))
+  assert.equal(plan.control, scenario.preventedContinuation ? 'stop' : 'default', scenario.name)
+  assert.equal(plan.stop?.action.reason ?? '', scenario.stopReason, scenario.name)
+  const feedback = plan.continuations.filter(value => value.action.channel === 'decision').map(value => value.action.text)
+  assert.deepEqual(feedback, scenario.preventedContinuation ? [] : scenario.feedback, scenario.name)
+  if (scenario.preventedContinuation) {
+    assert.equal(plan.suppressed.filter(value => value.code === 'CONTINUATION_STOPPED').length, scenario.feedback.length, scenario.name)
+    assert.deepEqual(actions.filter(value => value.action.kind === 'continue-turn').map(value => value.action.kind === 'continue-turn' && value.action.text), scenario.feedback, scenario.name)
+  }
+})
+
+test('mixed Stop continuations retain Claude completion order and Codex configured order', async () => {
+  const { resolveEffects } = await import('../src/effects.js')
+  const actions: AttributedAction[] = [
+    row({ kind: 'continue-turn', text: 'Claude slow', mode: 'feedback', channel: 'decision' }, 0, 3),
+    row({ kind: 'continue-turn', text: 'Codex slow', mode: 'user' }, 1, 2, 'codex'),
+    row({ kind: 'continue-turn', text: 'Claude fast', mode: 'feedback', channel: 'decision' }, 2, 0),
+    row({ kind: 'continue-turn', text: 'Codex fast', mode: 'user' }, 3, 1, 'codex'),
+  ]
+  const plan = resolveEffects(dispatch(actions, undefined, 'Stop'))
+  assert.deepEqual(plan.continuations.map(value => value.action.text), ['Claude fast', 'Codex slow', 'Claude slow', 'Codex fast'])
+  assert.deepEqual(actions.map(value => value.configuredOrder), [0, 1, 2, 3])
+})
+
+test('mixed Stop prevention keeps the earliest configured dialect and its own reason selection', async () => {
+  const { resolveEffects } = await import('../src/effects.js')
+  const actions: AttributedAction[] = [
+    row({ kind: 'stop-session', reason: 'Claude fast' }, 0, 0),
+    row({ kind: 'stop-session', reason: 'Codex first' }, 1, 3, 'codex'),
+    row({ kind: 'stop-session', reason: 'Claude slow' }, 2, 2),
+    row({ kind: 'stop-session', reason: 'Codex second' }, 3, 1, 'codex'),
+  ]
+  assert.equal(resolveEffects(dispatch(actions, undefined, 'Stop')).stop?.action.reason, 'Claude slow')
+  assert.equal(resolveEffects(dispatch(actions.slice(1), undefined, 'Stop')).stop?.action.reason, 'Codex first')
 })
 
 test('continuation prompt modes, context channels and unimplemented extensions remain distinct', async () => {
