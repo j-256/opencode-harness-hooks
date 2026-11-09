@@ -144,5 +144,5 @@ test('disposal cancels an in-flight body read before any projected request can e
   const pending = contexts.project(original, contexts.issue(session)!)
   contexts.dispose()
   await assert.rejects(pending, { code: 'HOST_PROMPT_CANCELLED' })
-  assert.deepEqual(contexts.inspect(), { prompts: 0, bytes: 0, tickets: 0, sessions: 0 })
+  assert.deepEqual(contexts.inspect(), { prompts: 0, continuations: 0, bytes: 0, tickets: 0, sessions: 0 })
 })

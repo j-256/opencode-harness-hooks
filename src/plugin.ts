@@ -255,7 +255,7 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
       if (runtime.hasPromptHooks) contexts.layout(session, layout('v2', event.messages))
       if (runtime.needsModelArtifacts) {
         const last = Array.isArray(event.messages) ? event.messages.findLast(message => record(message) && message.role === 'user') : undefined
-        if (!session.turnID || !record(last) || last.id !== session.turnID) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
+        if (!session.turnID || !record(last) || typeof last.id !== 'string' || !contexts.ownsCurrentMessage(session, last.id)) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
         modelOwners.set(event.sessionID, { turnID: session.turnID, signal: session.turnSignal })
       }
       runtime.sessions.model(event.sessionID, event.model.id, session.turnID)
