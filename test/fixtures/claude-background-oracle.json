@@ -1,0 +1,200 @@
+{
+  "oracle": "native-cli-loopback",
+  "runtime": "Claude Code",
+  "version": "2.1.318",
+  "reference": "https://code.claude.com/docs/en/hooks",
+  "scope": "Async UserPromptSubmit output and delivery before a later model request in the same active user turn",
+  "activeTurnDelivery": true,
+  "cases": [
+    {
+      "name": "pretty",
+      "stdout": "{\n  \"systemMessage\": \"BG_PRETTY_SYSTEM\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"UserPromptSubmit\",\n    \"additionalContext\": \"BG_PRETTY_CONTEXT\"\n  }\n}",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_PRETTY_SYSTEM"
+        },
+        {
+          "channel": "additionalContext",
+          "text": "BG_PRETTY_CONTEXT"
+        }
+      ]
+    },
+    {
+      "name": "logs",
+      "stdout": "start log\n{\"systemMessage\":\"BG_LOG_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_LOG_CONTEXT\"}}\nend log",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_LOG_SYSTEM"
+        },
+        {
+          "channel": "additionalContext",
+          "text": "BG_LOG_CONTEXT"
+        }
+      ]
+    },
+    {
+      "name": "bad-system",
+      "stdout": "{\"systemMessage\":7,\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_KEEP_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": [
+        {
+          "channel": "additionalContext",
+          "text": "BG_KEEP_CONTEXT"
+        }
+      ]
+    },
+    {
+      "name": "bad-context",
+      "stdout": "{\"systemMessage\":\"BG_KEEP_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":7}}",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_KEEP_SYSTEM"
+        }
+      ]
+    },
+    {
+      "name": "bad-continue",
+      "stdout": "{\"continue\":\"wrong\",\"systemMessage\":\"BG_BAD_CONTINUE_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_BAD_CONTINUE_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_BAD_CONTINUE_SYSTEM"
+        },
+        {
+          "channel": "additionalContext",
+          "text": "BG_BAD_CONTINUE_CONTEXT"
+        }
+      ]
+    },
+    {
+      "name": "unknown-event",
+      "stdout": "{\"systemMessage\":\"BG_UNKNOWN_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"Unknown\",\"additionalContext\":\"BG_UNKNOWN_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_UNKNOWN_SYSTEM"
+        },
+        {
+          "channel": "additionalContext",
+          "text": "BG_UNKNOWN_CONTEXT"
+        }
+      ]
+    },
+    {
+      "name": "missing-event",
+      "stdout": "{\"systemMessage\":\"BG_MISSING_SYSTEM\",\"hookSpecificOutput\":{\"additionalContext\":\"BG_MISSING_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_MISSING_SYSTEM"
+        },
+        {
+          "channel": "additionalContext",
+          "text": "BG_MISSING_CONTEXT"
+        }
+      ]
+    },
+    {
+      "name": "foreign-event",
+      "stdout": "{\"systemMessage\":\"BG_FOREIGN_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"BG_FOREIGN_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_FOREIGN_SYSTEM"
+        },
+        {
+          "channel": "additionalContext",
+          "text": "BG_FOREIGN_CONTEXT"
+        }
+      ]
+    },
+    {
+      "name": "plain",
+      "stdout": "BG_PLAIN_TEXT",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": []
+    },
+    {
+      "name": "exit-one",
+      "stdout": "{\"systemMessage\":\"BG_EXIT_ONE_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_EXIT_ONE_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 1,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_EXIT_ONE_SYSTEM"
+        },
+        {
+          "channel": "additionalContext",
+          "text": "BG_EXIT_ONE_CONTEXT"
+        }
+      ]
+    },
+    {
+      "name": "exit-two",
+      "stdout": "{\"systemMessage\":\"BG_EXIT_TWO_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_EXIT_TWO_CONTEXT\"}}",
+      "stderr": "BG_EXIT_TWO_STDERR",
+      "exitCode": 2,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_EXIT_TWO_SYSTEM"
+        },
+        {
+          "channel": "additionalContext",
+          "text": "BG_EXIT_TWO_CONTEXT"
+        }
+      ]
+    },
+    {
+      "name": "two-lines",
+      "stdout": "{\"systemMessage\":\"BG_FIRST_JSON\"}\n{\"systemMessage\":\"BG_SECOND_JSON\"}",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_FIRST_JSON"
+        }
+      ]
+    },
+    {
+      "name": "log-object",
+      "stdout": "{\"log\":\"ignored\"}\n{\"systemMessage\":\"BG_AFTER_LOG_OBJECT\"}",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": []
+    },
+    {
+      "name": "timeout",
+      "stdout": "{\"systemMessage\":\"BG_TIMEOUT_IGNORED\"}",
+      "stderr": "",
+      "exitCode": 0,
+      "expected": [
+        {
+          "channel": "systemMessage",
+          "text": "BG_TIMEOUT_IGNORED"
+        }
+      ]
+    }
+  ]
+}

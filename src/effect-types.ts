@@ -9,7 +9,7 @@ export type HookAction =
   | { readonly kind: 'continue-turn'; readonly text: string; readonly mode: 'feedback' | 'user' }
   | { readonly kind: 'stop-session'; readonly reason: string }
   | { readonly kind: 'block-event'; readonly reason: string }
-  | { readonly kind: 'context'; readonly text: string; readonly placement: 'model' | 'compaction' }
+  | { readonly kind: 'context'; readonly text: string; readonly placement: 'model' | 'compaction'; readonly channel?: 'systemMessage' | 'additionalContext' | 'stdout' }
   | { readonly kind: 'feedback'; readonly text: string }
   | { readonly kind: 'warning'; readonly text: string }
   | { readonly kind: 'native-extension'; readonly name: string; readonly value: JsonValue }
@@ -18,6 +18,7 @@ export interface InterpretedOutput {
   readonly status: 'success' | 'failed'
   readonly code: string
   readonly actions: readonly HookAction[]
+  readonly invalidFields?: readonly string[]
 }
 
 export interface HookEffect extends InterpretedOutput {
@@ -29,5 +30,6 @@ export interface HookEffect extends InterpretedOutput {
     readonly code: string
     readonly outcome: 'success' | 'failed'
     readonly durationMs: number
+    readonly invalidFields?: readonly string[]
   }
 }

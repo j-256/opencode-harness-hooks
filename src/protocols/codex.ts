@@ -59,10 +59,10 @@ function validate(name: string, body: Record<string, JsonValue>): boolean {
   return true
 }
 
-export function interpretCodex(registration: Registration, event: NativeEvent, result: ExecutionResult): InterpretedOutput {
+export function interpretCodex(registration: Registration, event: NativeEvent, result: ExecutionResult, controls = true): InterpretedOutput {
   const name = event.event
   if (result.exitCode !== 0) {
-    if (result.exitCode === 2 && !ADVISORY.has(name) && (BLOCK_EVENTS.has(name) || name === 'PermissionRequest')) {
+    if (controls && result.exitCode === 2 && !ADVISORY.has(name) && (BLOCK_EVENTS.has(name) || name === 'PermissionRequest')) {
       const reason = result.stderr.trim()
       return reason ? success(blocked(name, reason)) : failure('MISSING_BLOCK_REASON')
     }
@@ -74,13 +74,17 @@ export function interpretCodex(registration: Registration, event: NativeEvent, r
   let body: unknown
   try { body = JSON.parse(stdout) } catch {}
   if (!record(body)) {
-    if (/^[{[]/.test(stdout) || STOP_EVENTS.has(name)) return failure('INVALID_OUTPUT')
+    if (/^[{[]/.test(stdout) || (controls && STOP_EVENTS.has(name))) return failure('INVALID_OUTPUT')
     return success(TEXT_CONTEXT.has(name) ? [{ kind: 'context', text: stdout, placement: 'model' }] : [])
   }
   if (!nativeJson(body) || !validate(name, body)) return failure('INVALID_OUTPUT')
   const actions: HookAction[] = []
   if (typeof body.systemMessage === 'string') actions.push({ kind: 'warning', text: body.systemMessage })
   const hook = record(body.hookSpecificOutput) ? body.hookSpecificOutput : {}
+  if (!controls) {
+    if (typeof hook.additionalContext === 'string') actions.push({ kind: 'context', text: hook.additionalContext, placement: 'model' })
+    return success(actions)
+  }
   const permission = hook.permissionDecision
   const replacement = hook.updatedInput
   const legacy = body.decision

@@ -11,3 +11,7 @@ On POSIX systems, cancellation, deadlines, and output-limit failures send SIGTER
 HTTP and model evaluation use cancellable service scopes with the same explicit resource budgets. A timeout or cancellation aborts the service signal, releases timers and parent listeners, and prevents a late response from producing effects. A remote service can perform work before observing cancellation; cancellation does not undo an HTTP request or completed remote operation. Host evaluation services must honor the supplied signal.
 
 Claude model-switch timeouts block the switch even without an explicit failure policy. Worktree creation fails when its hook fails. These event-specific rules remain separate from a configured `onFailure` policy.
+
+Background completion records identify the source, registration, job, queued duration, execution duration and stable failure code. Invalid-field diagnostics name known fields without including their values. A nonzero background process can still provide native informational output; its process failure never becomes a veto on the already-started operation.
+
+Background queue and deferred-output limits fail with explicit metadata instead of silently truncating context. Delivery or wake failures retain pending data for an explicit retry. Disposing the session cancels queued and running work, aborts pending host delivery and wake signals, and removes parent cancellation listeners. Failed telemetry callbacks are counted without exposing their exception text.

@@ -60,6 +60,18 @@ Argument expansion differs by dialect. Codex preserves JSON types for whole-valu
 
 These fixtures establish the observed transport and template behavior, not full connection, elicitation, native trust or OpenCode MCP integration equivalence. Portable fixture regeneration remains a delivery gate.
 
+## Background execution
+
+Background commands retain independent invocation and completion order. Codex queues excess work at its native per-session concurrency limit; the execution deadline starts when a queued command runs. Its SessionEnd commands remain synchronous. Claude command hooks with `async` have no execution deadline, while `asyncRewake` retains its deadline and takes precedence when both flags are set.
+
+Background output uses a separate interpretation path. Codex validates native wire fields while ignoring control decisions. Claude accepts a standalone JSON object or the first JSON object on a log line, keeps valid informational fields when other fields have invalid types, and retains informational output even when the process exits nonzero. Its background `systemMessage` reaches the model instead of becoming a UI warning. Native CLI captures establish delivery before a later model request in the same active user turn; an ordinary completion does not start a turn while idle.
+
+Claude `asyncRewake` has a distinct contract: exit code 2 requests an immediate reminder using stderr, with stdout as fallback. Other exits do not deliver its JSON informational fields. An explicit host wake service is required; lacking that capability produces unsupported status before execution. The native background and wake fixtures cover the observed parser and scheduling behavior, while actual OpenCode wake integration remains a separate gate.
+
+The background manager snapshots command input, source identity and environment. It separates session lifetime from turn cancellation, cancels running children and queued work on disposal, and discards undelivered output. Host delivery is acknowledged only after the delivery callback succeeds; concurrent claims are serialized and failed delivery remains retryable. Session reactivation is explicit. Metadata inspection and telemetry exclude commands and output, and queue, deferred-output and history retention limits are plugin limits rather than native limits.
+
+Native repeated SessionStart delivery suppression, conversation resets, source reloads and installed-host context projection remain lifecycle conformance gates. Every matching registration still executes independently; source-level delivery rules must not become deduplication between registrations or dialects.
+
 ## Host boundaries under investigation
 
 The pinned V1 host calls plugin event handlers without awaiting their promises. An asynchronous completion observer therefore does not itself provide an awaited final-turn veto. Completion control requires separate execution evidence and must not be inferred from an event name.

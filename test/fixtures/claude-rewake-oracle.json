@@ -1,0 +1,66 @@
+{
+  "oracle": "native-cli-loopback",
+  "runtime": "Claude Code",
+  "version": "2.1.318",
+  "reference": "https://code.claude.com/docs/en/hooks",
+  "scope": "asyncRewake handling with idle wake, stderr/stdout selection, non-waking exits and combined async flags",
+  "cases": [
+    {
+      "name": "-rewake",
+      "async": false,
+      "asyncRewake": true,
+      "stdout": "{\"systemMessage\":\"BG_REWAKE_JSON\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_REWAKE_CONTEXT\"}}",
+      "stderr": "BG_REWAKE_STDERR",
+      "exitCode": 2,
+      "automatic": true,
+      "visible": [
+        "BG_REWAKE_STDERR"
+      ]
+    },
+    {
+      "name": "-rewake-both",
+      "async": true,
+      "asyncRewake": true,
+      "stdout": "{\"systemMessage\":\"BG_REWAKE_JSON\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_REWAKE_CONTEXT\"}}",
+      "stderr": "BG_REWAKE_STDERR",
+      "exitCode": 2,
+      "automatic": true,
+      "visible": [
+        "BG_REWAKE_STDERR"
+      ]
+    },
+    {
+      "name": "-rewake-stdout",
+      "async": false,
+      "asyncRewake": true,
+      "stdout": "{\"systemMessage\":\"BG_REWAKE_JSON\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_REWAKE_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 2,
+      "automatic": true,
+      "visible": [
+        "BG_REWAKE_JSON",
+        "BG_REWAKE_CONTEXT"
+      ]
+    },
+    {
+      "name": "-rewake-success",
+      "async": false,
+      "asyncRewake": true,
+      "stdout": "{\"systemMessage\":\"BG_REWAKE_JSON\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_REWAKE_CONTEXT\"}}",
+      "stderr": "BG_REWAKE_STDERR",
+      "exitCode": 0,
+      "automatic": false,
+      "visible": []
+    },
+    {
+      "name": "-rewake-exit-one",
+      "async": false,
+      "asyncRewake": true,
+      "stdout": "{\"systemMessage\":\"BG_REWAKE_JSON\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_REWAKE_CONTEXT\"}}",
+      "stderr": "BG_REWAKE_STDERR",
+      "exitCode": 1,
+      "automatic": false,
+      "visible": []
+    }
+  ]
+}

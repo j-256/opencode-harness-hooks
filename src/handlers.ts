@@ -1,3 +1,4 @@
+import { isBackground } from './background-types.js'
 import { performance } from 'node:perf_hooks'
 import { prepareCommand, CommandContextError } from './command-context.js'
 import type { HookAction, HookEffect } from './effect-types.js'
@@ -14,9 +15,10 @@ import type { NativeEvent, Registration } from './types.js'
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied'])
 const MODEL_EVENTS = new Set(['PermissionDenied', 'PostToolBatch', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse', 'Stop', 'SubagentStop', 'TaskCompleted', 'TaskCreated', 'TeammateIdle', 'UserPromptExpansion', 'UserPromptSubmit'])
-type InactiveStatus = 'skipped' | 'unsupported'
+type InactiveStatus = 'skipped' | 'unsupported' | 'background'
 export type HandlerResult = HookEffect | {
   readonly status: InactiveStatus
+  readonly jobID?: string
   readonly code: string
   readonly actions: readonly HookAction[]
   readonly diagnostic: Omit<HookEffect['diagnostic'], 'outcome'> & { readonly outcome: InactiveStatus }
@@ -44,7 +46,8 @@ function nativeSkip(registration: Registration, event: NativeEvent): boolean {
 export async function executeRegistration(registration: Registration, inputEvent: NativeEvent, services: HostServices): Promise<HandlerResult> {
   const started = performance.now()
   const event = structuredClone(inputEvent)
-  const fail = (code: string) => result(registration, 'failed', code, started, registration.dialect === 'claude-code' && claudeFailureBlocks(registration, code) ? claudeBlock(event, `Hook failed: ${code}`, true) : [])
+  const background = isBackground(registration)
+  const fail = (code: string) => result(registration, 'failed', code, started, !background && registration.dialect === 'claude-code' && claudeFailureBlocks(registration, code) ? claudeBlock(event, `Hook failed: ${code}`, true) : [])
   if (registration.event !== inputEvent.event) return fail('HANDLER_EVENT_MISMATCH')
   if (nativeSkip(registration, inputEvent)) return result(registration, 'skipped', 'NATIVE_HANDLER_SKIPPED', started)
   if (registration.dialect === 'claude-code' && registration.handler.if !== undefined && !TOOL_EVENTS.has(inputEvent.event)) return result(registration, 'skipped', 'NATIVE_CONDITION_EVENT', started)
@@ -71,7 +74,16 @@ export async function executeRegistration(registration: Registration, inputEvent
       return interpretOutput(registration, event, { ...execution, durationMs: Math.round(performance.now() - started) })
     }
     if (registration.handler.type !== 'command') return result(registration, 'unsupported', 'HOST_HANDLER_UNAVAILABLE', started)
-    if ((registration.handler.async === true && !(registration.dialect === 'codex' && event.event === 'SessionEnd')) || registration.handler.asyncRewake === true) return result(registration, 'unsupported', 'HOST_BACKGROUND_UNAVAILABLE', started)
+    if (background) {
+      if (!host.background) return result(registration, 'unsupported', 'HOST_BACKGROUND_UNAVAILABLE', started)
+      if (registration.dialect === 'claude-code' && registration.handler.asyncRewake === true && !host.background.supportsRewake) return result(registration, 'unsupported', 'HOST_ASYNC_REWAKE_UNAVAILABLE', started)
+      const submission = host.background.enqueue({ registration, event, invocation: await prepareCommand(registration, event, payload, host), ...(host.sessionSignal ? { sessionSignal: host.sessionSignal } : {}) })
+      if (submission.status === 'accepted') {
+        const receipt = result(registration, 'background', submission.code, started)
+        return { ...receipt, status: 'background', jobID: submission.id, diagnostic: { ...receipt.diagnostic, outcome: 'background' } }
+      }
+      return result(registration, submission.status, submission.code, started)
+    }
     const execution = await runCommand(await prepareCommand(registration, event, payload, host))
     return interpretOutput(registration, event, { ...execution, durationMs: Math.round(performance.now() - started) })
   } catch (error) {

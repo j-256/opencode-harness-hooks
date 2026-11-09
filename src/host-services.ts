@@ -1,3 +1,4 @@
+import type { BackgroundExecutor } from './background-types.js'
 import type { Dialect } from './contracts.js'
 import type { JsonValue } from './types.js'
 
@@ -54,6 +55,8 @@ export interface HostServices {
   readonly sessionDirectory?: string
   readonly sourceContext?: Readonly<Record<string, SourceContext>>
   readonly signal?: AbortSignal
+  readonly sessionSignal?: AbortSignal
+  readonly background?: BackgroundExecutor
   readonly remainingBudgetMs?: number
   readonly maxInputBytes?: number
   readonly maxOutputBytes?: number
