@@ -68,4 +68,5 @@ export interface NativeEvent {
   readonly toolInput?: Readonly<Record<string, JsonValue>>
   readonly matcherValue?: string
   readonly data?: Readonly<Record<string, JsonValue>>
+  readonly dialectData?: Readonly<Partial<Record<Dialect, Readonly<Record<string, JsonValue>>>>>
 }

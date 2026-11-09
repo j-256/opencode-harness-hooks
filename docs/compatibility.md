@@ -26,6 +26,16 @@ Sources are selected explicitly by dialect and path. JSON and Codex inline TOML 
 
 Claude's simple exact names and comma-separated lists differ from Codex's narrower exact-name optimization. Regex matching uses JavaScript for Claude and the Rust regex engine through the pinned `rregex` WebAssembly package for Codex. Unknown tool names and MCP identities remain unchanged; only explicit host tool aliases are translated. Group matching and handler execution are distinct stages: matching alone does not evaluate handler conditions, native trust, or host capabilities.
 
+## Payload and output interpretation
+
+Payload construction selects event-specific fields and keeps dialect-specific artifacts separate. It does not expose unrelated host metadata. Known built-in tool argument names are translated; arbitrary custom-tool and MCP argument keys remain intact. Missing required native metadata is an explicit error, including an unavailable Claude transcript path. Constructing a payload does not establish that a transcript has a compatible format or that the host can supply every event.
+
+Output interpretation retains permission requests, input replacement, result replacement, feedback, continuation, and session stopping as distinct actions. Claude's `ask` and `defer` decisions are preserved. Codex's parsed-but-unsupported controls remain native hook failures rather than becoming approvals or denials. Claude Stop feedback and Codex Stop continuation also retain different prompt semantics. Post-tool feedback cannot undo a completed effect.
+
+Native extensions such as permission updates, watcher changes, display replacement, and terminal notifications remain explicit action requests. Recognizing one does not establish host support; the host adapter must implement or report the requested capability. Output interpretation is separate from handler execution, native effect enforcement, artifact projection, lifecycle ordering, and migration parity.
+
+The seeded Codex output fixture is generated from the pinned upstream wire types and output parser with the upstream `serde` and `serde_json` versions. It covers PreToolUse wire parsing with valid Bash replacement shapes, including valid controls, invalid shapes, Unicode, number range, and nesting boundaries. It does not prove command execution or host effects. The [native parser source](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/engine/output_parser.rs) is authoritative for permissive behavior absent from the guide, including acceptance of another known event tag in the PreToolUse wire shape.
+
 ## Host boundaries under investigation
 
 The pinned host calls plugin event handlers without awaiting their promises. An asynchronous completion observer therefore does not itself provide an awaited final-turn veto. Completion control requires separate execution evidence and must not be inferred from an event name.
