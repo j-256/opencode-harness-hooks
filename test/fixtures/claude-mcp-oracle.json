@@ -1,0 +1,159 @@
+{
+  "oracle": "native-cli-loopback",
+  "runtime": "Claude Code",
+  "version": "2.1.318",
+  "reference": "https://code.claude.com/docs/en/hooks",
+  "scope": "PreToolUse MCP argument expansion against a stdio JSON-RPC server",
+  "toolInput": {
+    "variant": "main",
+    "count": 1234,
+    "flag": false,
+    "array": [
+      "a",
+      7
+    ],
+    "nullable": null
+  },
+  "cases": [
+    {
+      "template": {
+        "variant": "count",
+        "value": "${tool_input.count}",
+        "embedded": "n=${tool_input.count}"
+      },
+      "expected": {
+        "variant": "count",
+        "value": "1234",
+        "embedded": "n=1234"
+      }
+    },
+    {
+      "template": {
+        "variant": "boolean",
+        "value": "${tool_input.flag}"
+      },
+      "expected": {
+        "variant": "boolean",
+        "value": "false"
+      }
+    },
+    {
+      "template": {
+        "variant": "object",
+        "value": "${tool_input}"
+      },
+      "expected": {
+        "variant": "object",
+        "value": "{\"variant\":\"main\",\"count\":1234,\"flag\":false,\"array\":[\"a\",7],\"nullable\":null}"
+      }
+    },
+    {
+      "template": {
+        "variant": "missing",
+        "value": "${missing}"
+      },
+      "expected": {
+        "variant": "missing",
+        "value": ""
+      }
+    },
+    {
+      "template": {
+        "variant": "array",
+        "value": "${tool_input.array}"
+      },
+      "expected": {
+        "variant": "array",
+        "value": "[\"a\",7]"
+      }
+    },
+    {
+      "template": {
+        "variant": "nullable",
+        "value": "${tool_input.nullable}"
+      },
+      "expected": {
+        "variant": "nullable",
+        "value": ""
+      }
+    },
+    {
+      "template": {
+        "variant": "index",
+        "value": "${tool_input.array.0}"
+      },
+      "expected": {
+        "variant": "index",
+        "value": "a"
+      }
+    },
+    {
+      "template": {
+        "variant": "length",
+        "value": "${tool_input.array.length}"
+      },
+      "expected": {
+        "variant": "length",
+        "value": "2"
+      }
+    },
+    {
+      "template": {
+        "variant": "inherited",
+        "value": "${tool_input.constructor}"
+      },
+      "expected": {
+        "variant": "inherited",
+        "value": "function Object() { [native code] }"
+      }
+    },
+    {
+      "template": {
+        "variant": "prototype",
+        "value": "${tool_input.__proto__}"
+      },
+      "expected": {
+        "variant": "prototype",
+        "value": "{}"
+      }
+    },
+    {
+      "template": {
+        "variant": "nested",
+        "value": {
+          "count": "${tool_input.count}",
+          "array": [
+            "${tool_input.array.0}",
+            7,
+            null
+          ]
+        },
+        "flag": false
+      },
+      "expected": {
+        "variant": "nested",
+        "value": {
+          "count": "1234",
+          "array": [
+            "a",
+            7,
+            null
+          ]
+        },
+        "flag": false
+      }
+    },
+    {
+      "template": {
+        "variant": "escaped",
+        "value": "\\${tool_input.count}",
+        "empty": "${}"
+      },
+      "expected": {
+        "variant": "escaped",
+        "value": "\\1234",
+        "empty": "${}"
+      }
+    }
+  ]
+}

@@ -3,6 +3,7 @@ import { prepareCommand, CommandContextError } from './command-context.js'
 import type { HookAction, HookEffect } from './effect-types.js'
 import { runHttp } from './http-handler.js'
 import { runModel } from './model-handler.js'
+import { runMcp } from './mcp-handler.js'
 import { HookServiceError, runService, UnsupportedServiceError } from './service-execution.js'
 import type { HostServices } from './host-services.js'
 import { buildPayload, PayloadError } from './payload.js'
@@ -56,6 +57,11 @@ export async function executeRegistration(registration: Registration, inputEvent
       if (matches === undefined) return result(registration, 'unsupported', 'HOST_CONDITION_UNAVAILABLE', started)
       if (!matches) return result(registration, 'skipped', 'NATIVE_CONDITION_MISMATCH', started)
     }
+    if (registration.handler.type === 'mcp_tool') {
+      const execution = await runMcp(registration, event, payload, host)
+      const effect = interpretOutput(registration, event, { ...execution, durationMs: Math.round(performance.now() - started) })
+      return execution.sourceToolNamespace === undefined ? effect : { ...effect, actions: [...effect.actions, { kind: 'native-extension', name: 'mcpSourceNamespace', value: execution.sourceToolNamespace }] }
+    }
     if (registration.handler.type === 'prompt' || registration.handler.type === 'agent') {
       const output = await runModel(registration, event, payload, host)
       return result(registration, output.status, output.code, started, output.actions)
@@ -64,7 +70,7 @@ export async function executeRegistration(registration: Registration, inputEvent
       const execution = await runHttp(registration, payload, host)
       return interpretOutput(registration, event, { ...execution, durationMs: Math.round(performance.now() - started) })
     }
-    if (registration.handler.type !== 'command') return result(registration, 'unsupported', `HOST_${registration.handler.type.toUpperCase()}_UNAVAILABLE`, started)
+    if (registration.handler.type !== 'command') return result(registration, 'unsupported', 'HOST_HANDLER_UNAVAILABLE', started)
     if ((registration.handler.async === true && !(registration.dialect === 'codex' && event.event === 'SessionEnd')) || registration.handler.asyncRewake === true) return result(registration, 'unsupported', 'HOST_BACKGROUND_UNAVAILABLE', started)
     const execution = await runCommand(await prepareCommand(registration, event, payload, host))
     return interpretOutput(registration, event, { ...execution, durationMs: Math.round(performance.now() - started) })

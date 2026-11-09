@@ -20,6 +20,8 @@ Each required capability is classified as verified, unsupported, or unresolved, 
 - [OpenCode V2 session hooks](https://github.com/anomalyco/opencode/blob/v2.2.5/packages/plugin/src/promise/session.ts)
 - [Codex command execution at the pinned release](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/engine/command_runner.rs)
 - [Codex timeout normalization at the pinned release](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/engine/discovery.rs)
+- [Codex MCP executor contract at the pinned release](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/mcp.rs)
+- [Codex MCP expansion at the pinned release](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/engine/mcp_runner.rs)
 - [Codex matcher implementation at the pinned release](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/engine/matcher.rs)
 
 ## Source loading and matching
@@ -49,6 +51,14 @@ Handler results distinguish native skips from unavailable host capabilities. Int
 HTTP handlers POST the native JSON payload and interpolate only explicitly allowed header environment variables. Direct responses distinguish empty success, JSON object output, invalid bodies, transport errors, and non-success status codes. Response streaming stays inside the execution deadline and byte budget; partial output is discarded on cancellation or limits. The pinned native CLI probes do not follow relative or absolute HTTP redirects; redirects follow the non-success response policy. The native redirect observations are retained in an independent fixture.
 
 Prompt and agent handlers call explicit host evaluation services. They preserve requested model selectors, prompt input, structured response validation, event-specific blocking and continuation, and the agent turn limit. Service deadlines cancel the supplied signal and discard late results. Native model selection, exact prompt rendering, agent tool access and lifecycle still require separate host and native conformance evidence. Task completion decisions retain an explicit extension request for trigger-specific host adjudication.
+
+## MCP handlers
+
+MCP execution requires an explicit host service that owns connection readiness, native policy, server deadlines, and elicitation. Requests preserve the dialect's connection policy. Codex requires an existing connection, no tool approval or recursive hooks, and active timeout accounting that excludes elicitation waits. A service offering only wall-clock accounting is explicitly unsupported for Codex. Missing servers, tool failures and service errors retain native non-blocking behavior where the event permits it.
+
+Argument expansion differs by dialect. Codex preserves JSON types for whole-value placeholders and fails on missing paths. Claude renders placeholders as strings, including empty strings for missing or null values; its native lookup also supports array paths. The Claude fixture captures real native CLI calls against a local stdio MCP server. A fixed JSON transformation in a separate JavaScript realm preserves the observed lookup behavior without inheriting host prototype mutations. Template expansion and RPC inputs have explicit resource limits. Namespace attribution remains an explicit host extension request.
+
+These fixtures establish the observed transport and template behavior, not full connection, elicitation, native trust or OpenCode MCP integration equivalence. Portable fixture regeneration remains a delivery gate.
 
 ## Host boundaries under investigation
 
