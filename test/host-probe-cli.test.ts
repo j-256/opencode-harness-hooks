@@ -7,9 +7,10 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const script = fileURLToPath(new URL('../scripts/verify-v2.mjs', import.meta.url))
-function invoke(args: readonly string[], env: NodeJS.ProcessEnv = process.env) {
+const packageProbe = fileURLToPath(new URL('../scripts/verify-plugin.mjs', import.meta.url))
+function invoke(args: readonly string[], env: NodeJS.ProcessEnv = process.env, target = script) {
   return new Promise<{ status: number; stdout: string; stderr: string }>(resolve => {
-    execFile(process.execPath, [script, ...args], { env, timeout: 5000 }, (error, stdout, stderr) => resolve({ status: error ? typeof error.code === 'number' ? error.code : 1 : 0, stdout, stderr }))
+    execFile(process.execPath, [target, ...args], { env, timeout: 5000 }, (error, stdout, stderr) => resolve({ status: error ? typeof error.code === 'number' ? error.code : 1 : 0, stdout, stderr }))
   })
 }
 
@@ -22,6 +23,36 @@ test('both help forms work without Git or an OpenCode executable', async () => {
     assert.match(result.stdout, /Exit status/)
     assert.equal(result.stderr, '')
   }
+})
+
+test('package probe help and invalid host/options require no executable and preserve output channels', async () => {
+  for (const flag of ['-h', '--help']) {
+    const result = await invoke([flag], { PATH: '' }, packageProbe)
+    assert.equal(result.status, 0)
+    assert.match(result.stdout, /--host v1\|v2/)
+    assert.match(result.stdout, /1\.19\.5/)
+    assert.match(result.stdout, /2\.2\.5/)
+    assert.equal(result.stderr, '')
+  }
+  for (const args of [[], ['--host'], ['--host', 'v3'], ['--host', 'constructor'], ['--unknown'], ['--host=v1', '--binary='], ['--', 'v1']]) {
+    const result = await invoke(args, process.env, packageProbe)
+    assert.equal(result.status, 2, String(args))
+    assert.equal(result.stdout, '')
+    assert.match(result.stderr, /USAGE_/)
+  }
+})
+
+test('package probe honors literal binary forms and the selected host environment', async () => {
+  for (const args of [['--host=v1', '-b', process.execPath], ['--host', 'v2', '-b' + process.execPath], ['--host=v1', '--binary=' + process.execPath]]) {
+    const result = await invoke(args, process.env, packageProbe)
+    assert.equal(result.status, 2)
+    assert.equal(result.stdout, '')
+    assert.match(result.stderr, /HOST_VERSION_MISMATCH/)
+  }
+  const result = await invoke(['--host=v1'], { ...process.env, OPENCODE_V1_BINARY: '/missing/harness-fixture' }, packageProbe)
+  assert.equal(result.status, 3)
+  assert.equal(result.stdout, '')
+  assert.equal(result.stderr, 'DEPENDENCY_UNAVAILABLE: OpenCode\n')
 })
 
 test('invalid options and missing or empty binary arguments are usage errors', async () => {

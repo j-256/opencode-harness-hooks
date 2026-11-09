@@ -6,6 +6,8 @@ The native reference versions are Claude Code 2.1.318 and Codex CLI 0.167.0. The
 
 The package contract uses one default definition with `id`, V1's `server()` entrypoint, and V2's `setup()` entrypoint. The host adapters register hooks through their respective APIs and share source loading, matching, execution, and protocol translation. Supporting both package loaders does not establish equivalent host capabilities; each host needs separate effect and lifecycle evidence.
 
+The default definition connects both tool backends through a shared runtime and session coordinator. A portable package probe exercises actual native options, turn/model metadata capture, denied side effects and executed input replacement on both pinned hosts. [Runtime configuration](runtime.md) documents snapshot review, explicit metadata projections, connected events, service boundaries and remaining gaps. The package report retains a negative equivalence result until the complete conformance and migration gates pass.
+
 ## Evidence and completion
 
 Each required capability is classified as verified, unsupported, or unresolved, with supporting evidence. A required unsupported or unresolved capability prevents an equivalence claim. Missing evidence also prevents that claim. Tests proving an unsupported diagnostic are diagnostic coverage, not successful protocol equivalence.

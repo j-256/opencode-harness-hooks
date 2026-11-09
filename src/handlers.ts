@@ -30,7 +30,7 @@ function result(registration: Registration, status: InactiveStatus | 'failed' | 
   return { status, code, actions, diagnostic: { ...diagnostic, outcome: status } }
 }
 
-function nativeSkip(registration: Registration, event: NativeEvent): boolean {
+export function nativeSkip(registration: Registration, event: NativeEvent): boolean {
   const type = registration.handler.type
   if (registration.dialect === 'codex') return type === 'prompt' || type === 'agent' || (type === 'mcp_tool' && event.event === 'SessionEnd')
   if ((type === 'prompt' || type === 'agent') && !MODEL_EVENTS.has(event.event) && !(type === 'prompt' && event.event === 'PermissionRequest')) return true
