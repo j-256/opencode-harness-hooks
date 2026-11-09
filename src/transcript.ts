@@ -11,6 +11,10 @@ import { HookServiceError, runService } from './service-execution.js'
 import type { SessionSnapshot } from './sessions.js'
 import { nativeToolInput, toolName } from './tool-schema.js'
 import type { JsonValue } from './types.js'
+import type { DispatchResult } from './engine.js'
+import { PromptAttachments } from './prompt-attachments.js'
+import { ModelContext } from './model-context.js'
+import type { HostModelEvent } from './model-types.js'
 
 const HISTORY_MS = 5000
 const MAX_MESSAGES = 10000
@@ -29,6 +33,8 @@ export interface TranscriptHistory {
   readonly messages: readonly unknown[]
 }
 export interface TranscriptService {
+  observeModel?(event: HostModelEvent, session: SessionSnapshot): void
+  admitPrompt?(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void
   observe(event: HostToolEvent, session: SessionSnapshot): void
   prepare(event: HostToolEvent | HostPromptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<string>
   dispose(): Promise<void>
@@ -37,6 +43,7 @@ interface Options {
   readonly host: HostVersion
   readonly directory: string
   readonly temporaryParent?: string
+  readonly now?: () => number
   readonly history: (event: HostToolEvent | HostPromptEvent, signal: AbortSignal) => Promise<TranscriptHistory>
 }
 interface Tool {
@@ -125,6 +132,8 @@ export class ClaudeTranscript implements TranscriptService {
   private readonly originals = new Map<string, Readonly<Record<string, JsonValue>>>()
   private readonly serial = new Map<string, Promise<unknown>>()
   private readonly published = new Set<string>()
+  private readonly prompts = new PromptAttachments()
+  private readonly models: ModelContext
   private readonly lifetime = new AbortController()
   private directory: Promise<string> | undefined
   private directoryPath: string | undefined
@@ -135,6 +144,18 @@ export class ClaudeTranscript implements TranscriptService {
   constructor(options: Options) {
     if (!['v1', 'v2'].includes(options.host) || !isAbsolute(options.directory) || options.temporaryParent !== undefined && !isAbsolute(options.temporaryParent)) fail('TRANSCRIPT_OPTIONS_INVALID')
     this.options = { ...options }
+    this.models = new ModelContext(options.now)
+  }
+
+  observeModel(event: HostModelEvent, session: SessionSnapshot): void {
+    if (event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
+    if (event.sessionID !== session.sessionID || event.messageID !== session.turnID || event.signal.aborted) throw new HostHookError('TRANSCRIPT_MODEL_CANCELLED', 'cancelled')
+    this.models.observe(session)
+  }
+
+  admitPrompt(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void {
+    if (event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
+    this.prompts.admit(event, session, dispatch)
   }
 
   observe(event: HostToolEvent, session: SessionSnapshot): void {
@@ -167,6 +188,7 @@ export class ClaudeTranscript implements TranscriptService {
       if (history.id !== event.sessionID) fail('TRANSCRIPT_SESSION_MISMATCH')
       if (history.parentID !== undefined && (typeof history.parentID !== 'string' || !history.parentID)) fail('TRANSCRIPT_SCHEMA_INVALID')
       if (!session.turnID) fail('TRANSCRIPT_TURN_UNAVAILABLE')
+      if (event.event === 'UserPromptSubmit') this.prompts.begin(session)
       const rows = this.project(event, messages(this.options.host, event.sessionID, array(history.messages)), history.parentID !== undefined)
       const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
       if (Buffer.byteLength(text) > MAX_BYTES) fail('TRANSCRIPT_SIZE_LIMIT')
@@ -201,6 +223,8 @@ export class ClaudeTranscript implements TranscriptService {
 
   dispose(): Promise<void> {
     this.lifetime.abort()
+    this.prompts.dispose()
+    this.models.dispose()
     this.disposing ??= (async () => {
       await Promise.allSettled([...this.serial.values()])
       try { if (this.directoryPath) await rm(this.directoryPath, { recursive: true, force: true }) } catch { throw new HostHookError('TRANSCRIPT_DISPOSE_FAILED', 'failed') }
@@ -213,23 +237,28 @@ export class ClaudeTranscript implements TranscriptService {
     return this.disposing
   }
 
-  inspect() { return Object.freeze({ created: this.directoryPath !== undefined, disposed: this.lifetime.signal.aborted, originals: this.originals.size, originalBytes: this.originalBytes, pending: this.pendingCount }) }
+  inspect() { return Object.freeze({ created: this.directoryPath !== undefined, disposed: this.lifetime.signal.aborted, originals: this.originals.size, originalBytes: this.originalBytes, pending: this.pendingCount, ...this.prompts.inspect(), ...this.models.inspect() }) }
 
   private project(event: HostToolEvent | HostPromptEvent, history: readonly Message[], sidechain: boolean): readonly Record<string, JsonValue>[] {
     const rows: Record<string, JsonValue>[] = []
     let parent: string | null = null
     let current = false
     const currentTurnID = history.findLast(message => message.role === 'user')?.turnID
+    const modeled = new Set(history.filter(message => message.role === 'assistant').map(message => message.turnID))
     if (event.event === 'UserPromptSubmit' && history.some(message => message.id === event.messageID)) fail('TRANSCRIPT_PROMPT_ALREADY_ADMITTED')
-    const push = (identity: string, created: number, role: 'user' | 'assistant', message: Record<string, JsonValue>) => {
+    const append = (identity: string, created: number, body: Record<string, JsonValue>) => {
       const id = uuid(JSON.stringify([event.sessionID, identity]))
-      rows.push({ parentUuid: parent, isSidechain: sidechain, type: role, message, uuid: id, timestamp: new Date(created).toISOString(), cwd: this.options.directory, sessionId: event.sessionID, version: CONTRACT_VERSIONS['claude-code'] })
+      rows.push({ parentUuid: parent, isSidechain: sidechain, ...body, uuid: id, timestamp: new Date(created).toISOString(), cwd: this.options.directory, sessionId: event.sessionID, version: CONTRACT_VERSIONS['claude-code'] })
       parent = id
     }
+    const push = (identity: string, created: number, role: 'user' | 'assistant', message: Record<string, JsonValue>) => append(identity, created, { type: role, message })
     for (const entry of history) {
       if (entry.role === 'user') {
         const content = entry.content.map(part => { if (typeof part !== 'string') return fail('TRANSCRIPT_CONTENT_UNSUPPORTED'); return part })
         push(entry.id, entry.created, 'user', { role: 'user', content: content.length === 1 ? content[0]! : content.map(text => ({ type: 'text', text })) })
+        for (const attachment of this.prompts.read(event.sessionID, entry.id, content.join('\n'))) append('prompt/' + attachment.id, attachment.created, { ...attachment.body })
+        const date = this.models.read(event.sessionID, entry.id, modeled.has(entry.id))
+        if (date) append('date/' + date.id, date.created, { type: 'attachment', attachment: { type: 'date', date: date.date }, rendered: [{ content: `<system-reminder>\nToday's date is ${date.date}.\n</system-reminder>` }], renderedRole: 'system' })
         continue
       }
       const results: { readonly id: string; readonly content: JsonValue; readonly created: number; readonly error: boolean }[] = []

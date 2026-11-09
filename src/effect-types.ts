@@ -1,5 +1,12 @@
 import type { Dialect } from './contracts.js'
 import type { JsonValue } from './types.js'
+import type { ExecutionResult } from './runner.js'
+
+export interface CommandArtifact extends ExecutionResult {
+  readonly command: string
+  readonly completedAt: number
+  readonly timeoutMs: number | null
+}
 
 export type PermissionDecision = 'allow' | 'deny' | 'ask' | 'defer'
 export type HookAction =
@@ -22,6 +29,7 @@ export interface InterpretedOutput {
 }
 
 export interface HookEffect extends InterpretedOutput {
+  readonly commandArtifact?: CommandArtifact
   readonly diagnostic: {
     readonly sourceID: string
     readonly sourceDigest?: string

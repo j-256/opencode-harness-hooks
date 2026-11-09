@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url'
 
 const script = fileURLToPath(new URL('../scripts/verify-v2.mjs', import.meta.url))
 const packageProbe = fileURLToPath(new URL('../scripts/verify-plugin.mjs', import.meta.url))
+const transcriptProbe = fileURLToPath(new URL('../scripts/verify-claude-transcript.mjs', import.meta.url))
 // The probes require Node even when the library tests run in Bun
 const node = process.versions.bun ? execFileSync('node', ['-p', 'process.execPath'], { encoding: 'utf8', timeout: 5000 }).trim() : process.execPath
 function invoke(args: readonly string[], env: NodeJS.ProcessEnv = process.env, target = script) {
@@ -15,6 +16,34 @@ function invoke(args: readonly string[], env: NodeJS.ProcessEnv = process.env, t
     execFile(node, [target, ...args], { env, timeout: 5000 }, (error, stdout, stderr) => resolve({ status: error ? typeof error.code === 'number' ? error.code : 1 : 0, stdout, stderr }))
   })
 }
+
+test('Claude transcript oracle help, arguments and dependency failures preserve its CLI contract', async () => {
+  for (const flag of ['-h', '--help']) {
+    const result = await invoke([flag], { PATH: '' }, transcriptProbe)
+    assert.equal(result.status, 0)
+    assert.match(result.stdout, /2\.1\.318/)
+    assert.match(result.stdout, /--binary/)
+    assert.match(result.stdout, /Exit status/)
+    assert.match(result.stdout, /4 required native reader fidelity differs/)
+    assert.equal(result.stderr, '')
+  }
+  for (const args of [['--unknown'], ['-b'], ['--binary='], ['--', 'unexpected']]) {
+    const result = await invoke(args, process.env, transcriptProbe)
+    assert.equal(result.status, 2)
+    assert.equal(result.stdout, '')
+    assert.match(result.stderr, /USAGE_/)
+  }
+  for (const args of [['-b', node], ['-b' + node], ['--binary=' + node]]) {
+    const result = await invoke(args, process.env, transcriptProbe)
+    assert.equal(result.status, 2)
+    assert.equal(result.stdout, '')
+    assert.match(result.stderr, /NATIVE_VERSION_MISMATCH/)
+  }
+  const missing = await invoke([], { PATH: '', CLAUDE_BINARY: '/missing/harness-claude' }, transcriptProbe)
+  assert.equal(missing.status, 3)
+  assert.equal(missing.stdout, '')
+  assert.equal(missing.stderr, 'DEPENDENCY_UNAVAILABLE: Claude Code\n')
+})
 
 test('both help forms work without Git or an OpenCode executable', async () => {
   for (const flag of ['-h', '--help']) {

@@ -26,6 +26,41 @@ function event(cwd: string, name = 'PreToolUse'): NativeEvent {
 
 const environment = { PATH: process.env.PATH, SHELL: '/bin/sh' }
 
+test('command artifact capture is opt-in and excludes stdin and environment from records and diagnostics', async t => {
+  const { executeRegistration } = await import('../src/handlers.js')
+  const root = await fixture(t)
+  const hook = registration('claude-code', { type: 'command', command: process.execPath, args: ['-e', 'process.stdout.write("PRIVATE_STDOUT\\n");process.stderr.write("PRIVATE_STDERR")', "literal space 'quote'"] }, 'UserPromptSubmit')
+  const input = { ...event(root, 'UserPromptSubmit'), data: { ...event(root).data, prompt: 'PRIVATE_PROMPT' } }
+  const host = { environment: { ...environment, PRIVATE_ENV: 'PRIVATE_VALUE' }, projectRoot: root }
+  const ordinary = await executeRegistration(hook, input, host)
+  assert.equal('commandArtifact' in ordinary, false)
+  const captured = await executeRegistration(hook, input, { ...host, captureCommandArtifacts: true })
+  assert.ok('commandArtifact' in captured && captured.commandArtifact)
+  const artifact = captured.commandArtifact
+  assert.equal(artifact.command, [process.execPath, ...hook.handler.args!].join(' '))
+  assert.equal(artifact.stdout, 'PRIVATE_STDOUT\n')
+  assert.equal(artifact.stderr, 'PRIVATE_STDERR')
+  assert.equal(artifact.exitCode, 0)
+  assert.equal(artifact.status, 'exited')
+  assert.equal(artifact.timeoutMs, 30_000)
+  assert.ok(artifact.durationMs >= 0)
+  assert.ok(artifact.completedAt > 0)
+  for (const excluded of ['PRIVATE_PROMPT', 'PRIVATE_VALUE']) assert.equal(JSON.stringify(artifact).includes(excluded), false)
+  for (const excluded of ['PRIVATE_STDOUT', 'PRIVATE_STDERR', 'literal space']) assert.equal(JSON.stringify(captured.diagnostic).includes(excluded), false)
+})
+
+test('command artifact deadlines retain the effective shared budget for a timed-out execution', async t => {
+  const { executeRegistration } = await import('../src/handlers.js')
+  const root = await fixture(t)
+  const hook = registration('claude-code', { type: 'command', command: process.execPath, args: ['-e', 'setInterval(()=>{},1000)'], timeout: 10 }, 'UserPromptSubmit')
+  const result = await executeRegistration(hook, { ...event(root, 'UserPromptSubmit'), data: { ...event(root).data, prompt: 'Deadline fixture' } }, { environment, projectRoot: root, captureCommandArtifacts: true, remainingBudgetMs: 125 })
+  assert.equal(result.code, 'EXECUTION_TIMEOUT')
+  assert.ok('commandArtifact' in result && result.commandArtifact)
+  assert.equal(result.commandArtifact.status, 'timeout')
+  assert.equal(result.commandArtifact.timeoutMs, 125)
+  assert.ok(!Object.hasOwn(result.diagnostic, 'timeoutMs'))
+})
+
 test('executes Claude commands with literal exec arguments, source paths, input, and isolated environment', async t => {
   const { executeRegistration } = await import('../src/handlers.js')
   const root = await fixture(t)

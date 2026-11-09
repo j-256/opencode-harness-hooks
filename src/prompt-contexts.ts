@@ -143,7 +143,7 @@ export class PromptContexts {
         if (!content.every(part => record(part) && part.type === partType && typeof part.text === 'string')) fail('HOST_PROMPT_REQUEST_UNAVAILABLE')
         const entry = ticket.entries[index++]
         if (!entry || !same(content.map(part => part.text), entry.text)) fail('HOST_PROMPT_REQUEST_UNAVAILABLE')
-        const claude = entry.contexts.filter(row => row.dialect === 'claude-code').map(row => ({ type: partType, text: `<system-reminder>\nUserPromptSubmit hook ${row.action.channel === 'stdout' ? 'success' : 'additional context'}: ${row.action.text}\n</system-reminder>` }))
+        const claude = entry.contexts.filter(row => row.dialect === 'claude-code').sort((a, b) => a.completionOrder - b.completionOrder).map(row => ({ type: partType, text: `<system-reminder>\nUserPromptSubmit hook ${row.action.channel === 'stdout' ? 'success' : 'additional context'}: ${row.action.text}\n</system-reminder>` }))
         result.push(claude.length ? { ...raw, content: [...claude, ...content] } : raw)
         for (const row of entry.contexts) {
           if (row.dialect !== 'codex') continue

@@ -59,6 +59,7 @@ async function submit(runtime: Awaited<ReturnType<typeof createRuntime>>, contex
     await runService(null, event.signal, () => services.promptEffects!(event, effects))
   }
   if (event.signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')
+  runtime.admitPrompt(event, dispatch)
   contexts.remember(runtime.sessions.get(event.sessionID), text, effects.context)
 }
 function guarded<A extends unknown[], T>(runtime: Awaited<ReturnType<typeof createRuntime>>, phase: PromptDiagnostic['phase'], operation: (...args: A) => Promise<T>, identity: (...args: A) => { readonly sessionID?: string; readonly messageID?: string }) {
@@ -167,9 +168,11 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       contexts.layout(runtime.sessions.get(last.info.sessionID), layout('v1', output.messages))
     },
     'chat.headers': async (prompt: Prompt & { readonly message: UserMessage }, output: { readonly headers: Record<string, string> }) => {
-      if (!runtime.hasPromptHooks) return
+      if (!runtime.hasPromptHooks && !runtime.needsModelArtifacts) return
       const session = runtime.sessions.get(prompt.sessionID)
       if (session.turnID !== prompt.message.id) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
+      runtime.observeModel({ host: 'v1', sessionID: prompt.sessionID, messageID: prompt.message.id, signal: session.turnSignal })
+      if (!runtime.hasPromptHooks) return
       const provider = prompt.model?.providerID ?? prompt.message.model?.providerID
       const selected = protocols.get(prompt.sessionID)
       if (!selected || selected.turnID !== prompt.message.id || selected.providerID !== provider) unavailable('HOST_PROMPT_PROVIDER_UNAVAILABLE')
@@ -210,12 +213,14 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
   const approvals = new CallApprovals({ diagnostic: runtime.tools.diagnostic })
   const contexts = new PromptContexts()
   const handles = new Set<{ readonly dispose: () => Promise<void> | void }>()
+  const modelOwners = new Map<string, { readonly turnID: string; readonly signal: AbortSignal }>()
   const register = <K extends keyof V2SessionEvents>(name: K, callback: (event: V2SessionEvents[K]) => Promise<void>) => context.session.hook(name, guarded(runtime, PROMPT_PHASES[name], callback, event => ({ sessionID: event.sessionID, ...('messageID' in event && typeof event.messageID === 'string' ? { messageID: event.messageID } : {}) })))
   let tools: Awaited<ReturnType<typeof registerV2Hooks>> | undefined
   let disposing: Promise<void> | undefined
   const cleanup = async () => {
     runtime.sessions.dispose()
     contexts.dispose()
+    modelOwners.clear()
     let toolError: unknown
     try { await tools?.dispose() } catch (error) { toolError = error }
     await approvals.dispose()
@@ -241,13 +246,25 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
     }))
     handles.add(await register('context', async event => {
       const session = runtime.sessions.get(event.sessionID)
+      if (runtime.needsModelArtifacts) modelOwners.delete(event.sessionID)
       if (runtime.hasPromptHooks) contexts.layout(session, layout('v2', event.messages))
+      if (runtime.needsModelArtifacts) {
+        const last = Array.isArray(event.messages) ? event.messages.findLast(message => record(message) && message.role === 'user') : undefined
+        if (!session.turnID || !record(last) || last.id !== session.turnID) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
+        modelOwners.set(event.sessionID, { turnID: session.turnID, signal: session.turnSignal })
+      }
       runtime.sessions.model(event.sessionID, event.model.id, session.turnID)
     }))
-    if (runtime.hasPromptHooks) {
+    if (runtime.hasPromptHooks || runtime.needsModelArtifacts) {
       handles.add(await register('model.request', async event => {
         if (event.kind !== 'primary') return
         const session = runtime.sessions.get(event.sessionID)
+        if (runtime.needsModelArtifacts) {
+          const owner = modelOwners.get(event.sessionID)
+          if (!owner) unavailable('HOST_MODEL_CONTEXT_UNAVAILABLE')
+          runtime.observeModel({ host: 'v2', sessionID: event.sessionID, messageID: owner.turnID, signal: owner.signal })
+        }
+        if (!runtime.hasPromptHooks) return
         if (!context.model) unavailable('HOST_PROMPT_PROVIDER_UNAVAILABLE')
         const data = await runService(METADATA_MS, session.turnSignal, signal => context.model!.list({ types: ['chat'] }, { signal }))
         if (!record(data) || !Array.isArray(data.data)) unavailable('HOST_PROMPT_PROVIDER_UNAVAILABLE')
@@ -260,6 +277,8 @@ export async function setupHarnessHooks(context: V2Context, services: RuntimeSer
         const token = contexts.issue(session, protocol(selected))
         if (token) event.headers[PROMPT_REQUEST_HEADER] = token
       }))
+    }
+    if (runtime.hasPromptHooks) {
       handles.add(await register('http.request', async event => {
         if (event.kind !== 'primary') return
         const token = event.request.headers.get(PROMPT_REQUEST_HEADER)

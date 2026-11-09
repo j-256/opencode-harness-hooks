@@ -9,6 +9,7 @@ import { HostHookError } from './hosts/tools.js'
 import type { HostToolEvent, ToolHostOptions } from './hosts/tools.js'
 import type { HostPromptEvent, PromptDiagnostic } from './prompt-types.js'
 import type { EffectResolution } from './effects.js'
+import type { HostModelEvent, ArtifactDiagnostic } from './model-types.js'
 import { selectRegistrations } from './matchers.js'
 import { buildPayload, PayloadError } from './payload.js'
 import { inspectSources } from './inspection.js'
@@ -32,6 +33,7 @@ export interface RuntimeServices {
   readonly promptData?: (event: HostPromptEvent, session: SessionSnapshot, signal: AbortSignal) => Promise<NativeData>
   readonly promptEffects?: (event: HostPromptEvent, effects: EffectResolution) => Promise<void>
   readonly promptDiagnostic?: (diagnostic: PromptDiagnostic) => Promise<void> | void
+  readonly artifactDiagnostic?: (diagnostic: ArtifactDiagnostic) => Promise<void> | void
   readonly report?: (report: RuntimeReport) => Promise<void> | void
   readonly dispatchDiagnostic?: (diagnostic: DispatchResult['diagnostic']) => Promise<void> | void
   readonly transcripts?: TranscriptService
@@ -86,6 +88,25 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     return dispatch
   }
   const reported = new WeakSet<object>()
+  const needsModelArtifacts = !!services.transcripts?.observeModel && sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.length)
+  const observeModel = (event: HostModelEvent) => {
+    if (!needsModelArtifacts) return
+    const started = performance.now()
+    try {
+      if (event.host !== host) throw new HostHookError('HOST_VERSION_MISMATCH', 'unsupported')
+      const session = sessions.get(event.sessionID)
+      if (session.turnID !== event.messageID) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
+      services.transcripts?.observeModel?.(event, session)
+    } catch (error) {
+      if (error && typeof error === 'object') reported.add(error)
+      const value: ArtifactDiagnostic = Object.freeze({ host, artifact: 'claude-transcript', phase: 'model-request', sessionID: event.sessionID, messageID: event.messageID, code: error instanceof HostHookError || error instanceof SessionError ? error.code : 'HOST_ARTIFACT_CONTEXT_FAILED', outcome: error instanceof HostHookError && error.outcome === 'cancelled' || error instanceof SessionError && ['SESSION_CLOSED', 'SESSION_DISPOSED', 'SESSION_STALE_TURN'].includes(error.code) ? 'cancelled' : error instanceof HostHookError && error.outcome === 'unsupported' ? 'unsupported' : 'failed', durationMs: Math.round(performance.now() - started) })
+      try {
+        const observed = (services.artifactDiagnostic ?? (value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', ...value })) }))(value)
+        if (observed) void Promise.resolve(observed).catch(() => { observerFailures++ })
+      } catch { observerFailures++ }
+      throw error
+    }
+  }
   const promptOperation = async <T>(phase: PromptDiagnostic['phase'], identity: { readonly sessionID?: string; readonly messageID?: string }, operation: () => Promise<T>): Promise<T> => {
     const started = performance.now()
     try { return await operation() } catch (error) {
@@ -160,7 +181,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
       for (const registration of selected) {
         try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
       }
-      return observe(await dispatchEvent(sources, nativeEvent, { ...services.host, environment, projectRoot: directory, signal, sessionSignal: session.signal }))
+      return observe(await dispatchEvent(sources, nativeEvent, { ...services.host, ...(services.transcripts?.admitPrompt ? { captureCommandArtifacts: true } : {}), environment, projectRoot: directory, signal, sessionSignal: session.signal }))
     })().catch((error: unknown) => {
       if (signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')
       throw error
@@ -169,5 +190,10 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     void pending.finally(() => { active.delete(pending) }).catch(() => {})
     return pending
   }
-  return { report, sessions, tools, prompt, promptOperation, hasPromptHooks: sources.some(source => source.registrations.some(registration => registration.event === 'UserPromptSubmit')), inspect: () => Object.freeze({ activeDispatches: active.size, observerFailures, sessions: sessions.inspect() }), async dispose() { sessions.dispose(); await Promise.allSettled([...active]); await services.transcripts?.dispose() } }
+  const admitPrompt = (event: HostPromptEvent, dispatch: DispatchResult) => {
+    const session = sessions.get(event.sessionID)
+    if (session.turnID !== event.messageID) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
+    services.transcripts?.admitPrompt?.(event, session, dispatch)
+  }
+  return { report, sessions, tools, prompt, admitPrompt, promptOperation, observeModel, needsModelArtifacts, hasPromptHooks: sources.some(source => source.registrations.some(registration => registration.event === 'UserPromptSubmit')), inspect: () => Object.freeze({ activeDispatches: active.size, observerFailures, sessions: sessions.inspect() }), async dispose() { sessions.dispose(); await Promise.allSettled([...active]); await services.transcripts?.dispose() } }
 }

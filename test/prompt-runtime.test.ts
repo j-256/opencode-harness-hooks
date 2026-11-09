@@ -7,6 +7,7 @@ import { test } from 'node:test'
 import { createRuntime } from '../src/runtime.js'
 import { resolveEffects } from '../src/effects.js'
 import type { PromptDiagnostic } from '../src/prompt-types.js'
+import type { ArtifactDiagnostic } from '../src/model-types.js'
 
 async function fixture(t: { after: (callback: () => Promise<void>) => void }, dialect = 'codex') {
   const directory = await mkdtemp(join(tmpdir(), 'harness-prompt-runtime-'))
@@ -78,5 +79,23 @@ test('prompt diagnostics retain identity and timing without private exception te
   assert.deepEqual({ ...diagnostics[0], durationMs: 0 }, { host: 'v2', event: 'UserPromptSubmit', phase: 'request', sessionID: 'session', messageID: 'turn', code: 'HOST_PROMPT_FAILED', outcome: 'failed', durationMs: 0 })
   assert.ok(diagnostics[0]!.durationMs >= 0)
   assert.ok(!JSON.stringify(diagnostics).includes('Private'))
+  assert.equal(runtime.inspect().observerFailures, 1)
+})
+
+test('artifact context failures have distinct private diagnostics and cannot become prompt failures', async t => {
+  const f = await fixture(t, 'claude-code')
+  const artifacts: ArtifactDiagnostic[] = []
+  const prompts: PromptDiagnostic[] = []
+  const error = new Error('PRIVATE_MODEL_CONTEXT_ERROR')
+  const runtime = await createRuntime('v2', f.directory, f.options, { report: () => {}, transcripts: { observe: () => {}, prepare: async () => '/unused', dispose: async () => {}, observeModel: () => { throw error } }, artifactDiagnostic: async value => { artifacts.push(value); throw new Error('PRIVATE_OBSERVER_ERROR') }, promptDiagnostic: value => { prompts.push(value) } })
+  t.after(() => runtime.dispose())
+  runtime.sessions.prompt('session', 'turn', 'model')
+  assert.equal(runtime.needsModelArtifacts, true)
+  assert.throws(() => runtime.observeModel({ host: 'v2', sessionID: 'session', messageID: 'turn', signal: runtime.sessions.get('session').turnSignal }), value => value === error)
+  await assert.rejects(runtime.promptOperation('headers', { sessionID: 'session' }, async () => { throw error }), value => value === error)
+  await new Promise<void>(resolve => setImmediate(resolve))
+  assert.deepEqual(artifacts.map(({ durationMs: _duration, ...value }) => value), [{ host: 'v2', artifact: 'claude-transcript', phase: 'model-request', sessionID: 'session', messageID: 'turn', code: 'HOST_ARTIFACT_CONTEXT_FAILED', outcome: 'failed' }])
+  assert.deepEqual(prompts, [])
+  assert.ok(!JSON.stringify(artifacts).includes('PRIVATE_'))
   assert.equal(runtime.inspect().observerFailures, 1)
 })

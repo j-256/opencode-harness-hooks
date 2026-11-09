@@ -6,6 +6,7 @@ import { test } from 'node:test'
 import { ClaudeTranscript } from '../src/transcript.js'
 import type { HostToolEvent } from '../src/hosts/tools.js'
 import { Sessions } from '../src/sessions.js'
+import { dispatchEvent } from '../src/engine.js'
 
 const CREATED = Date.parse('2026-01-01T00:00:00Z')
 const event = (host: 'v1' | 'v2', callID = 'call'): HostToolEvent => ({ host, event: 'PreToolUse', sessionID: 'session', callID, tool: host === 'v1' ? 'bash' : 'shell', toolInput: { command: 'original' }, effectiveInput: { command: 'original' }, signal: new AbortController().signal })
@@ -30,6 +31,11 @@ test('prompt snapshots reserve an absent initial path and expose only earlier ad
     const prompt = { host, event: 'UserPromptSubmit' as const, sessionID: 'session', messageID: 'current', prompt: 'Current prompt', signal: new AbortController().signal }
     const path = await transcript.prepare(prompt, sessions.get('session'), prompt.signal)
     await assert.rejects(access(path))
+    sessions.prompt('session', 'turn', 'model')
+    const priorPrompt = { ...prompt, messageID: 'turn', prompt: 'User prompt' }
+    const dispatch = await dispatchEvent([], { event: 'UserPromptSubmit', sessionID: 'session', cwd: '/project' }, { environment: {}, projectRoot: '/project' })
+    transcript.admitPrompt(priorPrompt, sessions.get('session'), dispatch)
+    sessions.prompt('session', 'current', 'model')
     records = history(host).slice(0, 1)
     assert.equal(await transcript.prepare(prompt, sessions.get('session'), prompt.signal), path)
     const rows = (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
@@ -50,15 +56,17 @@ test('both host histories project readable Claude message records and preserve o
     const transcript = new ClaudeTranscript({ host, directory: '/project', history: async () => ({ id: 'session', messages: history(host) }) })
     t.after(() => transcript.dispose())
     transcript.observe(event(host), sessions.get('session'))
+    transcript.observeModel({ host, sessionID: 'session', messageID: 'turn', signal: sessions.get('session').turnSignal }, sessions.get('session'))
     const path = await transcript.prepare(event(host), sessions.get('session'), event(host).signal)
     const rows = (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
-    assert.deepEqual(rows.map(row => row.type), ['user', 'assistant'])
+    assert.deepEqual(rows.map(row => row.type), ['user', 'attachment', 'assistant'])
+    assert.equal(rows[1].attachment.type, 'date')
     assert.equal(rows[0].message.content, 'User prompt')
-    assert.equal(rows[1].message.model, 'fixture')
-    assert.equal(rows[1].parentUuid, rows[0].uuid)
-    assert.equal(rows[1].message.content[0].text, 'Before tool')
-    assert.deepEqual(rows[1].message.content[1], { type: 'tool_use', id: 'call', name: 'Bash', input: { command: 'original' } })
-    assert.equal(rows[1].message.usage, undefined)
+    assert.equal(rows[2].message.model, 'fixture')
+    assert.equal(rows[2].parentUuid, rows[1].uuid)
+    assert.equal(rows[2].message.content[0].text, 'Before tool')
+    assert.deepEqual(rows[2].message.content[1], { type: 'tool_use', id: 'call', name: 'Bash', input: { command: 'original' } })
+    assert.equal(rows[2].message.usage, undefined)
     assert.equal((await stat(path)).mode & 0o777, 0o600)
     assert.equal((await stat(dirname(path))).mode & 0o777, 0o700)
     assert.ok(!JSON.stringify(transcript.inspect()).includes('"command"'))
@@ -75,6 +83,7 @@ test('post-tool snapshots omit the current result and expose completed results t
   const transcript = new ClaudeTranscript({ host: 'v2', directory: '/project', history: async () => ({ id: 'session', messages: records }) })
   t.after(() => transcript.dispose())
   transcript.observe(event('v2'), sessions.get('session'))
+  transcript.observeModel({ host: 'v2', sessionID: 'session', messageID: 'turn', signal: sessions.get('session').turnSignal }, sessions.get('session'))
   const post = { ...event('v2'), event: 'PostToolUse' as const }
   const path = await transcript.prepare(post, sessions.get('session'), post.signal)
   const before = await readFile(path, 'utf8')
@@ -86,8 +95,8 @@ test('post-tool snapshots omit the current result and expose completed results t
   records.push({ type: 'assistant', id: 'next-answer', model: { id: 'fixture' }, time: { created: CREATED + 4 }, content: [{ type: 'tool', id: 'next', name: 'shell', state: { status: 'running', input: { command: 'original' } } }] })
   assert.equal(await transcript.prepare(next, sessions.get('session'), next.signal), path)
   const rows = (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
-  assert.deepEqual(rows.map(row => row.type), ['user', 'assistant', 'user', 'assistant'])
-  assert.deepEqual(rows[2].message.content, [{ type: 'tool_result', tool_use_id: 'call', content: [{ type: 'text', text: 'Tool result' }] }])
+  assert.deepEqual(rows.map(row => row.type), ['user', 'attachment', 'assistant', 'user', 'assistant'])
+  assert.deepEqual(rows[3].message.content, [{ type: 'tool_result', tool_use_id: 'call', content: [{ type: 'text', text: 'Tool result' }] }])
   sessions.dispose()
 })
 
@@ -104,6 +113,7 @@ test('unsupported content, foreign identity, compaction and unobserved completed
   ] as const) {
     const transcript = new ClaudeTranscript({ host: 'v2', directory: '/project', temporaryParent: parent, history: async () => ({ id, messages }) })
     t.after(() => transcript.dispose())
+    transcript.observeModel({ host: 'v2', sessionID: 'session', messageID: 'turn', signal: sessions.get('session').turnSignal }, sessions.get('session'))
     await assert.rejects(transcript.prepare(event('v2'), sessions.get('session'), event('v2').signal), { code })
     assert.equal(transcript.inspect().created, false)
   }
@@ -126,6 +136,7 @@ test('concurrent snapshots for one session serialize their reads without skippin
   } })
   t.after(() => transcript.dispose())
   transcript.observe(event('v2'), sessions.get('session'))
+  transcript.observeModel({ host: 'v2', sessionID: 'session', messageID: 'turn', signal: sessions.get('session').turnSignal }, sessions.get('session'))
   const first = transcript.prepare(event('v2'), sessions.get('session'), event('v2').signal)
   await ready
   const second = transcript.prepare(event('v2'), sessions.get('session'), event('v2').signal)
@@ -149,6 +160,7 @@ test('disposal cancels history work without publishing late output', { timeout: 
   } })
   t.after(() => transcript.dispose())
   transcript.observe(event('v2'), sessions.get('session'))
+  transcript.observeModel({ host: 'v2', sessionID: 'session', messageID: 'turn', signal: sessions.get('session').turnSignal }, sessions.get('session'))
   const pending = transcript.prepare(event('v2'), sessions.get('session'), event('v2').signal)
   await ready
   await transcript.dispose()

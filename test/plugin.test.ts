@@ -73,9 +73,36 @@ test('the default V1 entrypoint supplies a Claude transcript read by the unchang
   } } }, options)
   t.after(() => hooks.dispose())
   await hooks['chat.message']({ sessionID: 'session', model: { modelID: 'fixture' } }, { message: { id: 'turn' } })
+  await hooks['chat.headers']({ sessionID: 'session', message: { id: 'turn' } }, { headers: {} })
   const args = { command: 'original' }
   await hooks['tool.execute.before']({ sessionID: 'session', callID: 'call', tool: 'bash' }, { args })
   assert.deepEqual(args, { command: 'from-transcript' })
+})
+
+test('V2 Claude tool-only sources observe primary model preparation without a provider lookup', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'harness-model-context-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const source = JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'true' }] }] } })
+  await writeFile(join(directory, 'hooks.json'), source)
+  const callbacks = new Map<string, (event: any) => Promise<void>>()
+  const hook = async (name: string, callback: (event: any) => Promise<void>) => { callbacks.set(name, callback); return { dispose: () => { callbacks.delete(name) } } }
+  const observed: unknown[] = []
+  const dispose = await setupHarnessHooks({ location: { directory }, options: { sources: [{ id: 'claude', dialect: 'claude-code', path: 'hooks.json' }], reviewedDigests: { claude: createHash('sha256').update(source).digest('hex') } }, session: { hook }, tool: { hook: async () => ({ dispose: () => {} }) } }, { report: () => {}, transcripts: { observe: () => {}, prepare: async () => '/unused', dispose: async () => {}, observeModel: (event, session) => { observed.push({ host: event.host, id: event.messageID, model: session.model }) } } })
+  t.after(dispose)
+  await callbacks.get('prompt')!({ sessionID: 'session', messageID: 'turn' })
+  await callbacks.get('context')!({ sessionID: 'session', model: { id: 'fixture' }, messages: [{ id: 'turn', role: 'user', content: 'Prompt' }] })
+  assert.ok(callbacks.has('model.request'))
+  await callbacks.get('model.request')!({ sessionID: 'session', kind: 'primary', model: { id: 'fixture', providerID: 'provider' }, headers: {} })
+  await callbacks.get('model.request')!({ sessionID: 'session', kind: 'title', model: { id: 'fixture', providerID: 'provider' }, headers: {} })
+  assert.deepEqual(observed, [{ host: 'v2', id: 'turn', model: 'fixture' }])
+  assert.equal(callbacks.has('http.request'), false)
+  await callbacks.get('prompt')!({ sessionID: 'session', messageID: 'next' })
+  await assert.rejects(callbacks.get('model.request')!({ sessionID: 'session', kind: 'primary', model: { id: 'fixture', providerID: 'provider' }, headers: {} }), { code: 'SESSION_STALE_TURN' })
+  await assert.rejects(callbacks.get('context')!({ sessionID: 'session', model: { id: 'old' }, messages: [{ id: 'turn', role: 'user' }] }), { code: 'SESSION_STALE_TURN' })
+  assert.equal(observed.length, 1)
+  await callbacks.get('context')!({ sessionID: 'session', model: { id: 'fixture' }, messages: [{ id: 'next', role: 'user', content: 'Next' }] })
+  await callbacks.get('model.request')!({ sessionID: 'session', kind: 'primary', model: { id: 'fixture', providerID: 'provider' }, headers: {} })
+  assert.equal(observed.length, 2)
 })
 
 test('V2 unregisters every callback even when artifact cleanup fails and permits a cleanup retry', async t => {

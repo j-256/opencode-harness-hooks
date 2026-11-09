@@ -40,6 +40,20 @@ test('mixed prompt context preserves Claude before-user rendering and independen
   assert.ok(!JSON.stringify(contexts.inspect()).includes('Original'))
 })
 
+test('Claude prompt contexts follow native completion order across independent registrations', async t => {
+  const { sessions, contexts } = fixture(t)
+  const session = sessions.get('session')
+  contexts.remember(session, ['Original'], [
+    { ...context('claude-code', 'Configured first', 'additionalContext'), completionOrder: 2 },
+    { ...context('claude-code', 'Configured second', 'stdout'), completionOrder: 1 },
+    { ...context('claude-code', 'Configured last', 'additionalContext'), completionOrder: 0 },
+  ])
+  contexts.layout(session, [{ id: 'first', text: ['Original'] }])
+  const projected = await contexts.project(request([{ role: 'user', content: 'Original' }]), contexts.issue(session)!)
+  const body = await projected.json()
+  assert.deepEqual(body.messages[0].content.map((part: any) => part.text.match(/Configured \w+/)?.[0]).filter(Boolean), ['Configured last', 'Configured second', 'Configured first'])
+})
+
 test('history retains context at each original user position across accepted turns and repeated text', async t => {
   const { sessions, contexts } = fixture(t)
   contexts.remember(sessions.get('session'), ['Same'], [context('codex', 'First')])

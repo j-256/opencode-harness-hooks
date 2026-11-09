@@ -35,6 +35,8 @@ Sources are selected explicitly by dialect and path. JSON and Codex inline TOML 
 
 Source extraction does not reproduce native policy layering. Codex managed feature requirements can keep hooks enabled when a user feature setting requests disablement. Native trust, managed requirements and effective feature-policy parity require separate evidence; an isolated HOME alone does not isolate machine-managed policy.
 
+The bridge's required no-deduplication behavior is an explicit difference from the pinned Claude runtime. A controlled native prompt fixture with byte-identical command registrations in one hook group observes one execution of that command; the bridge executes each selected registration. Distinct native commands returning identical context preserve both outputs. The [native transcript verifier](transcripts.md#native-oracle-and-reader-verification) records both cases using executable side effects. This observation does not establish the complete native identity algorithm across plugins, settings layers or events. `native-handler-deduplication` remains an unresolved source-equivalence gate; the bridge does not hide that difference or deduplicate registrations to make a comparison pass.
+
 Claude's simple exact names and comma-separated lists differ from Codex's narrower exact-name optimization. Regex matching uses JavaScript for Claude and the Rust regex engine through the pinned `rregex` WebAssembly package for Codex. Unknown tool names and MCP identities remain unchanged; only explicit host tool aliases are translated. Group matching and handler execution are distinct stages: matching alone does not evaluate handler conditions, native trust, or host capabilities.
 
 ## Payload and output interpretation

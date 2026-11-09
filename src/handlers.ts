@@ -84,8 +84,11 @@ export async function executeRegistration(registration: Registration, inputEvent
       }
       return result(registration, submission.status, submission.code, started)
     }
-    const execution = await runCommand(await prepareCommand(registration, event, payload, host))
-    return interpretOutput(registration, event, { ...execution, durationMs: Math.round(performance.now() - started) })
+    const invocation = await prepareCommand(registration, event, payload, host)
+    const execution = await runCommand(invocation)
+    const completedAt = Date.now()
+    const effect = interpretOutput(registration, event, { ...execution, durationMs: Math.round(performance.now() - started) })
+    return host.captureCommandArtifacts ? { ...effect, commandArtifact: { ...execution, completedAt, timeoutMs: invocation.timeoutMs, command: [invocation.command, ...(invocation.args ?? [])].join(' ') } } : effect
   } catch (error) {
     if (error instanceof UnsupportedServiceError || (error instanceof CommandContextError && error.code.startsWith('HOST_'))) return result(registration, 'unsupported', error.code, started)
     const code = error instanceof CommandContextError || error instanceof HookServiceError ? error.code : error instanceof PayloadError ? 'HANDLER_PAYLOAD_INVALID' : 'HANDLER_FAILED'

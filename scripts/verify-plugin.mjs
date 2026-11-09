@@ -17,6 +17,11 @@ const SHUTDOWN_MS = 3000
 const MAX_BYTES = 2 * 1024 * 1024
 const MAX_REQUESTS = 16
 const CONTROLLED_TOOL_CALLS = 2
+const PROMPT_HANDLERS = 4
+const PROMPT_TIMEOUT_SECONDS = 1
+const SECOND_MS = 1000
+const CODEX_PROMPT_CONTEXTS = Object.freeze([{ role: 'developer', content: 'PACKAGE_CODEX_PROMPT_CONTEXT' }, { role: 'developer', content: 'PACKAGE_CODEX_SECOND_CONTEXT' }])
+const PROMPT_SUBMISSIONS = 3
 const run = promisify(execFile)
 const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts]
 
@@ -101,19 +106,44 @@ const input = JSON.parse(fs.readFileSync(0, 'utf8'))
 const codex = typeof input.turn_id === 'string'
 if (input.hook_event_name === 'UserPromptSubmit') {
   const exists = !codex && fs.existsSync(input.transcript_path)
-  fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, promptTranscriptExists: exists, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
-  console.log(JSON.stringify(input.prompt.includes('Block the controlled prompt') ? { decision: 'block', reason: 'PACKAGE_PROMPT_BLOCKED' } : { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: codex ? 'PACKAGE_CODEX_PROMPT_CONTEXT' : 'PACKAGE_CLAUDE_PROMPT_CONTEXT' } }))
+  const mode = process.argv[2] ?? 'additional'
+  const historyAttachments = exists && fs.readFileSync(input.transcript_path, 'utf8').includes('hook_additional_context') && fs.readFileSync(input.transcript_path, 'utf8').includes('hook_success')
+  fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, promptTranscriptExists: exists, promptHistoryAttachments: historyAttachments, promptMode: mode, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
+  if (input.prompt.includes('Block the controlled prompt')) console.log(JSON.stringify({ decision: 'block', reason: 'PACKAGE_PROMPT_BLOCKED' }))
+  else if (mode === 'timeout') { process.stdout.write('PACKAGE_TIMEOUT_STDOUT\n'); process.stderr.write('PACKAGE_TIMEOUT_STDERR\n'); setInterval(() => {}, 1000) }
+  else setTimeout(() => {
+    if (mode === 'failure') { process.stdout.write('PACKAGE_FAILURE_STDOUT\n'); process.stderr.write('PACKAGE_FAILURE_STDERR\n'); process.exit(1) }
+    if (!codex && mode === 'stdout') { process.stdout.write('PACKAGE_CLAUDE_STDOUT_CONTEXT\n'); process.stderr.write('PACKAGE_STDOUT_STDERR\n') }
+    else console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: codex ? mode === 'stdout' ? 'PACKAGE_CODEX_SECOND_CONTEXT' : 'PACKAGE_CODEX_PROMPT_CONTEXT' : 'PACKAGE_CLAUDE_PROMPT_CONTEXT' } }))
+  }, mode === 'stdout' ? 0 : 200)
   return
 }
 let transcriptValidated = false
+let promptArtifactIDs = []
 if (!codex) {
   const rows = fs.readFileSync(input.transcript_path, 'utf8').trim().split('\n').map(JSON.parse)
+  const date = rows.find(row => row.attachment?.type === 'date')
+  if (!date) process.exit(10)
+  const time = new Date(date.timestamp)
+  const observedDate = [time.getFullYear(), String(time.getMonth() + 1).padStart(2, '0'), String(time.getDate()).padStart(2, '0')].join('-')
+  if (date.attachment.date !== observedDate) process.exit(11)
   const blocks = rows.flatMap(row => Array.isArray(row.message?.content) ? row.message.content : [])
   const call = blocks.findLast(block => block.type === 'tool_use' && block.id === input.tool_use_id)
   if (!call || call.input.command !== input.tool_input.command || !rows.some(row => row.type === 'user' && JSON.stringify(row.message.content).includes('controlled package fixture'))) process.exit(8)
+  if (${prompts}) {
+    const attachments = rows.filter(row => row.type === 'attachment' && row.attachment.hookEvent === 'UserPromptSubmit')
+    const stdout = attachments.find(row => row.attachment.type === 'hook_success')
+    const additional = attachments.find(row => row.attachment.type === 'hook_additional_context')
+    const failed = attachments.find(row => row.attachment.type === 'hook_non_blocking_error')
+    const timeout = attachments.find(row => row.attachment.type === 'hook_cancelled')
+    if (!stdout || !additional || !failed || stdout.attachment.stdout !== 'PACKAGE_CLAUDE_STDOUT_CONTEXT\n' || stdout.attachment.stderr !== 'PACKAGE_STDOUT_STDERR\n' || stdout.attachment.exitCode !== 0 || additional.attachment.content[0] !== 'PACKAGE_CLAUDE_PROMPT_CONTEXT' || failed.attachment.stdout !== 'PACKAGE_FAILURE_STDOUT\n' || failed.attachment.stderr !== 'Failed with non-blocking status code: PACKAGE_FAILURE_STDERR' || failed.attachment.exitCode !== 1 || Object.hasOwn(failed, 'rendered')) process.exit(9)
+    if (attachments.filter(row => row.attachment.type !== 'hook_non_blocking_error')[0] !== stdout || stdout.attachment.toolUseID !== failed.attachment.toolUseID) process.exit(12)
+    if (!timeout || timeout.attachment.timedOut !== true || timeout.attachment.timeoutMs !== ${PROMPT_TIMEOUT_SECONDS * SECOND_MS} || timeout.attachment.toolUseID !== stdout.attachment.toolUseID || Object.hasOwn(timeout.attachment, 'stdout') || Object.hasOwn(timeout.attachment, 'stderr') || Object.hasOwn(timeout, 'rendered')) process.exit(13)
+    promptArtifactIDs = attachments.map(row => row.uuid)
+  }
   transcriptValidated = true
 }
-fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, transcriptValidated, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
+fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, transcriptValidated, promptArtifactIDs, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
 const decision = input.tool_input.command.includes('forbidden')
   ? { permissionDecision: 'deny', permissionDecisionReason: 'PACKAGE_FIXTURE_DENIED' }
   : { ...(codex || ${preapproval} ? { permissionDecision: 'allow' } : {}), updatedInput: { command: ${JSON.stringify(replacementCommand)}, description: 'Rewritten fixture' } }
@@ -121,7 +151,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 `)
     await run(process.execPath, ['--check', script], { env, timeout: STARTUP_MS, maxBuffer: MAX_BYTES })
     const hook = { type: 'command', command: quote(process.execPath) + ' ' + quote(script) }
-    const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [hook] }], ...(prompts ? { UserPromptSubmit: [{ hooks: [hook] }] } : {}) } })
+    const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [hook] }], ...(prompts ? { UserPromptSubmit: [{ hooks: [hook, { ...hook, command: hook.command + ' stdout' }, { ...hook, command: hook.command + ' failure' }, { ...hook, command: hook.command + ' timeout', timeout: PROMPT_TIMEOUT_SECONDS }] }] } : {}) } })
     await writeFile(sourcePath, source)
     const selectedDialects = dialect === 'mixed' ? ['claude-code', 'codex'] : [dialect]
     const sources = selectedDialects.map(dialect => ({ id: 'fixture-' + dialect, dialect, path: sourcePath }))
@@ -234,17 +264,26 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     }
     if (prompts) {
       stage = 'prompt-contract'
+      assert.ok(!JSON.stringify(requests).includes('PACKAGE_FAILURE_STDOUT'))
+      assert.ok(!JSON.stringify(requests).includes('PACKAGE_FAILURE_STDERR'))
+      assert.ok(!JSON.stringify(requests).includes('PACKAGE_TIMEOUT_STDOUT'))
+      assert.ok(!JSON.stringify(requests).includes('PACKAGE_TIMEOUT_STDERR'))
       const submitted = payloads.filter(payload => payload.hook_event_name === 'UserPromptSubmit')
-      assert.equal(submitted.length, 3 * sources.length)
+      assert.equal(submitted.length, PROMPT_SUBMISSIONS * PROMPT_HANDLERS * sources.length)
       assert.ok(submitted.every(payload => payload.permission_mode === permissionMode && (payload.nativeDialect !== 'codex' || payload.model === 'fixture' && typeof payload.turn_id === 'string')))
-      for (const payload of submitted.filter(payload => payload.nativeDialect === 'claude-code')) assert.equal(payload.promptTranscriptExists, payload.prompt.includes('Follow-up controlled package fixture'))
+      for (const payload of submitted.filter(payload => payload.nativeDialect === 'claude-code')) {
+        assert.equal(payload.promptTranscriptExists, payload.prompt.includes('Follow-up controlled package fixture'))
+        assert.equal(payload.promptHistoryAttachments, payload.promptTranscriptExists)
+      }
+      const artifacts = toolPayloads.filter(payload => payload.nativeDialect === 'claude-code').map(payload => payload.promptArtifactIDs)
+      if (artifacts.length) { assert.equal(artifacts[0].length, PROMPT_HANDLERS); assert.ok(artifacts.every(ids => JSON.stringify(ids) === JSON.stringify(artifacts[0]))) }
       assert.equal(correlationLeaked, false)
       for (const request of requests) {
         for (let index = 0; index < request.messages.length; index++) {
           const row = request.messages[index]
           if (row.role !== 'user' || !JSON.stringify(row.content).includes('controlled package fixture')) continue
-          if (selectedDialects.includes('claude-code')) assert.ok(Array.isArray(row.content) && row.content[0].text === '<system-reminder>\nUserPromptSubmit hook additional context: PACKAGE_CLAUDE_PROMPT_CONTEXT\n</system-reminder>')
-          if (selectedDialects.includes('codex')) assert.deepEqual(request.messages[index + 1], { role: 'developer', content: 'PACKAGE_CODEX_PROMPT_CONTEXT' })
+          if (selectedDialects.includes('claude-code')) assert.ok(Array.isArray(row.content) && row.content[0].text === '<system-reminder>\nUserPromptSubmit hook success: PACKAGE_CLAUDE_STDOUT_CONTEXT\n</system-reminder>' && row.content[1].text === '<system-reminder>\nUserPromptSubmit hook additional context: PACKAGE_CLAUDE_PROMPT_CONTEXT\n</system-reminder>')
+          if (selectedDialects.includes('codex')) assert.deepEqual(request.messages.slice(index + 1, index + 1 + CODEX_PROMPT_CONTEXTS.length), CODEX_PROMPT_CONTEXTS)
         }
       }
       assert.equal(requests.at(-1).messages.filter(row => row.role === 'user' && JSON.stringify(row.content).includes('controlled package fixture')).length, 2)
@@ -253,7 +292,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     assert.ok(JSON.stringify(requests[1].messages).includes('PACKAGE_FIXTURE_DENIED'))
     stage = 'final-answer'
     assert.ok(JSON.stringify(answer).includes('PACKAGE_FIXTURE_DONE'))
-    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, correlationHeaderPrivate: true } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
+    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, correlationHeaderPrivate: true, ...(selectedDialects.includes('claude-code') ? { promptAttachmentsReadByHook: true, promptNonblockingErrorReadByHook: true, promptTimeoutReadByHook: true } : {}) } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true, modelDateReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
   } catch (error) {
     if (error instanceof ProbeError) throw error
     throw new ProbeError('PACKAGE_CHECK_FAILED: ' + stage + ' ' + (error.code ?? error.name ?? 'unknown') + (diagnosticCodes.size ? ' diagnostics=' + [...diagnosticCodes].sort().join(',') : ''))
