@@ -15,6 +15,16 @@ const event: NativeEvent = {
   dialectData: { 'claude-code': { transcript_path: '/artifacts/claude.jsonl' }, codex: { transcript_path: '/artifacts/codex.jsonl' } },
 }
 
+test('V2 built-in paths and shell flags use explicit native fields while custom tools retain their keys', async () => {
+  const { buildPayload } = await import('../src/payload.js')
+  const hook = registration('claude-code')
+  assert.deepEqual(buildPayload(hook, { ...event, host: 'v2', tool: 'edit', toolInput: { path: 'file', oldString: 'before', newString: 'after' } }).tool_input, { file_path: 'file', old_string: 'before', new_string: 'after' })
+  assert.deepEqual(buildPayload(hook, { ...event, host: 'v2', tool: 'shell', toolInput: { command: 'true', background: true } }).tool_input, { command: 'true', run_in_background: true })
+  const input = JSON.parse('{"path":"custom","constructor":"literal","__proto__":{"value":true}}')
+  assert.deepEqual(buildPayload(hook, { ...event, host: 'v2', tool: 'vendor.edit', toolInput: input }).tool_input, input)
+  assert.deepEqual(buildPayload(hook, { ...event, tool: 'constructor', toolInput: input }).tool_input, input)
+})
+
 test('builds dialect-specific payloads with separate transcript artifacts and reserved identity', async () => {
   const { buildPayload } = await import('../src/payload.js')
   const claude = buildPayload(registration('claude-code'), event)

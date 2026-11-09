@@ -1,10 +1,12 @@
 export type Dialect = 'claude-code' | 'codex'
+export type HostVersion = 'v1' | 'v2'
+export const HOST_VERSIONS = Object.freeze({ v1: '1.19.5', v2: '2.2.5' })
 export type CapabilityStatus = 'verified' | 'unsupported' | 'unresolved'
 
 export const CONTRACT_VERSIONS = Object.freeze({
   'claude-code': '2.1.318',
   codex: '0.167.0',
-  opencode: '1.19.5',
+  opencode: HOST_VERSIONS.v1,
 })
 
 export const HANDLER_TYPES: readonly string[] = Object.freeze(['command', 'http', 'mcp_tool', 'prompt', 'agent'])

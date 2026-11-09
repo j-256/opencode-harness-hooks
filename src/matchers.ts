@@ -1,9 +1,9 @@
 import { RRegex } from 'rregex'
 import { basename } from 'node:path'
-import type { Dialect } from './contracts.js'
+import type { Dialect, HostVersion } from './contracts.js'
+import { toolName } from './tool-schema.js'
 import type { LoadedSource, NativeEvent, Registration } from './types.js'
 
-const HOST_TOOLS: Readonly<Record<string, string>> = Object.freeze({ bash: 'Bash', read: 'Read', edit: 'Edit', write: 'Write', apply_patch: 'apply_patch' })
 const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionDenied'])
 const COMMON_FIELDS: Readonly<Record<string, string>> = Object.freeze({
   SessionStart: 'source', SessionEnd: 'reason', SubagentStart: 'agent_type', SubagentStop: 'agent_type',
@@ -24,10 +24,7 @@ export class MatcherError extends Error {
   }
 }
 
-export function toolIdentity(_dialect: Dialect, nativeTool: string): string {
-  const name = nativeTool.replace(/^(?:functions|opencode)\./, '')
-  return HOST_TOOLS[name] ?? nativeTool
-}
+export function toolIdentity(_dialect: Dialect, nativeTool: string, host: HostVersion = 'v1'): string { return toolName(host, nativeTool) }
 
 export function matchesPattern(dialect: Dialect, event: string, pattern: string | undefined, values: readonly string[]): boolean {
   if (pattern === undefined || pattern === '' || pattern === '*') return true
@@ -59,7 +56,7 @@ function candidates(registration: Registration, event: NativeEvent): readonly st
   }
   if (TOOL_EVENTS.has(event.event)) {
     if (!event.tool) return []
-    const tool = toolIdentity(registration.dialect, event.tool)
+    const tool = toolIdentity(registration.dialect, event.tool, event.host)
     return registration.dialect === 'codex' && tool === 'apply_patch' ? [tool, 'Edit', 'Write'] : [tool]
   }
   const field = (registration.dialect === 'claude-code' ? CLAUDE_FIELDS : COMMON_FIELDS)[event.event]

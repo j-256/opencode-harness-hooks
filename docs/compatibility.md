@@ -89,6 +89,12 @@ Competing post-tool result replacements remain an explicit unresolved conflict; 
 
 ## Host boundaries under investigation
 
+The tool adapters use separate V1 and V2 registration APIs around a shared tool bridge. V1 input replacement mutates the argument object retained by the host; V2 replaces its mutable input field. The bridge retains original and effective argument snapshots separately. Host-scoped tool schemas map V1's `bash` and `filePath` fields and V2's `shell`, `patch` and `path` fields. Arbitrary tool names and argument keys remain unchanged; ambiguous field collisions and non-JSON numeric values fail explicitly.
+
+The adapters accept an explicit dispatcher and host effect services. Before-tool denials throw through the native hook and prevent execution. Approval, preapproval, deferred resumption, turn stopping and other native effects require their corresponding services; absence is unsupported rather than approval or a substituted native denial. Approval services receive the rewritten input before argument mutation is committed. Post-tool failures and unsupported effects produce metadata diagnostics instead of retroactively rejecting an executed tool. Unknown V1 output shapes are not classified as native success.
+
+Independent pinned-binary fixtures exercise the tool adapters with a synthetic Codex source and the old policy plugin absent. Both hosts prevent a denied file write, execute the replacement command, retain original arguments, expose effective post-tool arguments and deliver post-tool context through a supplied request-context service. These fixtures establish the exercised host mechanisms. Built-in session metadata, native artifacts, complete permission/defer services, context role and persistence equivalence, lifecycle behavior and private migration parity remain separate integration gates. Portable regeneration of these tool fixtures remains a delivery gate.
+
 The pinned V1 host calls plugin event handlers without awaiting their promises. An asynchronous completion observer therefore does not itself provide an awaited final-turn veto. Completion control requires separate execution evidence and must not be inferred from an event name.
 
 Source-native handler families include command, HTTP, MCP tool, prompt, and agent hooks. Their availability and intentional skip behavior differ by dialect and event. Recognition, execution, and equivalent native effects are separate checks.

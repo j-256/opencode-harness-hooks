@@ -1,5 +1,6 @@
 import { isHookEvent } from './contracts.js'
 import { toolIdentity } from './matchers.js'
+import { nativeToolInput } from './tool-schema.js'
 import type { JsonValue, NativeEvent, Registration } from './types.js'
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied'])
@@ -43,11 +44,6 @@ const OPTIONAL_CODEX_AGENT_EVENTS = new Set(['PreToolUse', 'PermissionRequest', 
 const CODEX_STRING_FIELDS = new Set(['model', 'turn_id', 'permission_mode', 'tool_use_id', 'agent_id', 'agent_type', 'source', 'reason', 'trigger', 'prompt', 'status'])
 const CODEX_NULLABLE_STRINGS = new Set(['transcript_path', 'agent_transcript_path', 'last_assistant_message', 'error'])
 const PERMISSION_MODES = ['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions']
-const INPUT_FIELDS: Readonly<Record<string, Readonly<Record<string, string>>>> = Object.freeze({
-  Read: { filePath: 'file_path' }, Write: { filePath: 'file_path' },
-  Edit: { filePath: 'file_path', oldString: 'old_string', newString: 'new_string', replaceAll: 'replace_all' },
-  apply_patch: { patchText: 'command' },
-})
 
 export class PayloadError extends Error {
   constructor(code: string, field?: string) {
@@ -58,8 +54,7 @@ export class PayloadError extends Error {
 
 function toolInput(registration: Registration, event: NativeEvent): JsonValue {
   if (event.toolInput === undefined || event.tool === undefined) throw new PayloadError('PAYLOAD_MISSING', 'tool_input')
-  const names = INPUT_FIELDS[toolIdentity(registration.dialect, event.tool)] ?? {}
-  return Object.fromEntries(Object.entries(event.toolInput).map(([key, value]) => [names[key] ?? key, structuredClone(value)]))
+  try { return nativeToolInput(event.host ?? 'v1', event.tool, event.toolInput) } catch { throw new PayloadError('PAYLOAD_TOOL_INPUT_AMBIGUOUS') }
 }
 
 export function buildPayload(registration: Registration, event: NativeEvent): Record<string, JsonValue> {
@@ -91,7 +86,7 @@ export function buildPayload(registration: Registration, event: NativeEvent): Re
   }
   if (TOOL_EVENTS.has(event.event)) {
     if (!event.tool) throw new PayloadError('PAYLOAD_MISSING', 'tool_name')
-    payload.tool_name = toolIdentity(registration.dialect, event.tool)
+    payload.tool_name = toolIdentity(registration.dialect, event.tool, event.host)
     payload.tool_input = toolInput(registration, event)
   }
   return payload

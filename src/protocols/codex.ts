@@ -95,7 +95,7 @@ export function interpretCodex(registration: Registration, event: NativeEvent, r
   if (name === 'PreToolUse') {
     const reason = text(hasSpecific ? hook.permissionDecisionReason : body.reason).trim()
     const denied = hasSpecific ? permission === 'deny' : legacy === 'block'
-    const identity = toolIdentity(registration.dialect, event.tool ?? '')
+    const identity = toolIdentity(registration.dialect, event.tool ?? '', event.host)
     const badReplacement = replacement != null && (!record(replacement) || permission !== 'allow' || (['Bash', 'apply_patch'].includes(identity) && typeof replacement.command !== 'string'))
     const unsupported = badReplacement || permission === 'ask' || (permission === 'allow' && replacement == null) || (denied && !reason) ||
       (!hasSpecific && (legacy === 'approve' || (legacy == null && body.reason != null))) || (permission == null && hook.permissionDecisionReason != null)

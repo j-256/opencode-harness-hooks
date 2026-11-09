@@ -59,6 +59,7 @@ test('normalizes only explicitly known host tool names and preserves arbitrary i
   assert.equal(toolIdentity('claude-code', 'vendor.read'), 'vendor.read')
   assert.equal(toolIdentity('codex', 'mcp__filesystem__read'), 'mcp__filesystem__read')
   assert.equal(toolIdentity('claude-code', 'custom.bash'), 'custom.bash')
+  for (const tool of ['constructor', '__proto__', 'toString', 'opencode.constructor']) assert.equal(toolIdentity('claude-code', tool), tool)
   for (const dialect of ['claude-code', 'codex'] as const) {
     assert.equal(selectRegistrations([source(dialect, 'PreToolUse', 'Bash')], { ...event, tool: 'functions.bash' }).length, 1)
     assert.equal(selectRegistrations([source(dialect, 'PreToolUse', 'Read')], { ...event, tool: 'vendor.read' }).length, 0)
@@ -102,4 +103,14 @@ test('each dialect matches its own lifecycle metadata when both sources share an
   const sources = [source('claude-code', 'SessionStart', 'resume'), source('codex', 'SessionStart', 'startup')]
   const result = selectRegistrations(sources, { ...event, event: 'SessionStart', data: { source: 'common' }, dialectData: { 'claude-code': { source: 'resume' }, codex: { source: 'startup' } } })
   assert.deepEqual(result.map(registration => registration.dialect), ['claude-code', 'codex'])
+})
+
+test('V2 built-in names are scoped to that host instead of renaming V1 custom tools', async () => {
+  const { toolIdentity, selectRegistrations } = await import('../src/matchers.js')
+  assert.equal(toolIdentity('codex', 'shell', 'v2'), 'Bash')
+  assert.equal(toolIdentity('codex', 'shell', 'v1'), 'shell')
+  assert.equal(toolIdentity('codex', 'patch', 'v2'), 'apply_patch')
+  assert.equal(toolIdentity('codex', 'patch', 'v1'), 'patch')
+  assert.equal(toolIdentity('codex', 'vendor.shell', 'v2'), 'vendor.shell')
+  assert.equal(selectRegistrations([source('codex', 'PreToolUse', 'Bash')], { ...event, host: 'v2', tool: 'shell' }).length, 1)
 })

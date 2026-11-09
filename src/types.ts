@@ -1,4 +1,4 @@
-import type { Dialect } from './contracts.js'
+import type { Dialect, HostVersion } from './contracts.js'
 
 export type JsonValue = string | number | boolean | null | readonly JsonValue[] | { readonly [key: string]: JsonValue }
 export type HandlerType = 'command' | 'http' | 'mcp_tool' | 'prompt' | 'agent'
@@ -62,6 +62,7 @@ export interface LoadedSource {
 }
 
 export interface NativeEvent {
+  readonly host?: HostVersion
   readonly event: string
   readonly sessionID: string
   readonly cwd: string
