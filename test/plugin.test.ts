@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -13,6 +13,40 @@ test('the root exports one definition accepted by both host APIs', async () => {
   assert.equal(definition.id, 'opencode-harness-hooks')
   assert.equal(typeof definition.server, 'function')
   assert.equal(typeof definition.setup, 'function')
+})
+
+test('V1 experimental setup stays passive while server hooks execute once', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'harness-legacy-setup-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const path = join(directory, 'hooks.json')
+  const capture = join(directory, 'calls')
+  const command = "printf 'called\\n' >> '" + capture.replaceAll("'", "'\"'\"'") + "'"
+  const source = JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command }] }] } })
+  await writeFile(path, source)
+  const options = { sources: [{ id: 'source', dialect: 'codex', path }], reviewedDigests: { source: createHash('sha256').update(source).digest('hex') }, permissionMode: 'default' }
+  const unavailable = () => { throw new Error('Unexpected experimental domain mutation') }
+  const transform = { transform: unavailable, reload: unavailable }
+  const context = {
+    options, agent: transform, aisdk: { sdk: unavailable, language: unavailable }, catalog: transform, command: transform,
+    integration: transform, plugin: { add: unavailable, remove: unavailable }, reference: transform, skill: transform,
+  }
+  assert.equal(await definition.setup(context), undefined)
+  const setup = definition.setup as (context: unknown) => Promise<unknown>
+  for (const partial of [{ app: { name: 'fixture' } }, { location: { directory } }, { session: {} }, { tool: {} }, { event: {} }]) {
+    await assert.rejects(setup({ ...context, ...partial }), { code: 'HOST_CONTEXT_UNSUPPORTED' })
+  }
+  const hooks = await definition.server({ directory }, options)
+  t.after(() => hooks.dispose())
+  await hooks['chat.message']({ sessionID: 'legacy', model: { modelID: 'fixture' } }, { message: { id: 'turn' } })
+  await hooks['tool.execute.before']({ sessionID: 'legacy', callID: 'call', tool: 'bash' }, { args: { command: 'original' } })
+  assert.equal(await readFile(capture, 'utf8'), 'called\n')
+})
+
+test('a partial or mixed setup context fails explicitly rather than becoming a passive V1 entry', async () => {
+  const setup = definition.setup as (context: unknown) => Promise<unknown>
+  for (const context of [null, {}, { catalog: {} }, { location: { directory: '/private-invalid' }, catalog: {}, session: {} }]) {
+    await assert.rejects(setup(context), { code: 'HOST_CONTEXT_UNSUPPORTED' })
+  }
 })
 
 test('both entrypoints use native options, host metadata and their tool schema', async t => {
