@@ -27,6 +27,7 @@ interface Completion {
 }
 interface State { readonly signal: AbortSignal; readonly completions: Map<string, Completion>; readonly cleanup: () => void }
 function fail(code: string): never { throw new HostHookError(code, code === 'TRANSCRIPT_CANCELLED' ? 'cancelled' : 'unsupported') }
+function record(value: JsonValue | undefined): value is Readonly<Record<string, JsonValue>> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 function freeze<T>(value: T): T {
   if (value !== null && typeof value === 'object') { Object.values(value).forEach(freeze); Object.freeze(value) }
   return value
@@ -115,6 +116,28 @@ function compile({ event, dispatch }: StopDelivery): readonly StopRecord[] {
   return freeze(records)
 }
 
+function model(records: readonly StopRecord[]): readonly string[] {
+  const reminders: string[] = []
+  const feedback: string[] = []
+  for (const { body } of records) {
+    if (body.renderedRole === 'system' && Array.isArray(body.rendered)) {
+      for (const part of body.rendered) {
+        if (!record(part) || typeof part.content !== 'string') fail('TRANSCRIPT_STOP_OUTPUT_UNSUPPORTED')
+        reminders.push(part.content)
+      }
+    }
+    if (body.type === 'user' && body.isMeta === true) {
+      const message = body.message
+      if (!record(message) || typeof message.content !== 'string') fail('TRANSCRIPT_STOP_OUTPUT_UNSUPPORTED')
+      feedback.push(message.content)
+    }
+  }
+  return Object.freeze([
+    ...reminders.map((text, index) => text + (index === reminders.length - 1 && feedback.length ? '\n' : '')),
+    ...feedback.map((text, index) => text + (index < feedback.length - 1 ? '\n' : '')),
+  ])
+}
+
 export class StopRecords {
   private readonly states = new Map<string, State>()
   private completions = 0
@@ -138,7 +161,7 @@ export class StopRecords {
     this.bytes += bytes
   }
 
-  admit(delivery: StopDelivery): void {
+  admit(delivery: StopDelivery): readonly string[] {
     const { event, session, dispatch, signal } = delivery
     if (this.disposed || signal.aborted || session.signal.aborted || session.turnSignal.aborted || dispatch.cancelled) fail('TRANSCRIPT_CANCELLED')
     if (event.event !== 'Stop') fail('TRANSCRIPT_STOP_INPUT_INVALID')
@@ -150,12 +173,14 @@ export class StopRecords {
     if (completion.turnID !== event.messageID || completion.turnSignal !== session.turnSignal) fail('TRANSCRIPT_STOP_TURN_UNAVAILABLE')
     if (completion.records !== undefined) fail('TRANSCRIPT_STOP_ID_REUSED')
     const records = compile(delivery)
+    const projection = model(records)
     const bytes = Buffer.byteLength(JSON.stringify(records))
     if (this.records + records.length > MAX_RECORDS || this.bytes + bytes > MAX_BYTES) fail('TRANSCRIPT_STOP_LIMIT')
     completion.records = records
     completion.bytes += bytes
     this.records += records.length
     this.bytes += bytes
+    return projection
   }
 
   read(sessionID: string, completionID: string, turnID: string, signature: string): readonly StopRecord[] {

@@ -15,7 +15,7 @@ const READ_MS = 5000
 type Context = AttributedAction<Extract<HookAction, { kind: 'context' }>>
 export type PromptProtocol = 'openai' | 'anthropic'
 export interface PromptLayout { readonly id: string; readonly text: readonly string[] }
-interface Entry { readonly kind: 'prompt' | 'continuation'; readonly turnID: string; readonly turnSignal: AbortSignal; readonly text: readonly string[]; readonly contexts: readonly Context[]; readonly bytes: number }
+interface Entry { readonly kind: 'prompt' | 'continuation'; readonly turnID: string; readonly turnSignal: AbortSignal; readonly text: readonly string[]; readonly contexts: readonly Context[]; readonly projection?: readonly string[]; readonly bytes: number }
 interface Layout { readonly turnID: string; readonly turnSignal: AbortSignal; readonly rows: readonly PromptLayout[] }
 interface State { readonly signal: AbortSignal; readonly entries: Map<string, Entry>; readonly cleanup: () => void; layout?: Layout }
 interface Ticket { readonly sessionID: string; readonly turnID: string; readonly sessionSignal: AbortSignal; readonly turnSignal: AbortSignal; readonly signal: AbortSignal; readonly protocol: PromptProtocol; readonly entries: readonly Entry[]; readonly hashes: Map<string, string> }
@@ -64,8 +64,8 @@ export class PromptContexts {
     this.retain(session, session.turnID, text, contexts, 'prompt')
   }
 
-  rememberContinuation(session: SessionSnapshot, messageID: string, text: readonly string[]): void {
-    this.retain(session, messageID, text, [], 'continuation')
+  rememberContinuation(session: SessionSnapshot, messageID: string, text: readonly string[], projection?: readonly string[]): void {
+    this.retain(session, messageID, text, [], 'continuation', projection)
   }
 
   ownsCurrentMessage(session: SessionSnapshot, messageID: string): boolean {
@@ -77,17 +77,18 @@ export class PromptContexts {
     return entry?.kind === 'continuation' && entry.turnID === session.turnID && entry.turnSignal === session.turnSignal
   }
 
-  private retain(session: SessionSnapshot, messageID: string | undefined, text: readonly string[], contexts: readonly Context[], kind: Entry['kind']): void {
+  private retain(session: SessionSnapshot, messageID: string | undefined, text: readonly string[], contexts: readonly Context[], kind: Entry['kind'], projection?: readonly string[]): void {
     if (this.lifetime.signal.aborted || session.signal.aborted || session.turnSignal.aborted) fail('HOST_PROMPT_CANCELLED')
     if (!session.turnID || typeof messageID !== 'string' || !messageID || messageID.includes('\0') || Buffer.byteLength(messageID) > MAX_ID_BYTES || !text.length || text.some(value => typeof value !== 'string')) fail('HOST_PROMPT_INPUT_UNAVAILABLE')
     if (kind === 'continuation' && messageID === session.turnID) fail('HOST_PROMPT_ID_REUSED')
+    if (projection !== undefined && (!Array.isArray(projection) || !projection.length || [...projection].some(value => typeof value !== 'string'))) fail('HOST_PROMPT_INPUT_UNAVAILABLE')
     if (contexts.some(row => row.action.placement !== 'model' || row.dialect === 'claude-code' && !['stdout', 'additionalContext'].includes(row.action.channel ?? ''))) fail('HOST_PROMPT_CONTEXT_UNAVAILABLE')
     let state = this.sessions.get(session.sessionID)
     if (state && state.signal !== session.signal) fail('HOST_PROMPT_SESSION_MISMATCH')
     if (state?.entries.has(messageID)) fail('HOST_PROMPT_ID_REUSED')
-    const bytes = Buffer.byteLength(JSON.stringify([kind, messageID, session.turnID, text, contexts]))
+    const bytes = Buffer.byteLength(JSON.stringify([kind, messageID, session.turnID, text, contexts, projection]))
     if (this.prompts + this.continuations >= MAX_ENTRIES || this.bytes + bytes > MAX_BYTES) fail('HOST_PROMPT_CONTEXT_LIMIT')
-    const entry = { kind, turnID: session.turnID, turnSignal: session.turnSignal, text: Object.freeze([...text]), contexts: Object.freeze(structuredClone(contexts)), bytes }
+    const entry = { kind, turnID: session.turnID, turnSignal: session.turnSignal, text: Object.freeze([...text]), contexts: Object.freeze(structuredClone(contexts)), ...(projection ? { projection: Object.freeze([...projection]) } : {}), bytes }
     if (!state) {
       const cleanup = () => {
         const previous = this.sessions.get(session.sessionID)
@@ -127,7 +128,7 @@ export class PromptContexts {
     const state = this.sessions.get(session.sessionID)
     if (!state || state.signal !== session.signal || !state.layout || !session.turnID || state.layout.turnID !== session.turnID || state.layout.turnSignal !== session.turnSignal || session.signal.aborted || session.turnSignal.aborted || this.lifetime.signal.aborted) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
     const entries = state.layout.rows.map(row => state.entries.get(row.id)!)
-    if (!entries.some(entry => entry.contexts.length)) return undefined
+    if (!entries.some(entry => entry.contexts.length || entry.projection)) return undefined
     if (this.tickets.size >= MAX_TICKETS) fail('HOST_PROMPT_REQUEST_LIMIT')
     const id = randomUUID()
     const signal = AbortSignal.any([session.signal, session.turnSignal, this.lifetime.signal])
@@ -170,6 +171,10 @@ export class PromptContexts {
         if (!content.every(part => record(part) && part.type === partType && typeof part.text === 'string')) fail('HOST_PROMPT_REQUEST_UNAVAILABLE')
         const entry = ticket.entries[index++]
         if (!entry || !same(content.map(part => part.text), entry.text)) fail('HOST_PROMPT_REQUEST_UNAVAILABLE')
+        if (entry.projection) {
+          result.push({ ...raw, content: entry.projection.map(text => ({ type: partType, text })) })
+          continue
+        }
         const claude = entry.contexts.filter(row => row.dialect === 'claude-code').sort((a, b) => a.completionOrder - b.completionOrder).map(row => ({ type: partType, text: `<system-reminder>\nUserPromptSubmit hook ${row.action.channel === 'stdout' ? 'success' : 'additional context'}: ${row.action.text}\n</system-reminder>` }))
         result.push(claude.length ? { ...raw, content: [...claude, ...content] } : raw)
         for (const row of entry.contexts) {

@@ -35,9 +35,10 @@ async function fixture(t: TestContext, scenario: { outputs: unknown[]; completio
   ]
   const transcripts = new ClaudeTranscript({ host: 'v2', directory, history: async () => ({ id: 'session', messages: records }) })
   let delivery!: StopDelivery
+  let modelProjection: readonly string[] | undefined
   const runtime = await createRuntime('v2', directory, { sources: [{ id: 'claude', dialect: 'claude-code', path }], reviewedDigests: { claude: createHash('sha256').update(source).digest('hex') }, permissionMode: 'default' }, {
     transcripts, report: () => {}, dispatchDiagnostic: () => {}, host: { environment: { PATH: process.env.PATH, HOME: directory, SHELL: '/bin/sh' } },
-    stop: { diagnostic: () => {}, admit: async value => { delivery = value; if (admitRecords) transcripts.admitStop(value) } },
+    stop: { diagnostic: () => {}, admit: async value => { delivery = value; if (admitRecords) modelProjection = transcripts.admitStop(value) } },
   })
   t.after(() => runtime.dispose())
   runtime.sessions.prompt('session', 'prompt', 'fixture')
@@ -46,7 +47,7 @@ async function fixture(t: TestContext, scenario: { outputs: unknown[]; completio
   const event: StopEvent = { host: 'v2', event: 'Stop', cwd: directory, sessionID: 'session', messageID: 'prompt', completionID: 'answer' }
   const transcriptPath = await transcripts.prepare(event, session, session.turnSignal)
   const receipt = await runtime.stop({ ...event, data: { transcript_path: transcriptPath, last_assistant_message: 'Answer', background_tasks: [], session_crons: [] } })
-  return { directory, transcripts, runtime, session, event, delivery, receipt, records, transcriptPath, commands, unchanged: async () => { assert.equal(await readFile(script, 'utf8'), body); assert.equal(await readFile(path, 'utf8'), source) } }
+  return { directory, transcripts, runtime, session, event, delivery, receipt, records, transcriptPath, commands, modelProjection, unchanged: async () => { assert.equal(await readFile(script, 'utf8'), body); assert.equal(await readFile(path, 'utf8'), source) } }
 }
 
 for (const scenario of oracle.cases) test(`Claude Stop transcript retains native ${scenario.name} records`, async t => {
@@ -190,9 +191,32 @@ for (const scenario of outputs.cases) test(`Claude Stop output records agree wit
   }
   const bodies = owned.map(row => Object.fromEntries(Object.entries(row).filter(([key]) => !['parentUuid', 'isSidechain', 'uuid', 'timestamp', 'cwd', 'sessionId', 'version'].includes(key))))
   assert.deepEqual(normalize(bodies), scenario.records)
+  if (scenario.modelRequests > 1) assert.deepEqual(f.modelProjection?.map(text => ({ role: 'user', text: normalize(text) })), scenario.model)
   assert.ok(rows.every(row => row.sessionId === 'session' && row.cwd === f.directory && row.version === '2.1.318' && row.isSidechain === false && Number.isFinite(Date.parse(row.timestamp))))
   for (let index = 1; index < rows.length; index++) assert.equal(rows[index].parentUuid, rows[index - 1].uuid)
   await f.unchanged()
+})
+
+test('admitted Stop model input keeps suppressed reminders and feedback for later history', async t => {
+  const f = await fixture(t, { outputs: [{ continue: false, stopReason: 'Stopped', decision: 'block', reason: 'Feedback', hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'Context' } }], completionOrder: [0] }, true)
+  assert.equal(f.receipt.control, 'stop')
+  assert.deepEqual(f.modelProjection, [
+    '<system-reminder>\nStop hook stopped continuation: Stopped\n</system-reminder>',
+    `<system-reminder>\nStop hook blocking error from command: "${f.commands[0]}": Feedback\n</system-reminder>`,
+    '<system-reminder>\nStop hook additional context: Context\n</system-reminder>\n',
+    'Stop hook feedback:\nFeedback',
+  ])
+  assert.ok(Object.isFrozen(f.modelProjection))
+})
+
+test('competing Stop model input follows native reminder and feedback group order', async t => {
+  const f = await fixture(t, oracle.cases.find((row: { name: string }) => row.name === 'two-blocks'), true)
+  assert.deepEqual(f.modelProjection, [
+    `<system-reminder>\nStop hook blocking error from command: "${f.commands[1]}": NATIVE_STOP_B\n</system-reminder>`,
+    `<system-reminder>\nStop hook blocking error from command: "${f.commands[0]}": NATIVE_STOP_A\n</system-reminder>\n`,
+    'Stop hook feedback:\nNATIVE_STOP_B\n',
+    'Stop hook feedback:\nNATIVE_STOP_A',
+  ])
 })
 
 test('identical decision and additional-context text retains both native record forms', async t => {

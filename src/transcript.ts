@@ -38,7 +38,7 @@ export interface TranscriptHistory {
 export interface TranscriptService {
   observeModel?(event: HostModelEvent, session: SessionSnapshot): void
   admitPrompt?(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void
-  admitStop?(delivery: StopDelivery): void
+  admitStop?(delivery: StopDelivery): readonly string[]
   observe(event: HostToolEvent, session: SessionSnapshot): void
   prepare(event: TranscriptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<string>
   dispose(): Promise<void>
@@ -164,11 +164,11 @@ export class ClaudeTranscript implements TranscriptService {
     this.prompts.admit(event, session, dispatch)
   }
 
-  admitStop(delivery: StopDelivery): void {
+  admitStop(delivery: StopDelivery): readonly string[] {
     if (delivery.event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
     if (this.options.host !== 'v2') fail('TRANSCRIPT_STOP_HOST_UNSUPPORTED')
     if (delivery.event.cwd !== this.options.directory) fail('TRANSCRIPT_STOP_CWD_UNAVAILABLE')
-    this.stops.admit(delivery)
+    return this.stops.admit(delivery)
   }
 
   observe(event: HostToolEvent, session: SessionSnapshot): void {
