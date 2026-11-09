@@ -5,8 +5,11 @@ import type { JsonValue } from './types.js'
 export interface SourceContext {
   readonly pluginData?: string
   readonly pluginOptions?: Readonly<Record<string, JsonValue>>
-  readonly envFile?: string
   readonly shell?: { readonly program: string; readonly args: readonly string[] }
+}
+
+export interface RegistrationContext {
+  readonly envFile?: string
 }
 
 export interface ModelHookRequest {
@@ -54,6 +57,7 @@ export interface HostServices {
   readonly projectRoot: string
   readonly sessionDirectory?: string
   readonly sourceContext?: Readonly<Record<string, SourceContext>>
+  readonly registrationContext?: Readonly<Record<string, RegistrationContext>>
   readonly signal?: AbortSignal
   readonly sessionSignal?: AbortSignal
   readonly background?: BackgroundExecutor
@@ -65,4 +69,12 @@ export interface HostServices {
   readonly evaluatePrompt?: (request: ModelHookRequest) => Promise<unknown>
   readonly runAgent?: (request: AgentHookRequest) => Promise<unknown>
   readonly evaluateCondition?: (rule: string, payload: Readonly<Record<string, JsonValue>>, signal?: AbortSignal) => Promise<boolean | undefined>
+}
+
+export function snapshotCommandContexts<T extends Pick<HostServices, 'sourceContext' | 'registrationContext'>>(services: T): T {
+  return {
+    ...services,
+    ...(services.sourceContext ? { sourceContext: structuredClone(services.sourceContext) } : {}),
+    ...(services.registrationContext ? { registrationContext: structuredClone(services.registrationContext) } : {}),
+  }
 }

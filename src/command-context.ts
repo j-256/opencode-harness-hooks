@@ -2,6 +2,7 @@ import { stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { handlerTimeoutMs } from './timeouts.js'
 import type { HostServices } from './host-services.js'
+import { snapshotCommandContexts } from './host-services.js'
 import type { CommandInvocation } from './runner.js'
 import type { JsonValue, NativeEvent, Registration } from './types.js'
 
@@ -29,7 +30,8 @@ function commandEnvironment(registration: Registration, payload: Readonly<Record
     delete environment.CLAUDE_ENV_FILE
     if (registration.pluginRoot !== undefined) environment.CLAUDE_PLUGIN_ROOT = registration.pluginRoot
     if (context?.pluginData !== undefined) environment.CLAUDE_PLUGIN_DATA = context.pluginData
-    if (context?.envFile !== undefined && CLAUDE_ENV_FILE_EVENTS.has(registration.event) && (registration.handler.args !== undefined || registration.handler.shell !== 'powershell')) environment.CLAUDE_ENV_FILE = context.envFile
+    const envFile = host.registrationContext?.[registration.id]?.envFile
+    if (envFile !== undefined && CLAUDE_ENV_FILE_EVENTS.has(registration.event) && (registration.handler.args !== undefined || registration.handler.shell !== 'powershell')) environment.CLAUDE_ENV_FILE = envFile
     for (const [key, value] of Object.entries(context?.pluginOptions ?? {})) {
       environment[`CLAUDE_PLUGIN_OPTION_${key.toUpperCase()}`] = typeof value === 'string' ? value : JSON.stringify(value)
     }
@@ -77,7 +79,7 @@ async function commandCwd(registration: Registration, event: NativeEvent, host: 
 }
 
 export async function prepareCommand(registration: Registration, event: NativeEvent, payload: Readonly<Record<string, JsonValue>>, services: HostServices): Promise<CommandInvocation> {
-  const host: HostServices = { ...services, environment: { ...services.environment }, ...(services.sourceContext ? { sourceContext: structuredClone(services.sourceContext) } : {}) }
+  const host = snapshotCommandContexts({ ...services, environment: { ...services.environment } })
   const environment = commandEnvironment(registration, payload, host)
   const context = host.sourceContext?.[registration.sourceID]
   const exec = registration.dialect === 'claude-code' && registration.handler.args !== undefined

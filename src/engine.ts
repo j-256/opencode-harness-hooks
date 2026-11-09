@@ -6,6 +6,7 @@ import type { HookAction, PermissionDecision } from './effect-types.js'
 import { executeRegistration } from './handlers.js'
 import type { HandlerResult } from './handlers.js'
 import type { HostServices } from './host-services.js'
+import { snapshotCommandContexts } from './host-services.js'
 import { MatcherError, selectRegistrations } from './matchers.js'
 import type { LoadedSource, NativeEvent, Registration } from './types.js'
 
@@ -79,7 +80,7 @@ export async function dispatchEvent(inputSources: readonly LoadedSource[], input
   const event = structuredClone(inputEvent)
   const parent = services.signal
   const controller = new AbortController()
-  const host: HostServices = { ...services, environment: { ...services.environment }, ...(services.sourceContext ? { sourceContext: structuredClone(services.sourceContext) } : {}), signal: controller.signal }
+  const host = snapshotCommandContexts({ ...services, environment: { ...services.environment }, signal: controller.signal })
   // This private signal deliberately fans out to every independently configured handler
   setMaxListeners(0, controller.signal)
   const abort = () => controller.abort()

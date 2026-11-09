@@ -209,12 +209,33 @@ test('fallback command cwd preserves the original native payload and initial pro
 test('limits native environment-file access to supported Claude events and ignores shell in exec form', async t => {
   const { prepareCommand } = await import('../src/command-context.js')
   const root = await fixture(t)
-  const host = { environment, projectRoot: root, sourceContext: { 'claude-code': { envFile: '/session/environment' } } }
   for (const name of ['SessionStart', 'Setup', 'CwdChanged', 'FileChanged', 'PreToolUse']) {
     const hook = registration('claude-code', { type: 'command', command: 'unused', args: [], shell: 'powershell' }, name)
+    const host = { environment, projectRoot: root, registrationContext: { [hook.id]: { envFile: '/session/environment' } } }
     const invocation = await prepareCommand(hook, event(root, name), {}, host)
     assert.equal(invocation.env.CLAUDE_ENV_FILE, name === 'PreToolUse' ? undefined : '/session/environment')
   }
+})
+
+test('same-source Claude registrations write independent environment files without losing source options', async t => {
+  const { executeRegistration } = await import('../src/handlers.js')
+  const root = await fixture(t)
+  const script = join(root, 'environment.cjs')
+  await writeFile(script, `const fs=require('node:fs');const path=process.env.CLAUDE_ENV_FILE;fs.appendFileSync(path,'export FIXTURE=value\\n');fs.writeFileSync(path+'.json',JSON.stringify({data:process.env.CLAUDE_PLUGIN_DATA,option:process.env.CLAUDE_PLUGIN_OPTION_NAME}));`)
+  const first = { ...registration('claude-code', { type: 'command', command: process.execPath, args: [script] }, 'SessionStart'), id: 'same-source:first' }
+  const second = { ...first, id: 'same-source:second', handlerIndex: 1 }
+  const host = {
+    environment: { ...environment, CLAUDE_ENV_FILE: 'unowned-parent-file' }, projectRoot: root,
+    sourceContext: { 'claude-code': { pluginData: '/plugin-data', pluginOptions: { name: 'source-option' } } },
+    registrationContext: { [first.id]: { envFile: join(root, 'first.sh') }, [second.id]: { envFile: join(root, 'second.sh') } },
+  }
+  const results = await Promise.all([first, second].map(hook => executeRegistration(hook, event(root, 'SessionStart'), host)))
+  assert.deepEqual(results.map(result => result.status), ['success', 'success'])
+  for (const name of ['first', 'second']) {
+    assert.equal(await readFile(join(root, name + '.sh'), 'utf8'), 'export FIXTURE=value\n')
+    assert.deepEqual(JSON.parse(await readFile(join(root, name + '.sh.json'), 'utf8')), { data: '/plugin-data', option: 'source-option' })
+  }
+  for (const result of results) assert.equal(JSON.stringify(result.diagnostic).includes(root), false)
 })
 
 test('captures event and source context before asynchronous services can observe caller changes', async t => {

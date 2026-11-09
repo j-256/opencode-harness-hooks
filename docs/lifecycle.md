@@ -1,6 +1,16 @@
 # Session lifecycle reference
 
-The default package rejects selected `SessionStart` registrations with `HOST_EVENT_UNAVAILABLE`. Lifecycle dispatch, startup context, environment persistence and resume reconstruction remain required integration work. The native fixture below supplies an independent reference for that implementation; it does not activate those registrations or establish bridge parity.
+The default package rejects selected `SessionStart` registrations with `HOST_EVENT_UNAVAILABLE`. Lifecycle dispatch, startup context, executable shell replay and resume reconstruction remain required host integration work. A shared file-ownership service is available through the core API. The native fixture below supplies an independent reference for integration; it does not activate those registrations or establish bridge parity.
+
+## Environment-file ownership
+
+`ClaudeEnvironmentFiles` from `opencode-harness-hooks/core` reserves separate file paths for an ordered selection of Claude `SessionStart` command registrations. Its `prepare(sessionID, registrations, signal)` method returns an immutable plan with ordered `files` and a `registrationContext` map for command dispatch. Hook commands receive their own `CLAUDE_ENV_FILE` through that map. Source-level plugin data, options and shell selection remain in `HostServices.sourceContext`.
+
+The caller supplies an absolute, dedicated state directory and preflights native payload metadata before executing hooks. The service creates private directories, hashes the session identity in paths, binds the registration order and source revisions in a bounded manifest, and leaves the hook files absent until commands write them. Concurrent activations can reserve the same layout without overwriting each other's manifest. A fresh process recovers the same paths and preserves appended code for session-ID resume. The service leaves that code opaque; it does not parse exports or execute shell content.
+
+Preparation bounds registration and identity sizes, checks directory ownership and private permissions, and rejects existing hook-file symlinks, hard links and special files. Cancellation does not delete persisted files. The host owns the dedicated directory's retention policy; the service does not impose a disk quota or remove resume state on activation shutdown. These checks support POSIX hosts. Windows integration remains unsupported.
+
+A different ordered selection or source revision for an existing session produces `ENVIRONMENT_LAYOUT_UNSUPPORTED`. Matcher-dependent selection changes, native reload, transcript-path resume namespaces and storage retention require further lifecycle integration and native comparison. Passing a file plan into `dispatchEvent` verifies hook-process ownership only. It does not establish startup barriers, context placement, tool-shell capture timing or replay parity, and it does not remove the default package's lifecycle capability gate.
 
 ## Native startup and resume
 

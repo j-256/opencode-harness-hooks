@@ -5,6 +5,7 @@ import { dispatchEvent } from './engine.js'
 import type { DispatchResult } from './engine.js'
 import { nativeSkip } from './handlers.js'
 import type { HostServices } from './host-services.js'
+import { snapshotCommandContexts } from './host-services.js'
 import { HostHookError } from './hosts/tools.js'
 import type { HostToolEvent, ToolHostOptions } from './hosts/tools.js'
 import type { HostPromptEvent, PromptDiagnostic } from './prompt-types.js'
@@ -67,7 +68,7 @@ function resultData(event: HostToolEvent): Record<string, JsonValue> {
 export async function createRuntime(host: HostVersion, directory: string, inputOptions: unknown, services: RuntimeServices = {}) {
   if (!Object.hasOwn(HOST_VERSIONS, host) || typeof directory !== 'string' || !directory) throw new HostHookError('HOST_INPUT_INVALID', 'failed')
   directory = resolve(directory)
-  services = { ...services, ...(services.host ? { host: { ...services.host, ...(services.host.sourceContext ? { sourceContext: structuredClone(services.host.sourceContext) } : {}) } } : {}), ...(services.tools ? { tools: { ...services.tools } } : {}) }
+  services = { ...services, ...(services.host ? { host: snapshotCommandContexts(services.host) } : {}), ...(services.tools ? { tools: { ...services.tools } } : {}) }
   const { options, sources, report } = await inspectSources(host, directory, inputOptions)
   await (services.report ?? (value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', code: 'RUNTIME_REPORT', ...value })) }))(report)
   for (const source of report.sources) {

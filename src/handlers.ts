@@ -7,6 +7,7 @@ import { runModel } from './model-handler.js'
 import { runMcp } from './mcp-handler.js'
 import { HookServiceError, runService, UnsupportedServiceError } from './service-execution.js'
 import type { HostServices } from './host-services.js'
+import { snapshotCommandContexts } from './host-services.js'
 import { buildPayload, PayloadError } from './payload.js'
 import { interpretOutput } from './protocol.js'
 import { claudeBlock, claudeFailureBlocks } from './protocols/claude.js'
@@ -51,7 +52,7 @@ export async function executeRegistration(registration: Registration, inputEvent
   if (registration.event !== inputEvent.event) return fail('HANDLER_EVENT_MISMATCH')
   if (nativeSkip(registration, inputEvent)) return result(registration, 'skipped', 'NATIVE_HANDLER_SKIPPED', started)
   if (registration.dialect === 'claude-code' && registration.handler.if !== undefined && !TOOL_EVENTS.has(inputEvent.event)) return result(registration, 'skipped', 'NATIVE_CONDITION_EVENT', started)
-  const host: HostServices = { ...services, environment: { ...services.environment }, ...(services.sourceContext ? { sourceContext: structuredClone(services.sourceContext) } : {}) }
+  const host = snapshotCommandContexts({ ...services, environment: { ...services.environment } })
   try {
     const payload = buildPayload(registration, event)
     if (registration.dialect === 'claude-code' && typeof registration.handler.if === 'string') {
