@@ -1,0 +1,40 @@
+{
+  "contractVersion": "2.1.318",
+  "reference": "https://code.claude.com/docs/en/hooks#userpromptsubmit",
+  "method": "Installed CLI print mode with isolated settings, a deterministic local Anthropic provider and synthetic MCP tool",
+  "scope": "UserPromptSubmit command context channels, admission and first-prompt artifact timing",
+  "cases": [
+    {
+      "output": { "systemMessage": "UPS_SYSTEM", "hookSpecificOutput": { "hookEventName": "UserPromptSubmit", "additionalContext": "UPS_SPECIFIC" } },
+      "native": {
+        "modelCalled": true,
+        "channel": "additionalContext",
+        "text": "UPS_SPECIFIC",
+        "rendered": "<system-reminder>\nUserPromptSubmit hook additional context: UPS_SPECIFIC\n</system-reminder>",
+        "role": "user",
+        "beforePrompt": true,
+        "attachmentType": "hook_additional_context",
+        "warning": "UPS_SYSTEM",
+        "warningAttachmentType": "hook_system_message",
+        "firstPromptTranscriptExists": false
+      }
+    },
+    {
+      "output": "UPS_STDOUT",
+      "native": {
+        "modelCalled": true,
+        "channel": "stdout",
+        "text": "UPS_STDOUT",
+        "rendered": "<system-reminder>\nUserPromptSubmit hook success: UPS_STDOUT\n</system-reminder>",
+        "role": "user",
+        "beforePrompt": true,
+        "attachmentType": "hook_success",
+        "firstPromptTranscriptExists": false
+      }
+    },
+    {
+      "output": { "decision": "block", "reason": "UPS_BLOCKED" },
+      "native": { "modelCalled": false, "firstPromptTranscriptExists": false }
+    }
+  ]
+}

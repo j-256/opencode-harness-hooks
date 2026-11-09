@@ -99,7 +99,7 @@ export function interpretClaude(registration: Registration, event: NativeEvent, 
   if (!record(body)) {
     if (result.exitCode === 2) return success([...actions, ...claudeBlock(event, result.stderr.trim())])
     if (result.exitCode !== 0) return failure('COMMAND_FAILED', actions)
-    if (stdout && (TEXT_CONTEXT.has(name) || name === 'PreCompact')) actions.push({ kind: 'context', text: stdout, placement: name === 'PreCompact' ? 'compaction' : 'model' })
+    if (stdout && (TEXT_CONTEXT.has(name) || name === 'PreCompact')) actions.push({ kind: 'context', text: stdout, placement: name === 'PreCompact' ? 'compaction' : 'model', channel: 'stdout' })
     return success(actions)
   }
   const hook = record(body.hookSpecificOutput) ? body.hookSpecificOutput : {}
@@ -138,7 +138,7 @@ export function interpretClaude(registration: Registration, event: NativeEvent, 
   }
   if (typeof hook.additionalContext === 'string' && hook.permissionDecision !== 'defer') {
     if (name === 'Stop' || name === 'SubagentStop') actions.push({ kind: 'continue-turn', text: hook.additionalContext, mode: 'feedback' })
-    else if (['SessionStart', 'SubagentStart', 'UserPromptSubmit', 'UserPromptExpansion', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'PostModelSwitch'].includes(name)) actions.push({ kind: 'context', text: hook.additionalContext, placement: 'model' })
+    else if (['SessionStart', 'SubagentStart', 'UserPromptSubmit', 'UserPromptExpansion', 'PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PostToolBatch', 'PostModelSwitch'].includes(name)) actions.push({ kind: 'context', text: hook.additionalContext, placement: 'model', channel: 'additionalContext' })
   }
   for (const field of EXTENSIONS[name] ?? []) if (hook[field] !== undefined) actions.push({ kind: 'native-extension', name: field, value: structuredClone(hook[field]) })
   if ((name === 'Elicitation' || name === 'ElicitationResult') && result.exitCode === 0 && hook.action !== undefined) {

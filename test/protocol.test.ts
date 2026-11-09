@@ -100,14 +100,14 @@ test('plain text, malformed JSON, and foreign event outputs are handled by diale
   const { interpretOutput } = await import('../src/protocol.js')
   const read = (dialect: Dialect, name: string, output: unknown) => interpretOutput(reg(dialect, name), event(name), result(output))
   for (const dialect of ['claude-code', 'codex'] as const) {
-    assert.deepEqual(read(dialect, 'SessionStart', 'plain context').actions, [{ kind: 'context', text: 'plain context', placement: 'model' }])
+    assert.deepEqual(read(dialect, 'SessionStart', 'plain context').actions, [{ kind: 'context', text: 'plain context', placement: 'model', ...(dialect === 'claude-code' ? { channel: 'stdout' } : {}) }])
     assert.deepEqual(read(dialect, 'PreToolUse', 'plain context').actions, [])
     assert.equal(read(dialect, 'PreToolUse', '{broken}').status, 'failed')
     assert.equal(read(dialect, 'PreToolUse', specific('Unknown', { permissionDecision: 'deny' })).status, 'failed')
   }
   assert.equal(read('claude-code', 'Stop', 'plain output').status, 'success')
   assert.equal(read('codex', 'Stop', 'plain output').status, 'failed')
-  assert.deepEqual(read('claude-code', 'PreCompact', 'summary instruction').actions, [{ kind: 'context', text: 'summary instruction', placement: 'compaction' }])
+  assert.deepEqual(read('claude-code', 'PreCompact', 'summary instruction').actions, [{ kind: 'context', text: 'summary instruction', placement: 'compaction', channel: 'stdout' }])
   assert.deepEqual(read('codex', 'PreCompact', 'summary instruction').actions, [])
   assert.equal(read('codex', 'PreToolUse', { unknownField: true }).status, 'failed')
   const nativeForeignTag = read('codex', 'PreToolUse', specific('Stop', { permissionDecision: 'deny', permissionDecisionReason: 'native accepted tag' }))
@@ -175,7 +175,7 @@ test('Claude distinguishes task, tool-batch, and managed configuration decisions
 test('Claude treats multiple JSON log lines as text only when none sets a hook output field', async () => {
   const { interpretOutput } = await import('../src/protocol.js')
   const logs = '{"log":"first"}\n{"log":"second"}'
-  assert.deepEqual(interpretOutput(reg('claude-code', 'SessionStart'), event('SessionStart'), result(logs)).actions, [{ kind: 'context', text: logs, placement: 'model' }])
+  assert.deepEqual(interpretOutput(reg('claude-code', 'SessionStart'), event('SessionStart'), result(logs)).actions, [{ kind: 'context', text: logs, placement: 'model', channel: 'stdout' }])
   const mixed = '{"log":"first"}\n{"continue":false}'
   assert.equal(interpretOutput(reg('claude-code', 'SessionStart'), event('SessionStart'), result(mixed)).status, 'failed')
 })
