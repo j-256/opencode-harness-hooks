@@ -34,6 +34,7 @@ test('V2 Stop core probe help needs no host executable or project build', async 
     assert.ok(result.stdout.includes('--history'))
     assert.ok(result.stdout.includes('--cancellation'))
     assert.ok(result.stdout.includes('--cancellation-stage'))
+    assert.ok(result.stdout.includes('pending-ack'))
     assert.equal(result.stderr, '')
   }
 })
@@ -58,4 +59,11 @@ test('V2 Stop core probe reports missing and mismatched dependencies before star
     assert.equal(mismatched.stdout, '')
     assert.match(mismatched.stderr, /HOST_VERSION_MISMATCH/)
   }
+})
+
+test('pending acknowledgement cancellation selects the controlled host profile before dependency checks', async () => {
+  const result = await invoke(['--default-root', '--cancellation', '--cancellation-stage', 'pending-ack', '-b', '/missing/v2-stop-fixture'])
+  assert.equal(result.status, 3)
+  assert.equal(result.stdout, '')
+  assert.match(result.stderr, /DEPENDENCY_UNAVAILABLE/)
 })

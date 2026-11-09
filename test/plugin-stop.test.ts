@@ -80,8 +80,9 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }, mo
     await emit('inbox.delivered', { inboxID: id }); delivered.add(id)
   }
   const answer = (id = 'answer', text = 'Answer') => records.push({ type: 'assistant', id, model: { id: 'fixture' }, finish: 'stop', time: { created: CREATED + 1 }, content: [{ type: 'text', text }] })
+  const deliver = async (id: string) => { await emit('inbox.delivered', { inboxID: id }); delivered.add(id) }
   const model = async () => {
-    for (const row of records) if (row.type === 'synthetic' && !delivered.has(row.id)) { await emit('inbox.delivered', { inboxID: row.id }); delivered.add(row.id) }
+    for (const row of records) if (row.type === 'synthetic' && !delivered.has(row.id)) await deliver(row.id)
     const messages = records.filter(row => ['user', 'synthetic', 'assistant'].includes(row.type)).map(row => row.type === 'assistant' ? { id: row.id, role: 'assistant', content: row.content } : { id: row.id, role: 'user', content: [{ type: 'text', text: row.text }] })
     const frame = { sessionID: 'session', model: { id: 'fixture', providerID: 'fixture' }, messages }
     await callbacks.get('session.context')!(frame)
@@ -108,7 +109,7 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }, mo
     const deadline = performance.now() + HOOK_START_MS
     while (true) { try { if ((await calls()).length) return } catch {} if (performance.now() >= deadline) throw new Error('Hook did not start'); await new Promise(resolve => setTimeout(resolve, HOOK_POLL_MS)) }
   }
-  return { directory, path, script, context, callbacks, records, queued, connect, prompt, answer, model, idle, promote, acknowledge, emit, setEventReturnGate: (gate: Promise<void>) => { eventReturnGate = gate }, interrupt, abortFeedback, setEnqueue: (value: typeof enqueue) => { enqueue = value }, calls, waitForHook, unchanged: async () => { assert.equal(await readFile(path, 'utf8'), native); assert.equal(await readFile(script, 'utf8'), scriptSource) }, command: [process.execPath, script].join(' ') }
+  return { directory, path, script, context, callbacks, records, queued, connect, prompt, answer, deliver, model, idle, promote, acknowledge, emit, setEventReturnGate: (gate: Promise<void>) => { eventReturnGate = gate }, interrupt, abortFeedback, setEnqueue: (value: typeof enqueue) => { enqueue = value }, calls, waitForHook, unchanged: async () => { assert.equal(await readFile(path, 'utf8'), native); assert.equal(await readFile(script, 'utf8'), scriptSource) }, command: [process.execPath, script].join(' ') }
 }
 
 test('default V2 user interruption cancels a running Stop and retains native interruption history', async t => {
@@ -425,6 +426,81 @@ test('late SDK admission after a real prompt replacement remains quarantined fro
   f.promote()
   await assert.rejects(f.model(), { code: 'HOST_STOP_CANCELLED' })
   assert.equal((await f.calls()).length, 1)
+})
+
+for (const concurrent of [false, true]) test(`a native interruption before feedback acknowledgement retains output with overlapping contexts ${concurrent}`, async t => {
+  const f = await fixture(t, 'after-feedback')
+  let entered!: () => void, release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve }), waiting = new Promise<void>(resolve => { release = resolve })
+  f.setEnqueue(async input => { entered(); await waiting; return f.acknowledge(input) })
+  await f.connect(); await f.prompt(); await f.model()
+  await f.emit('step.started', { assistantMessageID: 'answer', agent: 'build', model: { id: 'fixture', providerID: 'fixture' }, started: CREATED + 1 })
+  f.answer()
+  await f.emit('step.ended', { assistantMessageID: 'answer', finish: 'stop' })
+  const idle = f.idle().catch(error => error)
+  try {
+    await started
+    await f.interrupt()
+    assert.equal(await idle, undefined)
+    await f.prompt('next', 'Next')
+    release()
+    f.promote()
+    if (concurrent) {
+      await f.deliver(f.queued[0].id)
+      const messages = f.records.filter(row => ['user', 'synthetic', 'assistant'].includes(row.type)).map(row => ({ id: row.id, role: row.type === 'assistant' ? 'assistant' : 'user', content: row.type === 'assistant' ? row.content : [{ type: 'text', text: row.text }] }))
+      const frames = [0, 1].map(() => ({ sessionID: 'session', model: { id: 'fixture', providerID: 'fixture' }, messages: structuredClone(messages) }))
+      await Promise.all(frames.map(frame => f.callbacks.get('session.context')!(frame)))
+      assert.deepEqual(frames.map(frame => frame.messages.map(row => row.id)), [['prompt', 'answer', 'next'], ['prompt', 'answer', 'next']])
+    }
+    const body = await f.model()
+    assert.deepEqual(body.messages.map((row: any) => row.role), ['user', 'assistant', 'user'])
+    assert.deepEqual(body.messages[2].content, [
+      `<system-reminder>\nStop hook blocking error from command: "${f.command}": Feedback\n</system-reminder>`,
+      '<system-reminder>\nStop hook additional context: Context\n</system-reminder>',
+      'Stop hook feedback:\nFeedback\n', '[Request interrupted by user]\n', 'Next',
+    ].map(text => ({ type: 'text', text })))
+    f.answer('next-answer', 'Next answer'); await f.idle()
+    const calls = await f.calls(), records = calls[1].rows
+    assert.equal(records.filter((row: any) => row.subtype === 'stop_hook_summary').length, 1)
+    assert.equal(records.filter((row: any) => row.userType === 'external').length, 1)
+    assert.equal(records.find((row: any) => row.userType === 'external').promptId, 'prompt')
+    assert.ok(!JSON.stringify(records).includes(f.queued[0].text))
+    assert.deepEqual(calls.map(row => [row.input.prompt_id, row.input.stop_hook_active]), [['prompt', false], ['next', false]])
+    await f.prompt('third', 'Third')
+    assert.deepEqual((await f.model()).messages[2], body.messages[2])
+    await f.unchanged()
+  } finally { release(); await idle }
+})
+
+for (const scenario of ['changed-ack', 'missing-readback', 'changed-marker'] as const) test(`pending acknowledgement interruption rejects ${scenario} before model transport`, async t => {
+  const f = await fixture(t, 'after-feedback')
+  let entered!: () => void, release!: () => void
+  const started = new Promise<void>(resolve => { entered = resolve }), waiting = new Promise<void>(resolve => { release = resolve })
+  f.setEnqueue(async input => {
+    entered(); await waiting
+    const ack = f.acknowledge(input)
+    return scenario === 'changed-ack' ? { ...ack, payload: { ...ack.payload, metadata: { ...input.metadata, token: 'changed' } } } : ack
+  })
+  await f.connect(); await f.prompt(); await f.model()
+  await f.emit('step.started', { assistantMessageID: 'answer', agent: 'build', model: { id: 'fixture', providerID: 'fixture' }, started: CREATED + 1 })
+  f.answer()
+  await f.emit('step.ended', { assistantMessageID: 'answer', finish: 'stop' })
+  const idle = f.idle().catch(error => error)
+  try {
+    await started; await f.interrupt(); assert.equal(await idle, undefined)
+    await f.prompt('next', 'Next')
+    release()
+    await new Promise<void>(resolve => setImmediate(resolve))
+    if (scenario !== 'missing-readback') f.promote()
+    if (scenario === 'changed-marker') f.records.find(row => row.type === 'synthetic').metadata.token = 'changed'
+    let transports = 0
+    const http = f.callbacks.get('session.http.request')!
+    f.callbacks.set('session.http.request', async event => { transports++; return http(event) })
+    const code = scenario === 'changed-ack' ? 'HOST_STOP_ACK_INVALID' : scenario === 'missing-readback' ? 'HOST_STOP_READBACK_UNAVAILABLE' : 'TRANSCRIPT_STOP_CONTINUATION_CHANGED'
+    await assert.rejects(f.model(), { code })
+    assert.equal(transports, 0)
+    await f.unchanged()
+  } finally { release(); await idle }
 })
 
 test('failed V2 Stop disposal keeps guards until the raw SDK operation actually drains', { timeout: 15000 }, async t => {

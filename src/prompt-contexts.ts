@@ -17,7 +17,8 @@ const READ_MS = 5000
 type Context = AttributedAction<Extract<HookAction, { kind: 'context' }>>
 export type PromptProtocol = 'openai' | 'anthropic'
 export interface PromptLayout { readonly id: string; readonly text: readonly string[] }
-export interface PromptContinuationReservation { readonly admit: () => void; readonly release: () => void }
+export interface PromptContinuationOptions { readonly reconcileCancellation?: boolean }
+export interface PromptContinuationReservation { readonly admit: () => void; readonly release: () => void; readonly suppress?: () => void }
 export interface PromptStopHistory extends StopModelBlocks { readonly completionID: string; readonly assistantText: readonly string[]; readonly interrupted?: true }
 interface Entry { readonly kind: 'prompt' | 'continuation'; readonly turnID: string; readonly turnSignal: AbortSignal; readonly text: readonly string[]; readonly contexts: readonly Context[]; readonly projection?: readonly string[]; readonly history?: PromptStopHistory; readonly bytes: number }
 interface Layout { readonly turnID: string; readonly turnSignal: AbortSignal; readonly rows: readonly PromptLayout[] }
@@ -89,11 +90,12 @@ export class PromptContexts {
     this.bytes += bytes
   }
 
-  reserveContinuation(session: SessionSnapshot, messageID: string, text: readonly string[], projection: readonly string[]): PromptContinuationReservation {
+  reserveContinuation(session: SessionSnapshot, messageID: string, text: readonly string[], projection: readonly string[], options: PromptContinuationOptions = {}): PromptContinuationReservation {
     session = { ...session }
     const { state, entry } = this.retain(session, messageID, text, [], 'continuation', projection, true)
-    const signal = AbortSignal.any([session.signal, session.turnSignal, this.lifetime.signal])
-    let phase: 'pending' | 'admitted' | 'released' = 'pending'
+    const reconcileCancellation = options.reconcileCancellation === true
+    const signal = AbortSignal.any([session.signal, this.lifetime.signal, ...(reconcileCancellation ? [] : [session.turnSignal])])
+    let phase: 'pending' | 'admitted' | 'released' | 'suppressed' = 'pending'
     const release = () => {
       if (phase !== 'pending') return
       phase = 'released'
@@ -107,7 +109,7 @@ export class PromptContexts {
     signal.addEventListener('abort', release, { once: true })
     return Object.freeze({
       admit: () => {
-        if (signal.aborted) fail('HOST_PROMPT_CANCELLED')
+        if (signal.aborted || session.turnSignal.aborted) fail('HOST_PROMPT_CANCELLED')
         if (phase !== 'pending' || this.sessions.get(session.sessionID) !== state || state.reservations.get(messageID) !== entry) fail('HOST_PROMPT_RESERVATION_UNAVAILABLE')
         state.reservations.delete(messageID)
         state.entries.set(messageID, entry)
@@ -115,6 +117,17 @@ export class PromptContexts {
         signal.removeEventListener('abort', release)
         this.invalidate(state)
       },
+      ...(reconcileCancellation ? { suppress: () => {
+        if (signal.aborted) fail('HOST_PROMPT_CANCELLED')
+        if (!session.turnSignal.aborted) fail('HOST_PROMPT_RETIREMENT_UNAVAILABLE')
+        if (phase !== 'pending' || this.sessions.get(session.sessionID) !== state || state.reservations.get(messageID) !== entry) fail('HOST_PROMPT_RESERVATION_UNAVAILABLE')
+        this.invalidate(state)
+        if (signal.aborted || this.sessions.get(session.sessionID) !== state || state.reservations.get(messageID) !== entry) fail('HOST_PROMPT_CANCELLED')
+        state.reservations.delete(messageID)
+        state.retired.set(messageID, entry)
+        phase = 'suppressed'
+        signal.removeEventListener('abort', release)
+      } } : {}),
       release,
     })
   }

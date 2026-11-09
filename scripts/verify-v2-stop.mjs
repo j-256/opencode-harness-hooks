@@ -15,7 +15,7 @@ const SHUTDOWN_MS = 2000
 const MAX_REQUESTS = 4
 const COMMAND_DELAY_MS = 2000
 const CONTROL_POLL_MS = 10
-const CANCELLATION_STAGES = Object.freeze({ DURING_HOOK: 'during-hook', AFTER_FEEDBACK: 'after-feedback' })
+const CANCELLATION_STAGES = Object.freeze({ DURING_HOOK: 'during-hook', AFTER_FEEDBACK: 'after-feedback', PENDING_ACK: 'pending-ack' })
 const STAGES = new Set(Object.values(CANCELLATION_STAGES))
 const CORE = new URL('../dist/core.js', import.meta.url).href
 const TRANSPORT = new URL('../dist/prompt-contexts.js', import.meta.url).href
@@ -36,12 +36,14 @@ Options:
       --default-root  Load the actual package with an independent observer plugin
       --history       Compare retained output at later real prompts (default root)
       --cancellation  Interrupt Stop processing (default root, no history)
-      --cancellation-stage NAME  during-hook (default) or after-feedback
+      --cancellation-stage NAME  during-hook (default), after-feedback or pending-ack
   -h, --help         Show help without dependencies or a package build
 
 Requires Node.js 22+, POSIX, Git, npm run build and the pinned host executable.
 No installation or upgrade is performed. Metadata-only JSON goes to stdout;
 failures go to stderr without native output, commands or local paths.
+The pending-ack stage calls the default setup through a controlled SDK return
+delay. It reports that boundary separately from untouched package loading.
 Exit status: 0 exercised checks pass; 1 runtime/check; 2 usage/version/platform;
 3 missing dependency or package build. The report retains equivalent:false.
 `
@@ -73,7 +75,8 @@ async function dependency(program, args, name) {
 }
 
 async function verify(binary, defaultRoot, historical, cancelled = false, stage = CANCELLATION_STAGES.DURING_HOOK) {
-  const afterFeedback = cancelled && stage === CANCELLATION_STAGES.AFTER_FEEDBACK
+  const pendingAck = cancelled && stage === CANCELLATION_STAGES.PENDING_ACK
+  const afterFeedback = cancelled && stage !== CANCELLATION_STAGES.DURING_HOOK
   if (process.platform === 'win32' || Number(process.versions.node.split('.')[0]) < 22) throw new ProbeError('PLATFORM_UNAVAILABLE: Node.js 22+ and POSIX required', 2)
   const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
   if (version !== PINNED_VERSION) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + PINNED_VERSION, 2)
@@ -98,6 +101,7 @@ async function verify(binary, defaultRoot, historical, cancelled = false, stage 
     await run('git', ['init', '-q', project], { env, timeout: STARTUP_MS })
     const requests = []
     const feedbackStarted = join(root, 'feedback-provider-started')
+    const ackRelease = join(root, 'release-ack')
     gateway = createServer(async (req, res) => {
       try {
         const chunks = []
@@ -114,7 +118,7 @@ async function verify(binary, defaultRoot, historical, cancelled = false, stage 
         const message = { role: 'assistant', content: continued ? 'V2_SECOND_ANSWER' : 'V2_FIRST_ANSWER' }
         const chunk = (delta, finish_reason) => ({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta, finish_reason }] })
         res.writeHead(200, { 'content-type': 'text/event-stream' })
-        if (afterFeedback && requests.filter(row => row.kind === 'primary').length === 2) { res.flushHeaders(); await writeFile(feedbackStarted, 'started'); return }
+        if (afterFeedback && !pendingAck && requests.filter(row => row.kind === 'primary').length === 2) { res.flushHeaders(); await writeFile(feedbackStarted, 'started'); return }
         res.end('data: ' + JSON.stringify(chunk(message, null)) + '\n\ndata: ' + JSON.stringify({ ...chunk({}, 'stop'), usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } }) + '\n\ndata: [DONE]\n\n')
       } catch { if (!res.headersSent) res.writeHead(500); res.end() }
     })
@@ -130,6 +134,29 @@ async function verify(binary, defaultRoot, historical, cancelled = false, stage 
     await writeFile(sourcePath,native)
     const sourceSnapshot = await readFile(sourcePath), scriptSnapshot = await readFile(hookScript)
     const options={sources:[{id:'native',dialect,path:sourcePath}],reviewedDigests:{native:createHash('sha256').update(native).digest('hex')},permissionMode:'default'}
+    let target = PACKAGE_DIRECTORY
+    if (pendingAck) {
+      target = join(root, 'controlled-default-setup')
+      await mkdir(target)
+      await writeFile(join(target, 'package.json'), JSON.stringify({ name: 'controlled-default-setup', type: 'module', exports: { '.': './index.js' } }))
+      await writeFile(join(target, 'index.js'), `import plugin from ${JSON.stringify(new URL('../dist/index.js', import.meta.url).href)}
+import { readFile, writeFile } from 'node:fs/promises'
+export default { id: 'controlled-default-setup', async setup(ctx) {
+  const session = { ...ctx.session, synthetic: async input => {
+    const ack = await ctx.session.synthetic(input)
+    await writeFile(${JSON.stringify(feedbackStarted)}, JSON.stringify({ id: ack.id, sessionID: ack.sessionID }))
+    const deadline = performance.now() + ${STARTUP_MS}
+    while (true) {
+      try { await readFile(${JSON.stringify(ackRelease)}); break } catch {
+        if (performance.now() >= deadline) throw new Error('ACK_RELEASE_TIMEOUT')
+        await new Promise(resolve => setTimeout(resolve, ${CONTROL_POLL_MS}))
+      }
+    }
+    return ack
+  } }
+  return plugin.setup({ ...ctx, session })
+} }`)
+    }
     await writeFile(join(plugin, 'package.json'), JSON.stringify({ name: 'harness-v2-fixture', type: 'module', exports: { '.': './index.js' } }))
     await writeFile(join(plugin, 'index.js'), `import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
@@ -257,7 +284,7 @@ export default { id: 'harness-stop-observer', async setup(ctx) {
 `)
     await run(process.execPath,['--check',join(plugin,'index.js')],{timeout:STARTUP_MS,maxBuffer:MAX_BYTES})
     await writeFile(join(config, 'opencode.json'), JSON.stringify({
-      model: 'fixture/fixture', update: 'disable', snapshots: false, share: 'disabled', warming: false, plugins: defaultRoot ? [{ package: PACKAGE_DIRECTORY, options }, { package: plugin }] : [{ package: plugin, options }],
+      model: 'fixture/fixture', update: 'disable', snapshots: false, share: 'disabled', warming: false, plugins: defaultRoot ? [{ package: target, options }, { package: plugin }] : [{ package: plugin, options }],
       providers: { fixture: { package: '@opencode/ai/providers/openai-compatible', settings: { apiKey: 'synthetic', baseURL: 'http://127.0.0.1:' + gateway.address().port + '/v1' }, models: { fixture: { name: 'Fixture', capabilities: { tools: false }, limit: { context: 50000, output: 2000 } } } } },
     }))
     host = spawn(binary, ['serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: project, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -280,7 +307,7 @@ export default { id: 'harness-stop-observer', async setup(ctx) {
     let result = await running.catch(error => ({stdout:error.stdout??'',stderr:error.stderr??'',failure:error.code??'unknown'}))
     const interruptedResult = result
     if (historical || cancelled) {
-      if (afterFeedback) {
+      if (afterFeedback && !pendingAck) {
         const errors = result.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(row => row.type === 'error')
         check(result.failure === 1 && errors.length === 1 && JSON.stringify(errors[0].error) === JSON.stringify({ type: 'aborted', message: 'Step interrupted' }), 'HOST_NATIVE_INTERRUPTED_CLI_OUTCOME_FAILED')
       } else check(!result.failure, 'HOST_STOP_HISTORY_FIRST_PROMPT_FAILED')
@@ -288,6 +315,17 @@ export default { id: 'harness-stop-observer', async setup(ctx) {
       check(typeof first.session_id === 'string' && first.session_id, 'HOST_STOP_HISTORY_SESSION_UNAVAILABLE')
       const follow = run(binary, ['--server', address, 'run', '--session', first.session_id, '--format', 'json', '--model', 'fixture/fixture', 'LATER_NEXT_PROMPT'], { cwd: project, env, timeout: CLIENT_MS, maxBuffer: MAX_BYTES })
       follow.child.stdin.end()
+      if (pendingAck) {
+        const deadline = performance.now() + STARTUP_MS
+        while (true) {
+          let observed = []
+          try { observed = (await readFile(trace, 'utf8')).trim().split('\n').filter(Boolean).map(JSON.parse) } catch {}
+          if (observed.some(row => row.phase === 'prompt-observed' && row.messageID !== first.prompt_id)) break
+          check(performance.now() < deadline, 'HOST_NEXT_PROMPT_CONTROL_TIMEOUT')
+          await new Promise(resolve => setTimeout(resolve, CONTROL_POLL_MS))
+        }
+        await writeFile(ackRelease, 'release')
+      }
       result = await follow.catch(error => ({stdout:error.stdout??'',stderr:error.stderr??'',failure:error.code??'unknown'}))
     }
     const events = (await readFile(trace, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
@@ -296,9 +334,9 @@ export default { id: 'harness-stop-observer', async setup(ctx) {
     const snapshots=defaultRoot ? hooks.map(row=>({ status:'prepared', rows:row.fixtureRecords })) : events.filter(row=>row.phase==='stop-snapshot')
     const receipts=events.filter(row=>row.phase==='receipt')
     check(!diagnostics.some(code => !cancelled || code !== 'HOST_STOP_CANCELLED'),'HOST_OWNED_STOP_DIAGNOSTICS:'+ [...new Set(diagnostics)].join(','))
-    check(!result.failure && primary.length===(afterFeedback?3:2) && snapshots.length===2 && snapshots.every(row=>row.status==='prepared'),'HOST_OWNED_STOP_SNAPSHOT_FAILED')
+    check(!result.failure && primary.length===(afterFeedback&&!pendingAck?3:2) && snapshots.length===2 && snapshots.every(row=>row.status==='prepared'),'HOST_OWNED_STOP_SNAPSHOT_FAILED')
     if (cancelled) {
-      const oracle = JSON.parse(await readFile(new URL('../test/fixtures/claude-stop-cancellation-oracle.json', import.meta.url), 'utf8')).cases.find(row => row.name === stage)
+      const oracle = JSON.parse(await readFile(new URL('../test/fixtures/claude-stop-cancellation-oracle.json', import.meta.url), 'utf8')).cases.find(row => row.name === (pendingAck ? CANCELLATION_STAGES.AFTER_FEEDBACK : stage))
       check(events.filter(row => row.phase === 'user-interruption').length === 1 && !events.some(row => row.phase === 'controller-error'), 'HOST_STOP_INTERRUPT_CONTROL_FAILED')
       check(hooks.every(row => row.stop_hook_active === false) && hooks[0].prompt_id !== hooks[1].prompt_id && hooks[0].session_id === hooks[1].session_id, 'HOST_STOP_INTERRUPT_OWNER_FAILED')
       const messages = primary.at(-1).messages.filter(row => ['user', 'assistant'].includes(row.role))
@@ -312,14 +350,17 @@ export default { id: 'harness-stop-observer', async setup(ctx) {
       check(!active, 'HOST_STOP_INTERRUPT_PROCESS_ALIVE')
       if (afterFeedback) {
         const native = events.find(row => row.phase === 'interrupted-native'), retained = hooks[1].fixtureRecords
-        check(native?.assistantIDs.length === 1 && native.syntheticIDs.length === 1 && !retained.some(row => native.assistantIDs.includes(row.message?.id)) && events.filter(row => row.phase === 'root-idle').at(-1)?.synthetics.length === 1, 'HOST_STOP_INTERRUPT_OWNED_RETIREMENT_FAILED')
+        if (pendingAck) {
+          const ack = JSON.parse(await readFile(feedbackStarted, 'utf8')), remaining = events.filter(row => row.phase === 'root-idle').at(-1)?.synthetics
+          check(native?.assistantIDs.length === 0 && ack.sessionID === hooks[0].session_id && remaining?.length === 1 && remaining[0].id === ack.id && remaining[0].source === 'opencode-harness-hooks', 'HOST_STOP_INTERRUPT_OWNED_RETIREMENT_FAILED')
+        } else check(native?.assistantIDs.length === 1 && native.syntheticIDs.length === 1 && !retained.some(row => native.assistantIDs.includes(row.message?.id)) && events.filter(row => row.phase === 'root-idle').at(-1)?.synthetics.length === 1, 'HOST_STOP_INTERRUPT_OWNED_RETIREMENT_FAILED')
         check(retained.some(row => row.isMeta && row.message?.content === 'Stop hook feedback:\nCANCEL_STOP_FEEDBACK') && retained.some(row => row.rendered?.some(part => part.content === oracle.nextUser[1])), 'HOST_STOP_INTERRUPT_RETAINED_OUTPUT_FAILED')
         const errors = interruptedResult.stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line)).filter(row => row.type === 'error')
-        check(errors[0].sessionID === hooks[0].session_id, 'HOST_NATIVE_INTERRUPTED_CLI_OWNER_FAILED')
+        check(pendingAck ? errors.length === 0 : errors[0].sessionID === hooks[0].session_id, 'HOST_NATIVE_INTERRUPTED_CLI_OWNER_FAILED')
       } else check(!(await access(finishedPath).then(() => true, () => false)) && events.filter(row => row.phase === 'root-idle').every(row => !row.synthetics.length), 'HOST_STOP_INTERRUPT_COMMAND_OR_SYNTHETIC')
       check((await readFile(sourcePath)).equals(sourceSnapshot) && (await readFile(hookScript)).equals(scriptSnapshot), 'FIXTURE_SOURCE_CHANGED')
       check(primary.every(row => !row.privateHeaderPresent) && !/UNADMITTED_STOP_OUTPUT|opencode-harness-hooks:Stop:/.test(JSON.stringify(primary)), 'HOST_STOP_INTERRUPT_TRANSPORT_FAILED')
-      return { mode: stage, defaultRootStopCancellation: true, defaultPackageEntrypoint: true, independentController: true, originalInterruptionOwner: true, nextPromptOracle: true, nativeInterruptionRecord: true, fixtureSourceUnchanged: true, ...(afterFeedback ? { admittedStopOutputRetained: true, ownedInputRetired: true, ownedAbortedAssistantRetired: true, nativeInterruptedCliExit: interruptedResult.failure } : { unadmittedStopOutputAbsent: true, commandCancelled: true, noSyntheticContinuation: true }), equivalent: false }
+      return { mode: stage, defaultRootStopCancellation: !pendingAck, defaultPackageEntrypoint: !pendingAck, ...(pendingAck ? { controlledDefaultSetup: true, acceptedBeforeHeldAck: true, nextPromptBeforeAckRelease: true } : {}), independentController: true, originalInterruptionOwner: true, nextPromptOracle: true, nativeInterruptionRecord: true, fixtureSourceUnchanged: true, ...(afterFeedback ? { admittedStopOutputRetained: true, ownedInputRetired: true, ...(pendingAck ? {} : { ownedAbortedAssistantRetired: true }), nativeInterruptedCliExit: interruptedResult.failure ?? 0 } : { unadmittedStopOutputAbsent: true, commandCancelled: true, noSyntheticContinuation: true }), equivalent: false }
     }
     if (historical) {
       check(hooks.length===2 && hooks.every(row=>row.stop_hook_active===false) && hooks[0].prompt_id!==hooks[1].prompt_id && hooks[0].session_id===hooks[1].session_id,'HOST_STOP_HISTORY_REAL_TURNS_FAILED')
@@ -377,7 +418,7 @@ try {
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
     if (parsed.values.history && !parsed.values['default-root']) throw new ProbeError('USAGE_HISTORY: --history requires --default-root', 2)
     if (parsed.values.cancellation && (!parsed.values['default-root'] || parsed.values.history)) throw new ProbeError('USAGE_CANCELLATION: --cancellation requires --default-root without --history', 2)
-    if (parsed.values['cancellation-stage'] !== undefined && (!parsed.values.cancellation || !STAGES.has(parsed.values['cancellation-stage']))) throw new ProbeError('USAGE_CANCELLATION_STAGE: select --cancellation with during-hook or after-feedback', 2)
+    if (parsed.values['cancellation-stage'] !== undefined && (!parsed.values.cancellation || !STAGES.has(parsed.values['cancellation-stage']))) throw new ProbeError('USAGE_CANCELLATION_STAGE: select --cancellation with during-hook, after-feedback or pending-ack', 2)
     if (parsed.values.history) {
       const oracle=JSON.parse(await readFile(new URL('../test/fixtures/claude-stop-history-oracle.json',import.meta.url),'utf8')),cases=[]
       for (const scenario of oracle.cases) cases.push(await verify(binary,true,scenario))

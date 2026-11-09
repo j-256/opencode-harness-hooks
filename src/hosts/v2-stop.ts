@@ -36,6 +36,11 @@ interface Pending {
   phase: 'enqueue' | 'queued' | 'admitted' | 'failed'
   failure?: HostHookError
   reading?: Promise<void>
+  submission?: Promise<void>
+  submitted?: true
+  cancellation?: true
+  suppressed?: { readonly inputHash: string; readonly previousID: string }
+  suppressing?: Promise<void>
   reconciling?: Promise<void>
   answeredBy?: string
   retired?: { readonly assistantID: string; readonly inputHash: string; readonly assistantHash: string }
@@ -114,7 +119,8 @@ export class V2StopBridge {
     const state = this.states.get(session.sessionID)
     if (state && state.signal !== session.signal) fail('HOST_STOP_SESSION_MISMATCH')
     if (state?.failure) throw state.failure
-    if (ready && state && [...state.continuations.values()].some(row => row.owner.turnSignal.aborted && !row.retired && !row.answeredBy)) fail('HOST_STOP_INTERRUPTION_PENDING')
+    if (state) for (const owned of state.continuations.values()) if (owned.failure) throw owned.failure
+    if (ready && state && [...state.continuations.values()].some(row => row.owner.turnSignal.aborted && !row.retired && !row.suppressed && !row.answeredBy)) fail('HOST_STOP_INTERRUPTION_PENDING')
     if (ready && state?.attempt?.phase === 'interrupted' && !state.attempt.settled) fail('HOST_STOP_INTERRUPTION_PENDING')
     if (ready && state?.attempt?.phase === 'dispatch' && state.attempt.owner.turnSignal.aborted) fail('HOST_STOP_INTERRUPTION_UNAVAILABLE')
     if (ready && state && [...state.histories.values()].some(row => !row.nextPromptID)) fail('HOST_STOP_HISTORY_UNAVAILABLE')
@@ -204,7 +210,7 @@ export class V2StopBridge {
     if (this.submissions.size >= MAX_SESSIONS || this.continuationCount >= MAX_HISTORY || this.historicalCount >= MAX_HISTORY || this.bytes + bytes + reservedHistory.bytes > MAX_BYTES) fail('HOST_STOP_LIMIT')
     const transcript = this.options.transcripts.reserveContinuation(delivery, { id, text: input.text, description: input.description, metadata: input.metadata }, { reconcileCancellation: true })
     let model: PromptContinuationReservation
-    try { model = this.options.contexts.reserveContinuation(session, id, [input.text], projection) } catch (error) { transcript.release(); throw error }
+    try { model = this.options.contexts.reserveContinuation(session, id, [input.text], projection, { reconcileCancellation: true }) } catch (error) { transcript.release(); throw error }
     const pending: Pending = { owner: Object.freeze({ ...session }), signal: delivery.signal, input, completionID: event.completionID, transcript, model, bytes, attempt, reservedHistory, phase: 'enqueue' }
     state.pending = pending
     this.bytes += bytes + reservedHistory.bytes
@@ -213,16 +219,20 @@ export class V2StopBridge {
     const started = performance.now()
     const work = Promise.resolve().then(async () => {
       this.live(pending)
+      pending.submitted = true
       const ack = await this.options.synthetic(input)
-      this.live(pending)
+      if (pending.cancellation) {
+        if (this.lifetime.signal.aborted || pending.owner.signal.aborted || this.states.get(session.sessionID) !== state) fail('HOST_STOP_CANCELLED', 'cancelled')
+      } else this.live(pending)
       if (!record(ack) || ack.id !== id || ack.sessionID !== input.sessionID || ack.type !== 'synthetic' || ack.delivery !== input.delivery || !record(ack.time) || typeof ack.time.created !== 'number' || !Number.isFinite(ack.time.created) || !same(ack.payload, { text: input.text, description: input.description, metadata: input.metadata })) fail('HOST_STOP_ACK_INVALID')
       pending.phase = 'queued'
     }).catch((error: unknown) => {
       pending.phase = 'failed'
-      pending.model.release(); pending.transcript.release()
+      if (!pending.submitted) { pending.model.release(); pending.transcript.release() }
       pending.failure = this.failure('enqueue', session.sessionID, error, event.completionID, started)
       throw pending.failure
     })
+    pending.submission = work
     this.submissions.add(work)
     void work.finally(() => { this.submissions.delete(work) }).catch(() => {})
     await work
@@ -231,9 +241,16 @@ export class V2StopBridge {
   async context(session: SessionSnapshot, messages?: readonly unknown[]): Promise<readonly unknown[] | undefined> {
     this.guard(session, false)
     const owned = this.states.get(session.sessionID)?.continuations
-    if (owned) for (const continuation of owned.values()) if (continuation.owner.turnSignal.aborted && !continuation.answeredBy && !continuation.retired) {
-      try { await runService(SERVICE_MS, session.turnSignal, () => continuation.reconciling ?? continuation.attempt.receipt) } catch { fail('HOST_STOP_INTERRUPTION_UNAVAILABLE') }
+    if (owned) for (const continuation of owned.values()) if (continuation.owner.turnSignal.aborted && !continuation.answeredBy && !continuation.retired && !continuation.suppressed) {
+      try { await runService(SERVICE_MS, session.turnSignal, () => continuation.cancellation ? continuation.submission! : continuation.reconciling ?? continuation.attempt.receipt) } catch (error) {
+        if (session.signal.aborted || session.turnSignal.aborted || error instanceof HookServiceError && error.code === 'EXECUTION_CANCELLED') fail('HOST_STOP_CANCELLED', 'cancelled')
+        fail('HOST_STOP_INTERRUPTION_UNAVAILABLE')
+      }
       this.guard(session, false)
+      if (continuation.cancellation && !continuation.suppressed) {
+        continuation.suppressing ??= this.suppressPending(session, continuation).finally(() => { if (!continuation.suppressed) delete continuation.suppressing })
+        await continuation.suppressing
+      }
     }
     const attempt = this.states.get(session.sessionID)?.attempt
     if (attempt?.phase === 'dispatch' && attempt.owner.turnSignal.aborted) {
@@ -295,6 +312,22 @@ export class V2StopBridge {
       void work.finally(() => { this.reconciliations.delete(work) }).catch(() => {})
       return
     }
+    const pending = state?.pending
+    if (state && pending && attempt === pending.attempt && attempt.phase === 'admitted' && pending.owner.signal === owner.signal && pending.owner.turnSignal === owner.turnSignal && pending.owner.turnID === owner.turnID && receipt.inputType === 'user' && receipt.inputID === owner.turnID && receipt.step?.id === pending.completionID && receipt.step.phase === 'ended' && receipt.step.finish === 'stop') {
+      if (!this.options.transcripts.admitStopInterruption || !pending.model.suppress || !pending.transcript.suppress || !pending.reservedHistory || state.histories.has(pending.completionID)) fail('HOST_STOP_ARTIFACT_UNAVAILABLE')
+      const reserved = pending.reservedHistory
+      const blocks = this.options.transcripts.admitStopInterruption(attempt.event, owner, { eventID: receipt.eventID, created: receipt.created, reason: 'user', source: 'sdk-cli' })
+      if (!same(blocks.reminders, reserved.reminders) || !same(blocks.feedback, reserved.feedback) || !blocks.interrupted) fail('HOST_STOP_HISTORY_CHANGED')
+      pending.model.suppress()
+      state.histories.set(pending.completionID, reserved)
+      delete pending.reservedHistory
+      pending.cancellation = true
+      state.continuations.set(pending.input.id, pending)
+      delete state.pending
+      attempt.phase = 'interrupted'
+      attempt.received()
+      return
+    }
     const input = receipt.inputType === 'user' && receipt.inputID === owner.turnID || receipt.inputType === 'synthetic' && continuation?.answeredBy === attempt?.event.completionID && !continuation?.retired
     if (!state || !attempt || attempt.owner.turnSignal !== owner.turnSignal || attempt.owner.turnID !== owner.turnID || attempt.owner.signal !== owner.signal || attempt.phase !== 'dispatch' || !input) fail('HOST_STOP_INTERRUPTION_RECONCILIATION_UNAVAILABLE')
     if (!this.options.transcripts.admitStopInterruption) fail('HOST_STOP_ARTIFACT_UNAVAILABLE')
@@ -330,6 +363,19 @@ export class V2StopBridge {
     return rows
   }
 
+  private async suppressPending(session: SessionSnapshot, owned: Pending): Promise<void> {
+    if (!owned.cancellation || owned.phase !== 'queued' || !owned.transcript.suppress) fail('HOST_STOP_INTERRUPTION_RECONCILIATION_UNAVAILABLE')
+    const history = await this.read(session.sessionID, session.turnSignal)
+    this.guard(session, false)
+    if (history.id !== session.sessionID) fail('HOST_STOP_READBACK_INVALID')
+    const rows = this.nativeRows(history), input = rows.findIndex(row => row.id === owned.input.id), answer = rows.findIndex(row => row.id === owned.completionID)
+    if (answer < 0 || input <= answer) fail('HOST_STOP_READBACK_UNAVAILABLE')
+    const suppressed = Object.freeze({ inputHash: signature(rows[input]), previousID: rows[input - 1]!.id as string })
+    if (Buffer.byteLength(JSON.stringify(suppressed)) > CANCELLATION_BYTES) fail('HOST_STOP_LIMIT')
+    owned.transcript.suppress(rows[input], suppressed.previousID)
+    owned.suppressed = suppressed
+  }
+
   private async reconcile(state: State, owned: Pending, receipt: V2ExecutionInterruption): Promise<void> {
     const signal = AbortSignal.any([owned.owner.signal, this.lifetime.signal]), step = receipt.step!
     const history = await this.read(owned.owner.sessionID, signal)
@@ -356,7 +402,7 @@ export class V2StopBridge {
   }
 
   private async retiredContext(session: SessionSnapshot, messages: readonly unknown[] | undefined): Promise<readonly unknown[] | undefined> {
-    const owned = [...this.states.get(session.sessionID)?.continuations.values() ?? []].filter(row => row.retired)
+    const owned = [...this.states.get(session.sessionID)?.continuations.values() ?? []].filter(row => row.retired || row.suppressed)
     if (!owned.length) return messages
     if (!Array.isArray(messages) || messages.length > MAX_CONTEXT_MESSAGES || !messages.every(record) || Buffer.byteLength(JSON.stringify(messages)) > MAX_BYTES) fail('HOST_STOP_READBACK_INVALID')
     const history = await this.read(session.sessionID, session.turnSignal)
@@ -364,12 +410,15 @@ export class V2StopBridge {
     const rows = this.nativeRows(history), frames = new Map<string, Record<string, unknown>>(), removed = new Set<string>()
     for (const row of messages) if (typeof row.id === 'string') { if (frames.has(row.id)) fail('HOST_STOP_READBACK_INVALID'); frames.set(row.id, row) }
     for (const entry of owned) {
-      const input = rows.findIndex(row => row.id === entry.input.id), answer = rows.findIndex(row => row.id === entry.completionID), aborted = rows.findIndex(row => row.id === entry.retired!.assistantID)
-      if (input !== answer + 1 || answer < 0 || aborted !== input + 1 || signature(rows[input]) !== entry.retired!.inputHash || signature(rows[aborted]) !== entry.retired!.assistantHash) fail('HOST_STOP_INTERRUPTION_HISTORY_CHANGED')
-      const marker = frames.get(entry.input.id), assistant = frames.get(entry.retired!.assistantID)
+      const input = rows.findIndex(row => row.id === entry.input.id), answer = rows.findIndex(row => row.id === entry.completionID), aborted = entry.retired ? rows.findIndex(row => row.id === entry.retired!.assistantID) : -1
+      if (entry.retired) {
+        if (input !== answer + 1 || answer < 0 || aborted !== input + 1 || signature(rows[input]) !== entry.retired.inputHash || signature(rows[aborted]) !== entry.retired.assistantHash) fail('HOST_STOP_INTERRUPTION_HISTORY_CHANGED')
+      } else if (answer < 0 || input <= answer || rows[input - 1]?.id !== entry.suppressed!.previousID || signature(rows[input]) !== entry.suppressed!.inputHash) fail('HOST_STOP_INTERRUPTION_HISTORY_CHANGED')
+      const marker = frames.get(entry.input.id), assistant = entry.retired ? frames.get(entry.retired.assistantID) : undefined
       const content = marker && typeof marker.content === 'string' ? [{ type: 'text', text: marker.content }] : marker?.content
       if (marker && (marker.role !== 'user' || !Array.isArray(content) || content.length !== 1 || !record(content[0]) || content[0].type !== 'text' || content[0].text !== entry.input.text) || assistant && (assistant.role !== 'assistant' || !(assistant.content === '' || Array.isArray(assistant.content) && !assistant.content.length))) fail('HOST_STOP_INTERRUPTION_HISTORY_CHANGED')
-      removed.add(entry.input.id); removed.add(entry.retired!.assistantID)
+      removed.add(entry.input.id)
+      if (entry.retired) removed.add(entry.retired.assistantID)
     }
     this.guard(session, false)
     return messages.filter(row => typeof row.id !== 'string' || !removed.has(row.id))
