@@ -30,6 +30,8 @@ The internal projector can also retain explicitly owned continuation IDs under t
 
 Prompt failure diagnostics identify host, phase, session/message IDs, stable code, outcome and duration. They exclude prompt text, context, request bodies, correlation tokens and exception text. `RuntimeServices.promptDiagnostic` can observe them, and diagnostic observer failures are counted without changing the original decision. `createRuntime().inspect()` and the V1 helper's `inspect()` expose metadata-only counts.
 
+`PromptContexts.reserveContinuation()` reserves a marker, its exact projection and their shared retention budget before a host mutation. The pending slot cannot own a message or enter a request layout. Its synchronous `admit()` publishes the reserved slot after readback validation; `release()` frees an unadmitted slot and is idempotent. Cancellation releases pending slots without erasing admitted historical continuations. Creating or admitting retained input invalidates earlier request tickets and cancels their active body reads, so an older request cannot escape under an outdated layout. These primitives reserve model transport; complete transactional host and transcript admission remain separate requirements.
+
 ## Reproduction and remaining gates
 
 Run the actual default package against each installed pin, using independent synthetic native sources and a loopback provider:

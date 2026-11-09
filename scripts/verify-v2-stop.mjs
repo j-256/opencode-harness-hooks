@@ -115,6 +115,7 @@ async function verify(binary) {
     const options={sources:[{id:'native',dialect,path:sourcePath}],reviewedDigests:{native:createHash('sha256').update(native).digest('hex')},permissionMode:'default'}
     await writeFile(join(plugin, 'package.json'), JSON.stringify({ name: 'harness-v2-fixture', type: 'module', exports: { '.': './index.js' } }))
     await writeFile(join(plugin, 'index.js'), `import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 import { appendFile, readFile } from 'node:fs/promises'
 import { ClaudeTranscript, createRuntime } from ${JSON.stringify(CORE)}
 import { PromptContexts, PROMPT_REQUEST_HEADER } from ${JSON.stringify(TRANSPORT)}
@@ -133,15 +134,23 @@ export default {
       transcripts, report: () => {}, dispatchDiagnostic: () => {},
       host: { environment: { PATH: process.env.PATH, HOME: process.env.HOME, SHELL: '/bin/sh' } },
       stop: { diagnostic: () => {}, admit: async delivery => {
-        let stage = 'records'; try { const projection = transcripts.admitStop(delivery)
+        let stage = 'records', reservation; try { const projection = transcripts.admitStop(delivery)
         if (delivery.effects.stop || !delivery.effects.continuations.length) return
+        const id = 'msg_' + randomUUID()
         const text = 'V2_OWNED_TRANSPORT_MARKER'
-        const metadata = { source: 'opencode-harness-hooks', completionID: delivery.event.completionID, token: 'controlled-fixture' }
-        stage = 'synthetic'; const admitted = await ctx.session.synthetic({ sessionID: delivery.event.sessionID, text, description: 'Hook continuation', metadata, resume: false }, { signal: delivery.signal })
+        const description = 'Hook continuation'
+        const metadata = { source: 'opencode-harness-hooks', completionID: delivery.event.completionID, token: randomUUID() }
+        stage = 'reservation'; reservation = contexts.reserveContinuation(delivery.session, id, [text], projection)
+        assert.equal(contexts.ownsCurrentMessage(delivery.session, id), false)
+        assert.throws(() => contexts.issue(delivery.session), { code: 'HOST_PROMPT_ADMISSION_PENDING' })
+        await log({ phase: 'reserved', id })
+        stage = 'synthetic'; const admitted = await ctx.session.synthetic({ id, sessionID: delivery.event.sessionID, text, description, metadata, delivery: 'steer', resume: false }, { signal: delivery.signal })
+        assert.equal(admitted.id, id); assert.equal(admitted.sessionID, delivery.event.sessionID); assert.equal(admitted.type, 'synthetic'); assert.equal(admitted.delivery, 'steer')
+        assert.deepEqual(admitted.payload, { text, description, metadata }); assert.ok(Number.isFinite(admitted.time.created))
         stage = 'readback'; const readback = await ctx.session.context({ sessionID: delivery.event.sessionID }, { signal: delivery.signal })
         await log({ phase: 'queued', id: admitted.id, readbackVisible: readback.some(row => row.id === admitted.id), returnedKeys: Object.keys(admitted) })
-        pending = { delivery, id: admitted.id, text, metadata, projection }
-         } catch (error) { await log({phase:'admission-failure',stage,code:error.code,name:error.name}); throw error }
+        pending = { delivery, id, text, metadata, reservation }
+         } catch (error) { reservation?.release(); await log({phase:'admission-failure',stage,code:error.code,name:error.name}); throw error }
       } },
     })
     const sessions = runtime.sessions
@@ -152,12 +161,13 @@ export default {
     })
     await ctx.session.hook('context', async event => {
       if (pending) {
-        const { delivery, id, text, metadata, projection } = pending
+        const { delivery, id, text, metadata, reservation } = pending
         const readback = await ctx.session.context({ sessionID: event.sessionID }, { signal: delivery.signal })
         const row = readback.find(row => row.id === id)
         assert.equal(row.type, 'synthetic'); assert.equal(row.text, text); assert.deepEqual(row.metadata, metadata)
         transcripts.admitContinuation(delivery, row)
-        contexts.rememberContinuation(delivery.session, id, [text], projection)
+        reservation.admit()
+        assert.equal(contexts.ownsCurrentMessage(delivery.session, id), true)
         await log({ phase: 'admitted', id, readbackVisible: true })
         pending = undefined
       }
@@ -226,8 +236,8 @@ export default {
     check(hooks.length===2 && hooks[0].stop_hook_active===false && hooks[1].stop_hook_active===true && hooks[0].prompt_id===hooks[1].prompt_id,'HOST_OWNED_STOP_PAYLOAD_FAILED')
     check((await readFile(sourcePath)).equals(sourceSnapshot) && (await readFile(hookScript)).equals(scriptSnapshot),'FIXTURE_SOURCE_CHANGED')
     check(hooks[0].last_assistant_message==='V2_FIRST_ANSWER' && hooks[1].last_assistant_message==='V2_SECOND_ANSWER','HOST_OWNED_STOP_ASSISTANT_FAILED')
-    const queued=events.find(row=>row.phase==='queued'), admitted=events.find(row=>row.phase==='admitted')
-    check(queued && !queued.readbackVisible && admitted?.readbackVisible && queued.id===admitted.id && admitted.at>=queued.at,'HOST_OWNED_STOP_READBACK_FAILED')
+    const reserved=events.find(row=>row.phase==='reserved'), queued=events.find(row=>row.phase==='queued'), admitted=events.find(row=>row.phase==='admitted')
+    check(reserved && queued && !queued.readbackVisible && admitted?.readbackVisible && reserved.id===queued.id && queued.id===admitted.id && queued.at>=reserved.at && admitted.at>=queued.at,'HOST_OWNED_STOP_READBACK_FAILED')
     const second=snapshots[1].rows
     check(second.filter(row=>row.type==='user' && !row.isMeta).length===1 && second.filter(row=>row.subtype==='stop_hook_summary').length===1 && !JSON.stringify(second).includes('V2_OWNED_TRANSPORT_MARKER'),'HOST_OWNED_STOP_HISTORY_FAILED')
     const delivered = primary[1].messages.filter(row => row.role==='user' && Array.isArray(row.content) && row.content.some(part=>part.text?.startsWith('Stop hook feedback:')))
@@ -241,7 +251,7 @@ export default {
     check(JSON.stringify(owned)===JSON.stringify(expected),'HOST_OWNED_STOP_MODEL_FAILED')
     check(primary.every(row=>!row.privateHeaderPresent) && !JSON.stringify(primary).includes('V2_OWNED_TRANSPORT_MARKER'),'HOST_OWNED_STOP_TRANSPORT_FAILED')
     check(events.filter(row=>row.phase==='prompt-observed').length===1,'HOST_OWNED_STOP_PROMPT_REPLAYED')
-    return {ownedStopHistory:true,ownedStopModelInput:true,originalTurnRetained:true,stopActiveTransition:true,unchangedCommandExecutedTwice:true,queuedReadbackPhaseVerified:true,foregroundFixture:true,mechanismOnly:true,defaultRootStop:false,equivalent:false}
+    return {ownedStopHistory:true,ownedStopModelInput:true,reservedModelInput:true,explicitInputIdentity:true,originalTurnRetained:true,stopActiveTransition:true,unchangedCommandExecutedTwice:true,queuedReadbackPhaseVerified:true,foregroundFixture:true,mechanismOnly:true,defaultRootStop:false,equivalent:false}
   } finally {
     await stop(host, hostDone)
     if (gateway?.listening) { gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)) }

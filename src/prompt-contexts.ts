@@ -15,9 +15,10 @@ const READ_MS = 5000
 type Context = AttributedAction<Extract<HookAction, { kind: 'context' }>>
 export type PromptProtocol = 'openai' | 'anthropic'
 export interface PromptLayout { readonly id: string; readonly text: readonly string[] }
+export interface PromptContinuationReservation { readonly admit: () => void; readonly release: () => void }
 interface Entry { readonly kind: 'prompt' | 'continuation'; readonly turnID: string; readonly turnSignal: AbortSignal; readonly text: readonly string[]; readonly contexts: readonly Context[]; readonly projection?: readonly string[]; readonly bytes: number }
 interface Layout { readonly turnID: string; readonly turnSignal: AbortSignal; readonly rows: readonly PromptLayout[] }
-interface State { readonly signal: AbortSignal; readonly entries: Map<string, Entry>; readonly cleanup: () => void; layout?: Layout }
+interface State { readonly signal: AbortSignal; readonly entries: Map<string, Entry>; readonly reservations: Map<string, Entry>; readonly cleanup: () => void; requests: AbortController; layout?: Layout }
 interface Ticket { readonly sessionID: string; readonly turnID: string; readonly sessionSignal: AbortSignal; readonly turnSignal: AbortSignal; readonly signal: AbortSignal; readonly protocol: PromptProtocol; readonly entries: readonly Entry[]; readonly hashes: Map<string, string> }
 function fail(code: string): never { throw new HostHookError(code, 'unsupported') }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
@@ -68,6 +69,36 @@ export class PromptContexts {
     this.retain(session, messageID, text, [], 'continuation', projection)
   }
 
+  reserveContinuation(session: SessionSnapshot, messageID: string, text: readonly string[], projection: readonly string[]): PromptContinuationReservation {
+    session = { ...session }
+    const { state, entry } = this.retain(session, messageID, text, [], 'continuation', projection, true)
+    const signal = AbortSignal.any([session.signal, session.turnSignal, this.lifetime.signal])
+    let phase: 'pending' | 'admitted' | 'released' = 'pending'
+    const release = () => {
+      if (phase !== 'pending') return
+      phase = 'released'
+      signal.removeEventListener('abort', release)
+      if (this.sessions.get(session.sessionID) !== state || state.reservations.get(messageID) !== entry) return
+      state.reservations.delete(messageID)
+      this.continuations--
+      this.bytes -= entry.bytes
+      if (!state.reservations.size && !state.entries.size) state.cleanup()
+    }
+    signal.addEventListener('abort', release, { once: true })
+    return Object.freeze({
+      admit: () => {
+        if (signal.aborted) fail('HOST_PROMPT_CANCELLED')
+        if (phase !== 'pending' || this.sessions.get(session.sessionID) !== state || state.reservations.get(messageID) !== entry) fail('HOST_PROMPT_RESERVATION_UNAVAILABLE')
+        state.reservations.delete(messageID)
+        state.entries.set(messageID, entry)
+        phase = 'admitted'
+        signal.removeEventListener('abort', release)
+        this.invalidate(state)
+      },
+      release,
+    })
+  }
+
   ownsCurrentMessage(session: SessionSnapshot, messageID: string): boolean {
     if (this.lifetime.signal.aborted || session.signal.aborted || session.turnSignal.aborted || !session.turnID) return false
     const state = this.sessions.get(session.sessionID)
@@ -77,43 +108,65 @@ export class PromptContexts {
     return entry?.kind === 'continuation' && entry.turnID === session.turnID && entry.turnSignal === session.turnSignal
   }
 
-  private retain(session: SessionSnapshot, messageID: string | undefined, text: readonly string[], contexts: readonly Context[], kind: Entry['kind'], projection?: readonly string[]): void {
+  private retain(session: SessionSnapshot, messageID: string | undefined, text: readonly string[], contexts: readonly Context[], kind: Entry['kind'], projection?: readonly string[], reserved = false): { readonly state: State; readonly entry: Entry } {
     if (this.lifetime.signal.aborted || session.signal.aborted || session.turnSignal.aborted) fail('HOST_PROMPT_CANCELLED')
-    if (!session.turnID || typeof messageID !== 'string' || !messageID || messageID.includes('\0') || Buffer.byteLength(messageID) > MAX_ID_BYTES || !text.length || text.some(value => typeof value !== 'string')) fail('HOST_PROMPT_INPUT_UNAVAILABLE')
+    if (!session.turnID || typeof messageID !== 'string' || !messageID || messageID.includes('\0') || Buffer.byteLength(messageID) > MAX_ID_BYTES || !Array.isArray(text) || !text.length || [...text].some(value => typeof value !== 'string')) fail('HOST_PROMPT_INPUT_UNAVAILABLE')
     if (kind === 'continuation' && messageID === session.turnID) fail('HOST_PROMPT_ID_REUSED')
     if (projection !== undefined && (!Array.isArray(projection) || !projection.length || [...projection].some(value => typeof value !== 'string'))) fail('HOST_PROMPT_INPUT_UNAVAILABLE')
     if (contexts.some(row => row.action.placement !== 'model' || row.dialect === 'claude-code' && !['stdout', 'additionalContext'].includes(row.action.channel ?? ''))) fail('HOST_PROMPT_CONTEXT_UNAVAILABLE')
     let state = this.sessions.get(session.sessionID)
     if (state && state.signal !== session.signal) fail('HOST_PROMPT_SESSION_MISMATCH')
-    if (state?.entries.has(messageID)) fail('HOST_PROMPT_ID_REUSED')
     const bytes = Buffer.byteLength(JSON.stringify([kind, messageID, session.turnID, text, contexts, projection]))
-    if (this.prompts + this.continuations >= MAX_ENTRIES || this.bytes + bytes > MAX_BYTES) fail('HOST_PROMPT_CONTEXT_LIMIT')
+    this.capacity(state, messageID, bytes)
     const entry = { kind, turnID: session.turnID, turnSignal: session.turnSignal, text: Object.freeze([...text]), contexts: Object.freeze(structuredClone(contexts)), ...(projection ? { projection: Object.freeze([...projection]) } : {}), bytes }
     if (!state) {
       const cleanup = () => {
         const previous = this.sessions.get(session.sessionID)
         if (!previous) return
-        for (const entry of previous.entries.values()) {
+        for (const entry of [...previous.entries.values(), ...previous.reservations.values()]) {
           this.bytes -= entry.bytes
           if (entry.kind === 'prompt') this.prompts--
           else this.continuations--
         }
         this.sessions.delete(session.sessionID)
+        previous.entries.clear()
+        previous.reservations.clear()
+        previous.requests.abort()
         session.signal.removeEventListener('abort', cleanup)
       }
-      state = { signal: session.signal, entries: new Map(), cleanup }
+      state = { signal: session.signal, entries: new Map(), reservations: new Map(), cleanup, requests: new AbortController() }
       this.sessions.set(session.sessionID, state)
       session.signal.addEventListener('abort', cleanup, { once: true })
     }
-    state.entries.set(messageID, entry)
-    delete state.layout
+    this.invalidate(state)
+    if (this.lifetime.signal.aborted || session.signal.aborted || session.turnSignal.aborted || this.sessions.get(session.sessionID) !== state) {
+      if (this.sessions.get(session.sessionID) === state && !state.entries.size && !state.reservations.size) state.cleanup()
+      fail('HOST_PROMPT_CANCELLED')
+    }
+    this.capacity(state, messageID, bytes)
+    const entries = reserved ? state.reservations : state.entries
+    entries.set(messageID, entry)
     if (kind === 'prompt') this.prompts++
     else this.continuations++
     this.bytes += bytes
+    return { state, entry }
+  }
+
+  private invalidate(state: State): void {
+    delete state.layout
+    const previous = state.requests
+    state.requests = new AbortController()
+    previous.abort()
+  }
+
+  private capacity(state: State | undefined, messageID: string, bytes: number): void {
+    if (state?.entries.has(messageID) || state?.reservations.has(messageID)) fail('HOST_PROMPT_ID_REUSED')
+    if (this.prompts + this.continuations >= MAX_ENTRIES || this.bytes + bytes > MAX_BYTES) fail('HOST_PROMPT_CONTEXT_LIMIT')
   }
 
   layout(session: SessionSnapshot, input: readonly PromptLayout[]): void {
     const state = this.sessions.get(session.sessionID)
+    if (state?.reservations.size) fail('HOST_PROMPT_ADMISSION_PENDING')
     if (!state || !session.turnID || !this.ownsCurrentMessage(session, input.at(-1)?.id ?? '') || input.length !== state.entries.size) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
     const seen = new Set<string>()
     for (const row of input) {
@@ -126,12 +179,13 @@ export class PromptContexts {
 
   issue(session: SessionSnapshot, protocol: PromptProtocol = 'openai'): string | undefined {
     const state = this.sessions.get(session.sessionID)
+    if (state?.reservations.size) fail('HOST_PROMPT_ADMISSION_PENDING')
     if (!state || state.signal !== session.signal || !state.layout || !session.turnID || state.layout.turnID !== session.turnID || state.layout.turnSignal !== session.turnSignal || session.signal.aborted || session.turnSignal.aborted || this.lifetime.signal.aborted) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
     const entries = state.layout.rows.map(row => state.entries.get(row.id)!)
     if (!entries.some(entry => entry.contexts.length || entry.projection)) return undefined
     if (this.tickets.size >= MAX_TICKETS) fail('HOST_PROMPT_REQUEST_LIMIT')
     const id = randomUUID()
-    const signal = AbortSignal.any([session.signal, session.turnSignal, this.lifetime.signal])
+    const signal = AbortSignal.any([session.signal, session.turnSignal, this.lifetime.signal, state.requests.signal])
     this.tickets.set(id, { sessionID: session.sessionID, turnID: session.turnID, sessionSignal: session.signal, turnSignal: session.turnSignal, signal, protocol, entries, hashes: new Map() })
     signal.addEventListener('abort', () => { this.tickets.delete(id) }, { once: true })
     return id
