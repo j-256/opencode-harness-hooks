@@ -17,7 +17,7 @@ import { ModelContext } from './model-context.js'
 import type { HostModelEvent } from './model-types.js'
 import type { StopDelivery, StopEvent } from './stop.js'
 import { StopRecords } from './stop-records.js'
-import type { StopModelBlocks } from './stop-records.js'
+import type { StopModelBlocks, StopContinuationOptions } from './stop-records.js'
 
 const HISTORY_MS = 5000
 const MAX_MESSAGES = 10000
@@ -42,12 +42,12 @@ export interface TranscriptService {
   admitStop?(delivery: StopDelivery): readonly string[]
   stopModelInput?(delivery: StopDelivery): StopModelBlocks
   admitContinuation?(delivery: StopDelivery, readback: unknown): void
-  reserveContinuation?(delivery: StopDelivery, input: unknown): TranscriptContinuationReservation
+  reserveContinuation?(delivery: StopDelivery, input: unknown, options?: StopContinuationOptions): TranscriptContinuationReservation
   observe(event: HostToolEvent, session: SessionSnapshot): void
   prepare(event: TranscriptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<string>
   dispose(): Promise<void>
 }
-export interface TranscriptContinuationReservation { readonly admit: (readback: unknown) => void; readonly release: () => void }
+export interface TranscriptContinuationReservation { readonly admit: (readback: unknown) => void; readonly suppress?: (readback: unknown, previousID: string) => void; readonly release: () => void }
 interface Options {
   readonly host: HostVersion
   readonly directory: string
@@ -100,7 +100,9 @@ function messages(host: HostVersion, sessionID: string, input: readonly unknown[
   if (input.length > MAX_MESSAGES) fail('TRANSCRIPT_MESSAGE_LIMIT')
   let turnID: string | undefined
   let previousID: string | undefined
+  let previousRawID: string | undefined
   const seen = new Set<string>()
+  const completions = new Set<string>()
   return input.flatMap(raw => {
     const row = object(raw)
     const info = host === 'v1' ? object(row.info) : row
@@ -111,7 +113,11 @@ function messages(host: HostVersion, sessionID: string, input: readonly unknown[
     const id = string(info.id)
     if (!id || seen.has(id)) fail('TRANSCRIPT_MESSAGE_ID_INVALID')
     seen.add(id)
+    const preceding = previousRawID
+    previousRawID = id
+    if (role === 'synthetic' && stops.suppresses(sessionID, row, completions, preceding)) return []
     if (role === 'synthetic') stops.validateContinuation(sessionID, row, previousID, turnID)
+    if (role === 'assistant') completions.add(id)
     if (role === 'user') turnID = id
     if (!turnID || host === 'v1' && role === 'assistant' && info.parentID !== turnID) fail('TRANSCRIPT_TURN_UNAVAILABLE')
     const created = millis(object(info.time).created)
@@ -187,10 +193,10 @@ export class ClaudeTranscript implements TranscriptService {
     this.stops.admitContinuation(delivery, snapshot(readback) as JsonValue)
   }
 
-  reserveContinuation(delivery: StopDelivery, input: unknown): TranscriptContinuationReservation {
+  reserveContinuation(delivery: StopDelivery, input: unknown, options?: StopContinuationOptions): TranscriptContinuationReservation {
     this.stopHost(delivery)
-    const reservation = this.stops.reserveContinuation(delivery, snapshot(input) as JsonValue)
-    return Object.freeze({ admit: (readback: unknown) => reservation.admit(snapshot(readback) as JsonValue), release: reservation.release })
+    const reservation = this.stops.reserveContinuation(delivery, snapshot(input) as JsonValue, options)
+    return Object.freeze({ admit: (readback: unknown) => reservation.admit(snapshot(readback) as JsonValue), ...(reservation.suppress ? { suppress: (readback: unknown, previousID: string) => reservation.suppress!(snapshot(readback) as JsonValue, previousID) } : {}), release: reservation.release })
   }
 
   private stopHost(delivery: StopDelivery): void {
@@ -237,7 +243,8 @@ export class ClaudeTranscript implements TranscriptService {
       if (!session.turnID) fail('TRANSCRIPT_TURN_UNAVAILABLE')
       if (event.event === 'UserPromptSubmit') this.prompts.begin(session)
       const entries = messages(this.options.host, event.sessionID, array(history.messages), this.stops)
-      const rows = this.project(event, entries, history.parentID !== undefined)
+      const rawContinuations = new Set(history.messages.flatMap(row => record(row) && row.type === 'synthetic' && typeof row.id === 'string' ? [row.id] : []))
+      const rows = this.project(event, entries, history.parentID !== undefined, rawContinuations)
       const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
       if (Buffer.byteLength(text) > MAX_BYTES) fail('TRANSCRIPT_SIZE_LIMIT')
       if (signal.aborted) fail('TRANSCRIPT_CANCELLED')
@@ -289,7 +296,7 @@ export class ClaudeTranscript implements TranscriptService {
 
   inspect() { return Object.freeze({ created: this.directoryPath !== undefined, disposed: this.lifetime.signal.aborted, originals: this.originals.size, originalBytes: this.originalBytes, pending: this.pendingCount, ...this.prompts.inspect(), ...this.stops.inspect(), ...this.models.inspect() }) }
 
-  private project(event: TranscriptEvent, history: readonly Message[], sidechain: boolean): readonly Record<string, JsonValue>[] {
+  private project(event: TranscriptEvent, history: readonly Message[], sidechain: boolean, rawContinuations: ReadonlySet<string>): readonly Record<string, JsonValue>[] {
     const rows: Record<string, JsonValue>[] = []
     let parent: string | null = null
     let current = false
@@ -299,7 +306,7 @@ export class ClaudeTranscript implements TranscriptService {
       if (!last || last.role !== 'assistant' || last.id !== event.completionID || last.turnID !== event.messageID || currentTurnID !== event.messageID || !last.finish || last.finish === 'tool-calls' || !Object.hasOwn(FINISH, last.finish)) fail('TRANSCRIPT_STOP_COMPLETION_UNAVAILABLE')
     }
     const modeled = new Set(history.filter(message => message.role === 'assistant').map(message => message.turnID))
-    this.stops.validateHistory(event.sessionID, new Set(history.filter(message => message.role === 'assistant').map(message => message.id)), new Set(history.filter(message => message.role === 'synthetic').map(message => message.id)))
+    this.stops.validateHistory(event.sessionID, new Set(history.filter(message => message.role === 'assistant').map(message => message.id)), rawContinuations)
     if (event.event === 'UserPromptSubmit' && history.some(message => message.id === event.messageID)) fail('TRANSCRIPT_PROMPT_ALREADY_ADMITTED')
     const append = (identity: string, created: number, body: Record<string, JsonValue>) => {
       const id = uuid(JSON.stringify([event.sessionID, identity]))

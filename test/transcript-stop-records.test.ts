@@ -75,6 +75,79 @@ test('typed Stop model groups require admitted live ownership and preserve suppr
   assert.throws(() => f.transcripts.stopModelInput(f.delivery), { code: 'TRANSCRIPT_CANCELLED' })
 })
 
+test('session-owned reconciliation suppresses only exact late cancelled input without changing real-turn history', async t => {
+  const f = await fixture(t, oracle.cases[0], true)
+  const row = synthetic()
+  const lease = f.transcripts.reserveContinuation(f.delivery, { id: row.id, text: row.text, metadata: row.metadata, description: row.description }, { reconcileCancellation: true })
+  assert.throws(() => lease.suppress!(row, 'next'), { code: 'TRANSCRIPT_STOP_RECONCILIATION_UNAVAILABLE' })
+  f.runtime.sessions.prompt('session', 'next', 'fixture')
+  const next = f.runtime.sessions.get('session')
+  f.runtime.observeModel({ host: 'v2', sessionID: 'session', messageID: 'next', signal: next.turnSignal })
+  for (const changed of [{ ...row, metadata: { ...row.metadata, token: 'foreign' } }, { ...row, id: 'foreign' }, { ...row, unknown: true }]) assert.throws(() => lease.suppress!(changed, 'next'), { code: 'TRANSCRIPT_STOP_CONTINUATION_CHANGED' })
+  for (const previousID of ['', row.id, 'bad\0id', 'x'.repeat(4097)]) assert.throws(() => lease.suppress!(row, previousID), { code: 'TRANSCRIPT_STOP_CONTINUATION_POSITION' })
+  lease.suppress!(row, 'next')
+  lease.release()
+  assert.throws(() => lease.suppress!(row, 'next'), { code: 'TRANSCRIPT_STOP_RESERVATION_UNAVAILABLE' })
+  f.records.push({ type: 'user', id: 'next', text: 'Next', time: { created: CREATED + 2 } }, row, secondAnswer())
+  const event = { ...f.event, messageID: 'next', completionID: 'answer-2' }
+  const path = await f.transcripts.prepare(event, next, next.turnSignal)
+  const projected = parse(await readFile(path, 'utf8'))
+  assert.ok(!JSON.stringify(projected).includes(row.text))
+  assert.equal(projected.filter(value => value.type === 'user' && !value.isMeta).length, 2)
+  assert.equal(projected.filter(value => value.subtype === 'stop_hook_summary').length, 1)
+  assert.equal(projected.at(-1).message.content[0].text, 'Second answer')
+  assert.equal(projected.at(-1).parentUuid, projected.find(value => value.type === 'user' && value.message.content === 'Next').uuid)
+  f.runtime.sessions.close('session')
+  assert.equal(f.transcripts.inspect().stopBytes, 0)
+})
+
+test('reconciled cancellation ownership rejects changed, reordered and pruned raw history', async t => {
+  for (const change of ['changed', 'moved', 'position', 'pruned', 'duplicate']) {
+    const f = await fixture(t, oracle.cases[0], true), row = synthetic()
+    const lease = f.transcripts.reserveContinuation(f.delivery, { id: row.id, text: row.text, metadata: row.metadata, description: row.description }, { reconcileCancellation: true })
+    f.runtime.sessions.prompt('session', 'next', 'fixture')
+    const next = f.runtime.sessions.get('session')
+    f.runtime.observeModel({ host: 'v2', sessionID: 'session', messageID: 'next', signal: next.turnSignal })
+    lease.suppress!(row, 'next')
+    f.records.push({ type: 'user', id: 'next', text: 'Next', time: { created: CREATED + 2 } }, row, secondAnswer())
+    if (change === 'changed') row.metadata.token = 'foreign'
+    else if (change === 'moved') f.records.unshift(f.records.splice(3, 1)[0]!)
+    else if (change === 'position') f.records.splice(2, 0, f.records.splice(3, 1)[0]!)
+    else if (change === 'pruned') f.records.splice(3, 1)
+    else f.records.push(structuredClone(row))
+    const event = { ...f.event, messageID: 'next', completionID: 'answer-2' }
+    const previous = await readFile(f.transcriptPath)
+    await assert.rejects(f.transcripts.prepare(event, next, next.turnSignal), { code: change === 'changed' ? 'TRANSCRIPT_STOP_CONTINUATION_CHANGED' : ['moved', 'position'].includes(change) ? 'TRANSCRIPT_STOP_CONTINUATION_POSITION' : change === 'duplicate' ? 'TRANSCRIPT_MESSAGE_ID_INVALID' : 'TRANSCRIPT_STOP_HISTORY_UNAVAILABLE' })
+    assert.deepEqual(await readFile(f.transcriptPath), previous)
+  }
+})
+
+test('reconciliation reserves the serialized anchor before accepting native input', async t => {
+  const f = await fixture(t, oracle.cases[0], true), row = synthetic(), previousID = '\u0001'.repeat(4096)
+  const lease = f.transcripts.reserveContinuation(f.delivery, { id: row.id, text: row.text, metadata: row.metadata, description: row.description }, { reconcileCancellation: true })
+  f.runtime.sessions.prompt('session', previousID, 'fixture')
+  const next = f.runtime.sessions.get('session')
+  f.runtime.observeModel({ host: 'v2', sessionID: 'session', messageID: previousID, signal: next.turnSignal })
+  lease.suppress!(row, previousID)
+  f.records.push({ type: 'user', id: previousID, text: 'Next', time: { created: CREATED + 2 } }, row, secondAnswer())
+  const path = await f.transcripts.prepare({ ...f.event, messageID: previousID, completionID: 'answer-2' }, next, next.turnSignal)
+  assert.ok(!await readFile(path, 'utf8').then(text => text.includes(row.text)))
+})
+
+test('reconciliation leases still admit active continuations and cannot later erase committed delivery', async t => {
+  const f = await fixture(t, oracle.cases[0], true), row = synthetic()
+  const lease = f.transcripts.reserveContinuation(f.delivery, { id: row.id, text: row.text, metadata: row.metadata, description: row.description }, { reconcileCancellation: true })
+  lease.admit(row)
+  lease.release()
+  f.records.push(row, secondAnswer())
+  const path = await f.transcripts.prepare({ ...f.event, completionID: 'answer-2' }, f.session, f.session.turnSignal)
+  const projected = parse(await readFile(path, 'utf8'))
+  assert.equal(projected.filter(value => value.type === 'user' && !value.isMeta).length, 1)
+  assert.ok(!JSON.stringify(projected).includes(row.text))
+  f.runtime.sessions.prompt('session', 'next')
+  assert.throws(() => lease.suppress!(row, 'next'), { code: 'TRANSCRIPT_STOP_RESERVATION_UNAVAILABLE' })
+})
+
 for (const scenario of oracle.cases) test(`Claude Stop transcript retains native ${scenario.name} records`, async t => {
   const f = await fixture(t, scenario, true)
   assert.equal(f.receipt.control, scenario.preventedContinuation ? 'stop' : 'continue')
