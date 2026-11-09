@@ -37,6 +37,7 @@ test('package probe help and invalid host/options require no executable and pres
     assert.match(result.stdout, /--dialect/)
     assert.match(result.stdout, /mixed/)
     assert.match(result.stdout, /--preapproval/)
+    assert.match(result.stdout, /--prompts/)
     assert.equal(result.stderr, '')
   }
   for (const args of [[], ['--host'], ['--host', 'v3'], ['--host', 'constructor'], ['--unknown'], ['--host=v1', '--binary='], ['--host=v1', '--dialect=other'], ['--host=v1', '--preapproval'], ['--host=v2', '--dialect=codex', '--preapproval'], ['--', 'v1']]) {

@@ -7,6 +7,8 @@ import { nativeSkip } from './handlers.js'
 import type { HostServices } from './host-services.js'
 import { HostHookError } from './hosts/tools.js'
 import type { HostToolEvent, ToolHostOptions } from './hosts/tools.js'
+import type { HostPromptEvent, PromptDiagnostic } from './prompt-types.js'
+import type { EffectResolution } from './effects.js'
 import { selectRegistrations } from './matchers.js'
 import { buildPayload, PayloadError } from './payload.js'
 import { inspectSources } from './inspection.js'
@@ -20,12 +22,16 @@ import type { JsonValue, LoadedSource, NativeEvent, Registration } from './types
 export type { RuntimeOptions, RuntimeReport } from './inspection.js'
 
 const MAX_RESULT_BYTES = 8 * 1024 * 1024
+const MAX_PROMPT_BYTES = 8 * 1024 * 1024
 type NativeData = NonNullable<NativeEvent['dialectData']>
 
 export interface RuntimeServices {
   readonly host?: Omit<HostServices, 'projectRoot' | 'signal' | 'sessionSignal'>
   readonly tools?: Omit<ToolHostOptions, 'dispatch'>
   readonly nativeData?: (event: HostToolEvent, session: SessionSnapshot, signal: AbortSignal) => Promise<NativeData>
+  readonly promptData?: (event: HostPromptEvent, session: SessionSnapshot, signal: AbortSignal) => Promise<NativeData>
+  readonly promptEffects?: (event: HostPromptEvent, effects: EffectResolution) => Promise<void>
+  readonly promptDiagnostic?: (diagnostic: PromptDiagnostic) => Promise<void> | void
   readonly report?: (report: RuntimeReport) => Promise<void> | void
   readonly dispatchDiagnostic?: (diagnostic: DispatchResult['diagnostic']) => Promise<void> | void
   readonly transcripts?: TranscriptService
@@ -72,6 +78,27 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
   const environment = { ...(services.host?.environment ?? process.env) }
   let observerFailures = 0
   const diagnostic = services.dispatchDiagnostic ?? ((value: DispatchResult['diagnostic']) => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', code: 'DISPATCH_RESULT', ...value })) })
+  const observe = (dispatch: DispatchResult) => {
+    try {
+      const observed = diagnostic(dispatch.diagnostic)
+      if (observed) void Promise.resolve(observed).catch(() => { observerFailures++ })
+    } catch { observerFailures++ }
+    return dispatch
+  }
+  const reported = new WeakSet<object>()
+  const promptOperation = async <T>(phase: PromptDiagnostic['phase'], identity: { readonly sessionID?: string; readonly messageID?: string }, operation: () => Promise<T>): Promise<T> => {
+    const started = performance.now()
+    try { return await operation() } catch (error) {
+      if (error && typeof error === 'object' && reported.has(error)) throw error
+      if (error && typeof error === 'object') reported.add(error)
+      const value: PromptDiagnostic = Object.freeze({ host, event: 'UserPromptSubmit', phase, ...identity, code: error instanceof HostHookError || error instanceof SessionError ? error.code : 'HOST_PROMPT_FAILED', outcome: error instanceof HostHookError ? error.outcome : error instanceof SessionError && ['SESSION_CLOSED', 'SESSION_DISPOSED', 'SESSION_STALE_TURN'].includes(error.code) ? 'cancelled' : 'failed', durationMs: Math.round(performance.now() - started) })
+      try {
+        const observed = (services.promptDiagnostic ?? (value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', ...value })) }))(value)
+        if (observed) void Promise.resolve(observed).catch(() => { observerFailures++ })
+      } catch { observerFailures++ }
+      throw error
+    }
+  }
   const tools: ToolHostOptions = {
     ...services.tools,
     diagnostic: services.tools?.diagnostic ?? (value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', ...value })) }),
@@ -101,11 +128,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
           try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
         }
         const dispatch = await dispatchEvent(sources, nativeEvent, { ...services.host, environment, projectRoot: directory, signal, sessionSignal: session.signal })
-        try {
-          const observed = diagnostic(dispatch.diagnostic)
-          if (observed) void Promise.resolve(observed).catch(() => { observerFailures++ })
-        } catch { observerFailures++ }
-        return dispatch
+        return observe(dispatch)
       })().catch((error: unknown) => {
         if (signal.aborted) throw new HostHookError('HOST_TOOL_CANCELLED', 'cancelled')
         throw error
@@ -115,5 +138,36 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
       return pending
     },
   }
-  return { report, sessions, tools, inspect: () => Object.freeze({ activeDispatches: active.size, observerFailures, sessions: sessions.inspect() }), async dispose() { sessions.dispose(); await Promise.allSettled([...active]); await services.transcripts?.dispose() } }
+  const prompt = async (inputEvent: HostPromptEvent): Promise<DispatchResult> => {
+    const event = { ...inputEvent }
+    if (event.host !== host || event.event !== 'UserPromptSubmit') return Promise.reject(new HostHookError('HOST_VERSION_MISMATCH', 'unsupported'))
+    const session = sessions.get(event.sessionID)
+    if (session.turnID !== event.messageID) return Promise.reject(new HostHookError('SESSION_STALE_TURN', 'cancelled'))
+    if (typeof event.prompt !== 'string') return Promise.reject(new HostHookError('HOST_PROMPT_INPUT_UNAVAILABLE', 'unsupported'))
+    if (Buffer.byteLength(event.prompt) > MAX_PROMPT_BYTES) return Promise.reject(new HostHookError('HOST_PROMPT_INPUT_LIMIT', 'unsupported'))
+    const signal = AbortSignal.any([event.signal, session.signal, session.turnSignal])
+    const pending = (async () => {
+      if (signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')
+      const base: NativeEvent = { host, event: 'UserPromptSubmit', sessionID: event.sessionID, cwd: directory }
+      const selected = matched(sources, base).filter(registration => !nativeSkip(registration, base))
+      let nativeData = selected.length && services.promptData ? await runService(null, signal, current => services.promptData!(event, session, current)) : undefined
+      if (selected.some(registration => registration.dialect === 'claude-code') && nativeData?.['claude-code']?.transcript_path === undefined && services.transcripts) {
+        const path = await services.transcripts.prepare(event, session, signal)
+        nativeData = { ...nativeData, 'claude-code': { ...nativeData?.['claude-code'], transcript_path: path } }
+      }
+      const data = { prompt: event.prompt, transcript_path: null, turn_id: event.messageID, ...(session.model ? { model: session.model } : {}), ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}) }
+      const nativeEvent: NativeEvent = { ...base, data, ...(nativeData ? { dialectData: nativeData } : {}) }
+      for (const registration of selected) {
+        try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
+      }
+      return observe(await dispatchEvent(sources, nativeEvent, { ...services.host, environment, projectRoot: directory, signal, sessionSignal: session.signal }))
+    })().catch((error: unknown) => {
+      if (signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')
+      throw error
+    })
+    active.add(pending)
+    void pending.finally(() => { active.delete(pending) }).catch(() => {})
+    return pending
+  }
+  return { report, sessions, tools, prompt, promptOperation, hasPromptHooks: sources.some(source => source.registrations.some(registration => registration.event === 'UserPromptSubmit')), inspect: () => Object.freeze({ activeDispatches: active.size, observerFailures, sessions: sessions.inspect() }), async dispose() { sessions.dispose(); await Promise.allSettled([...active]); await services.transcripts?.dispose() } }
 }

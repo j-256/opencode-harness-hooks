@@ -6,6 +6,7 @@ import { CONTRACT_VERSIONS } from './contracts.js'
 import type { HostVersion } from './contracts.js'
 import { HostHookError } from './hosts/tools.js'
 import type { HostToolEvent } from './hosts/tools.js'
+import type { HostPromptEvent } from './prompt-types.js'
 import { HookServiceError, runService } from './service-execution.js'
 import type { SessionSnapshot } from './sessions.js'
 import { nativeToolInput, toolName } from './tool-schema.js'
@@ -29,14 +30,14 @@ export interface TranscriptHistory {
 }
 export interface TranscriptService {
   observe(event: HostToolEvent, session: SessionSnapshot): void
-  prepare(event: HostToolEvent, session: SessionSnapshot, signal: AbortSignal): Promise<string>
+  prepare(event: HostToolEvent | HostPromptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<string>
   dispose(): Promise<void>
 }
 interface Options {
   readonly host: HostVersion
   readonly directory: string
   readonly temporaryParent?: string
-  readonly history: (event: HostToolEvent, signal: AbortSignal) => Promise<TranscriptHistory>
+  readonly history: (event: HostToolEvent | HostPromptEvent, signal: AbortSignal) => Promise<TranscriptHistory>
 }
 interface Tool {
   readonly id: string
@@ -123,6 +124,7 @@ export class ClaudeTranscript implements TranscriptService {
   private readonly options: Options
   private readonly originals = new Map<string, Readonly<Record<string, JsonValue>>>()
   private readonly serial = new Map<string, Promise<unknown>>()
+  private readonly published = new Set<string>()
   private readonly lifetime = new AbortController()
   private directory: Promise<string> | undefined
   private directoryPath: string | undefined
@@ -152,7 +154,7 @@ export class ClaudeTranscript implements TranscriptService {
     this.originals.set(id, input)
   }
 
-  prepare(event: HostToolEvent, session: SessionSnapshot, parent: AbortSignal): Promise<string> {
+  prepare(event: HostToolEvent | HostPromptEvent, session: SessionSnapshot, parent: AbortSignal): Promise<string> {
     if (event.host !== this.options.host) return Promise.reject(new HostHookError('TRANSCRIPT_HOST_MISMATCH', 'unsupported'))
     if (event.sessionID !== session.sessionID) return Promise.reject(new HostHookError('TRANSCRIPT_SESSION_MISMATCH', 'unsupported'))
     if (this.pendingCount >= MAX_PENDING) return Promise.reject(new HostHookError('TRANSCRIPT_PENDING_LIMIT', 'unsupported'))
@@ -173,12 +175,17 @@ export class ClaudeTranscript implements TranscriptService {
       const directory = await this.directory
       this.directoryPath = directory
       const path = join(directory, createHash('sha256').update(event.sessionID).digest('hex') + '.jsonl')
+      if (!rows.length && event.event === 'UserPromptSubmit') {
+        if (this.published.has(event.sessionID)) fail('TRANSCRIPT_HISTORY_RESET_UNVERIFIED')
+        return path
+      }
       const temporary = join(directory, randomUUID() + '.tmp')
       try {
         const file = await open(temporary, 'wx', 0o600)
         try { await file.writeFile(text) } finally { await file.close() }
         if (signal.aborted) fail('TRANSCRIPT_CANCELLED')
         await rename(temporary, path)
+        this.published.add(event.sessionID)
         return path
       } finally { await rm(temporary, { force: true }) }
     }).catch((error: unknown) => {
@@ -199,6 +206,7 @@ export class ClaudeTranscript implements TranscriptService {
       try { if (this.directoryPath) await rm(this.directoryPath, { recursive: true, force: true }) } catch { throw new HostHookError('TRANSCRIPT_DISPOSE_FAILED', 'failed') }
     })().finally(() => {
       this.originals.clear()
+      this.published.clear()
       this.originalBytes = 0
       this.disposing = undefined
     })
@@ -207,11 +215,12 @@ export class ClaudeTranscript implements TranscriptService {
 
   inspect() { return Object.freeze({ created: this.directoryPath !== undefined, disposed: this.lifetime.signal.aborted, originals: this.originals.size, originalBytes: this.originalBytes, pending: this.pendingCount }) }
 
-  private project(event: HostToolEvent, history: readonly Message[], sidechain: boolean): readonly Record<string, JsonValue>[] {
+  private project(event: HostToolEvent | HostPromptEvent, history: readonly Message[], sidechain: boolean): readonly Record<string, JsonValue>[] {
     const rows: Record<string, JsonValue>[] = []
     let parent: string | null = null
     let current = false
     const currentTurnID = history.findLast(message => message.role === 'user')?.turnID
+    if (event.event === 'UserPromptSubmit' && history.some(message => message.id === event.messageID)) fail('TRANSCRIPT_PROMPT_ALREADY_ADMITTED')
     const push = (identity: string, created: number, role: 'user' | 'assistant', message: Record<string, JsonValue>) => {
       const id = uuid(JSON.stringify([event.sessionID, identity]))
       rows.push({ parentUuid: parent, isSidechain: sidechain, type: role, message, uuid: id, timestamp: new Date(created).toISOString(), cwd: this.options.directory, sessionId: event.sessionID, version: CONTRACT_VERSIONS['claude-code'] })
@@ -229,7 +238,7 @@ export class ClaudeTranscript implements TranscriptService {
         if (typeof part === 'string') { content.push({ type: 'text', text: part }); continue }
         const original = this.originals.get(key(event.sessionID, entry.turnID, part.id))
         if (!original) fail('TRANSCRIPT_ORIGINAL_INPUT_UNAVAILABLE')
-        const isCurrent = part.id === event.callID && entry.turnID === currentTurnID
+        const isCurrent = event.event !== 'UserPromptSubmit' && part.id === event.callID && entry.turnID === currentTurnID
         if (isCurrent) current = true
         content.push({ type: 'tool_use', id: part.id, name: toolName(event.host, part.name), input: original })
         if (isCurrent || part.state.status === 'pending' || part.state.status === 'running') continue
@@ -244,7 +253,7 @@ export class ClaudeTranscript implements TranscriptService {
       push(entry.id, entry.created, 'assistant', { id: entry.id, type: 'message', role: 'assistant', content, model: entry.model!, stop_reason: stop, stop_sequence: null })
       for (const result of results) push(`${entry.id}/${result.id}/result`, result.created, 'user', { role: 'user', content: [{ type: 'tool_result', tool_use_id: result.id, content: result.content, ...(result.error ? { is_error: true } : {}) }] })
     }
-    if (!current) fail('TRANSCRIPT_CURRENT_CALL_MISSING')
+    if (!current && event.event !== 'UserPromptSubmit') fail('TRANSCRIPT_CURRENT_CALL_MISSING')
     return rows
   }
 }

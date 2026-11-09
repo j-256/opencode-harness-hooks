@@ -18,7 +18,7 @@ const MAX_BYTES = 2 * 1024 * 1024
 const MAX_REQUESTS = 16
 const CONTROLLED_TOOL_CALLS = 2
 const run = promisify(execFile)
-const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval]
+const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts]
 
 Verify the built package's default entrypoint, native options and tool enforcement
 against a pinned OpenCode host. Requires npm run build, Node.js 22+, Git and the
@@ -31,6 +31,7 @@ Options:
                      then opencode)
       --dialect NAME Native source: codex (default), claude-code, or mixed (both)
       --preapproval  Exercise Claude allow with host permissions set to ask
+      --prompts      Check prompt blocking, context roles and retained history
   -h, --help          Show help without requiring a host or dependencies
 
 Success writes JSON to stdout; failures use stderr without provider traffic.
@@ -63,7 +64,7 @@ async function stop(child, done) {
   await bounded(done, SHUTDOWN_MS, 'HOST_CLEANUP_FAILED')
 }
 
-async function verify(hostVersion, binary, dialect, preapproval) {
+async function verify(hostVersion, binary, dialect, preapproval, prompts) {
   const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
   if (version !== VERSIONS[hostVersion]) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + VERSIONS[hostVersion], 2)
   await dependency('git', ['--version'], 'Git')
@@ -98,6 +99,12 @@ async function verify(hostVersion, binary, dialect, preapproval) {
     await writeFile(script, String.raw`const fs = require('node:fs')
 const input = JSON.parse(fs.readFileSync(0, 'utf8'))
 const codex = typeof input.turn_id === 'string'
+if (input.hook_event_name === 'UserPromptSubmit') {
+  const exists = !codex && fs.existsSync(input.transcript_path)
+  fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, promptTranscriptExists: exists, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
+  console.log(JSON.stringify(input.prompt.includes('Block the controlled prompt') ? { decision: 'block', reason: 'PACKAGE_PROMPT_BLOCKED' } : { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: codex ? 'PACKAGE_CODEX_PROMPT_CONTEXT' : 'PACKAGE_CLAUDE_PROMPT_CONTEXT' } }))
+  return
+}
 let transcriptValidated = false
 if (!codex) {
   const rows = fs.readFileSync(input.transcript_path, 'utf8').trim().split('\n').map(JSON.parse)
@@ -113,7 +120,8 @@ const decision = input.tool_input.command.includes('forbidden')
 console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...decision } }))
 `)
     await run(process.execPath, ['--check', script], { env, timeout: STARTUP_MS, maxBuffer: MAX_BYTES })
-    const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: quote(process.execPath) + ' ' + quote(script) }] }] } })
+    const hook = { type: 'command', command: quote(process.execPath) + ' ' + quote(script) }
+    const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [hook] }], ...(prompts ? { UserPromptSubmit: [{ hooks: [hook] }] } : {}) } })
     await writeFile(sourcePath, source)
     const selectedDialects = dialect === 'mixed' ? ['claude-code', 'codex'] : [dialect]
     const sources = selectedDialects.map(dialect => ({ id: 'fixture-' + dialect, dialect, path: sourcePath }))
@@ -122,6 +130,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     const hostPermission = preapproval ? 'ask' : 'allow'
     const options = { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, digest])), permissionMode }
     const requests = []
+    let correlationLeaked = false
     const tool = hostVersion === 'v1' ? 'bash' : 'shell'
     gateway = createServer(async (request, response) => {
       try {
@@ -137,6 +146,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
         if (primary) {
           if (requests.length >= MAX_REQUESTS) { response.writeHead(429); response.end(); return }
           requests.push(body)
+          correlationLeaked ||= Object.keys(request.headers).some(key => key.startsWith('x-opencode-harness-'))
         }
         const index = requests.length
         const useTool = primary && index <= CONTROLLED_TOOL_CALLS
@@ -179,11 +189,30 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
         return response.json()
       }
       const session = await post('/session', {})
+      if (prompts) {
+        await assert.rejects(post('/session/' + session.id + '/message', { model: { providerID: 'fixture', modelID: 'fixture' }, parts: [{ type: 'text', text: 'Block the controlled prompt' }] }))
+        assert.equal(requests.length, 0)
+      }
       answer = await post('/session/' + session.id + '/message', { model: { providerID: 'fixture', modelID: 'fixture' }, parts: [{ type: 'text', text: 'Run the controlled package fixture' }] })
+      if (prompts) answer = await post('/session/' + session.id + '/message', { model: { providerID: 'fixture', modelID: 'fixture' }, parts: [{ type: 'text', text: 'Follow-up controlled package fixture' }] })
     } else {
+      if (prompts) {
+        const blocked = run(binary, ['--server', address, 'run', '--format', 'json', '--model', 'fixture/fixture', 'Block the controlled prompt'], { cwd: project, env, timeout: CLIENT_MS, maxBuffer: MAX_BYTES })
+        blocked.child.stdin.end()
+        await assert.rejects(blocked)
+        assert.equal(requests.length, 0)
+      }
       const running = run(binary, ['--server', address, 'run', '--format', 'json', '--model', 'fixture/fixture', 'Run the controlled package fixture'], { cwd: project, env, timeout: CLIENT_MS, maxBuffer: MAX_BYTES })
       running.child.stdin.end()
       answer = (await running.catch(() => { throw new ProbeError('HOST_CLIENT_FAILED') })).stdout
+      if (prompts) {
+        const rows = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+        const sessionID = rows.find(row => row.prompt?.includes('Run the controlled package fixture'))?.session_id
+        assert.ok(sessionID)
+        const follow = run(binary, ['--server', address, 'run', '--session', sessionID, '--format', 'json', '--model', 'fixture/fixture', 'Follow-up controlled package fixture'], { cwd: project, env, timeout: CLIENT_MS, maxBuffer: MAX_BYTES })
+        follow.child.stdin.end()
+        answer = (await follow.catch(() => { throw new ProbeError('HOST_FOLLOWUP_FAILED') })).stdout
+      }
     }
     stage = 'denied-side-effect'
     await assert.rejects(access(denied))
@@ -191,10 +220,11 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     assert.equal(await readFile(rewritten, 'utf8'), 'rewritten')
     stage = 'native-payloads'
     const payloads = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
-    assert.equal(payloads.length, CONTROLLED_TOOL_CALLS * sources.length)
-    assert.ok(payloads.every(payload => payload.tool_name === 'Bash' && typeof payload.tool_use_id === 'string' && payload.tool_use_id && payload.permission_mode === permissionMode))
+    const toolPayloads = payloads.filter(payload => payload.hook_event_name === 'PreToolUse')
+    assert.equal(toolPayloads.length, CONTROLLED_TOOL_CALLS * sources.length)
+    assert.ok(toolPayloads.every(payload => payload.tool_name === 'Bash' && typeof payload.tool_use_id === 'string' && payload.tool_use_id && payload.permission_mode === permissionMode))
     for (let index = 1; index <= CONTROLLED_TOOL_CALLS; index++) {
-      const group = payloads.filter(payload => payload.tool_use_id === 'call_' + index)
+      const group = toolPayloads.filter(payload => payload.tool_use_id === 'call_' + index)
       assert.deepEqual(group.map(payload => payload.nativeDialect).sort(), [...selectedDialects].sort())
       assert.ok(group.every(payload => index !== CONTROLLED_TOOL_CALLS || payload.tool_input.command === originalCommand))
       for (const payload of group) {
@@ -202,11 +232,28 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
         else assert.equal(payload.transcriptValidated, true)
       }
     }
+    if (prompts) {
+      stage = 'prompt-contract'
+      const submitted = payloads.filter(payload => payload.hook_event_name === 'UserPromptSubmit')
+      assert.equal(submitted.length, 3 * sources.length)
+      assert.ok(submitted.every(payload => payload.permission_mode === permissionMode && (payload.nativeDialect !== 'codex' || payload.model === 'fixture' && typeof payload.turn_id === 'string')))
+      for (const payload of submitted.filter(payload => payload.nativeDialect === 'claude-code')) assert.equal(payload.promptTranscriptExists, payload.prompt.includes('Follow-up controlled package fixture'))
+      assert.equal(correlationLeaked, false)
+      for (const request of requests) {
+        for (let index = 0; index < request.messages.length; index++) {
+          const row = request.messages[index]
+          if (row.role !== 'user' || !JSON.stringify(row.content).includes('controlled package fixture')) continue
+          if (selectedDialects.includes('claude-code')) assert.ok(Array.isArray(row.content) && row.content[0].text === '<system-reminder>\nUserPromptSubmit hook additional context: PACKAGE_CLAUDE_PROMPT_CONTEXT\n</system-reminder>')
+          if (selectedDialects.includes('codex')) assert.deepEqual(request.messages[index + 1], { role: 'developer', content: 'PACKAGE_CODEX_PROMPT_CONTEXT' })
+        }
+      }
+      assert.equal(requests.at(-1).messages.filter(row => row.role === 'user' && JSON.stringify(row.content).includes('controlled package fixture')).length, 2)
+    } else assert.equal(payloads.length, toolPayloads.length)
     stage = 'model-visible-denial'
     assert.ok(JSON.stringify(requests[1].messages).includes('PACKAGE_FIXTURE_DENIED'))
     stage = 'final-answer'
     assert.ok(JSON.stringify(answer).includes('PACKAGE_FIXTURE_DONE'))
-    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
+    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, correlationHeaderPrivate: true } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
   } catch (error) {
     if (error instanceof ProbeError) throw error
     throw new ProbeError('PACKAGE_CHECK_FAILED: ' + stage + ' ' + (error.code ?? error.name ?? 'unknown') + (diagnosticCodes.size ? ' diagnostics=' + [...diagnosticCodes].sort().join(',') : ''))
@@ -219,7 +266,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, prompts: { type: 'boolean' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const host = parsed.values.host
@@ -230,7 +277,7 @@ try {
     if (preapproval && dialect === 'codex') throw new ProbeError('USAGE_PREAPPROVAL: select claude-code or mixed', 2)
     const binary = parsed.values.binary ?? process.env[host === 'v1' ? 'OPENCODE_V1_BINARY' : 'OPENCODE_V2_BINARY'] ?? 'opencode'
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval)) + '\n')
+    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false)) + '\n')
   }
 } catch (error) {
   process.stderr.write((error instanceof ProbeError ? error.message : 'PACKAGE_PROBE_FAILED') + '\n')

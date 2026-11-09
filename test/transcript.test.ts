@@ -20,6 +20,29 @@ function history(host: 'v1' | 'v2', status = 'running'): unknown[] {
   ]
 }
 
+test('prompt snapshots reserve an absent initial path and expose only earlier admitted history', async t => {
+  for (const host of ['v1', 'v2'] as const) {
+    const sessions = new Sessions()
+    sessions.prompt('session', 'current', 'model')
+    let records: unknown[] = []
+    const transcript = new ClaudeTranscript({ host, directory: '/project', history: async () => ({ id: 'session', messages: records }) })
+    t.after(() => transcript.dispose())
+    const prompt = { host, event: 'UserPromptSubmit' as const, sessionID: 'session', messageID: 'current', prompt: 'Current prompt', signal: new AbortController().signal }
+    const path = await transcript.prepare(prompt, sessions.get('session'), prompt.signal)
+    await assert.rejects(access(path))
+    records = history(host).slice(0, 1)
+    assert.equal(await transcript.prepare(prompt, sessions.get('session'), prompt.signal), path)
+    const rows = (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0].message.content, 'User prompt')
+    const alreadySaved = { ...prompt, messageID: 'turn' }
+    await assert.rejects(transcript.prepare(alreadySaved, sessions.get('session'), prompt.signal), { code: 'TRANSCRIPT_PROMPT_ALREADY_ADMITTED' })
+    records = []
+    await assert.rejects(transcript.prepare(prompt, sessions.get('session'), prompt.signal), { code: 'TRANSCRIPT_HISTORY_RESET_UNVERIFIED' })
+    sessions.dispose()
+  }
+})
+
 test('both host histories project readable Claude message records and preserve original call input', async t => {
   for (const host of ['v1', 'v2'] as const) {
     const sessions = new Sessions()

@@ -5,7 +5,7 @@ import type { Dialect, HostVersion } from './contracts.js'
 import { HostHookError } from './hosts/tools.js'
 import type { SourceSpec } from './types.js'
 
-const WIRED_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure'])
+const WIRED_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit'])
 const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions', 'auto'])
 
 export interface RuntimeOptions {
