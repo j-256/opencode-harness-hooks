@@ -14,6 +14,7 @@ const MAX_SERIALIZED_ID_BYTES = MAX_ID_BYTES * 6 + 2
 // The normalized timestamp is unavailable until the next context phase
 const READBACK_OVERHEAD_BYTES = 1024
 const CONTINUATION_INPUT_FIELDS = new Set(['id', 'text', 'metadata', 'description'])
+const INTERRUPTION_RECEIPT_FIELDS = new Set(['eventID', 'created', 'reason', 'source'])
 const FEEDBACK_PREFIX = 'Stop hook feedback:\n'
 const SUCCESS_EXIT = 0
 const BLOCKING_EXIT = 2
@@ -21,6 +22,7 @@ const EVENT_ERROR_EXIT = 1
 const MAX_EXIT = 255
 const EMPTY_STDERR = 'No stderr output'
 const NONBLOCKING_ERROR_PREFIX = 'Failed with non-blocking status code: '
+export const CLAUDE_USER_INTERRUPTION = '[Request interrupted by user]'
 
 interface StopRecord { readonly id: string; readonly created: number; readonly body: Readonly<Record<string, JsonValue>> }
 interface Completion {
@@ -30,6 +32,7 @@ interface Completion {
   records?: readonly StopRecord[]
   continuable?: boolean
   continuationID?: string
+  interruption?: { readonly eventID: string; readonly record: StopRecord }
   bytes: number
 }
 type Continuation = { readonly completionID: string; readonly turnID: string } & (
@@ -41,6 +44,8 @@ interface State { readonly signal: AbortSignal; readonly completions: Map<string
 export interface StopContinuationOptions { readonly reconcileCancellation?: boolean }
 export interface StopContinuationReservation { readonly admit: (readback: JsonValue) => void; readonly suppress?: (readback: JsonValue, previousID: string) => void; readonly release: () => void }
 export interface StopModelBlocks { readonly reminders: readonly string[]; readonly feedback: readonly string[] }
+export interface StopInterruptedModel extends StopModelBlocks { readonly interrupted: true }
+export interface StopInterruptionReceipt { readonly eventID: string; readonly created: number; readonly reason: 'user'; readonly source: 'sdk-cli' }
 interface ContinuationOwner { readonly event: Pick<StopEvent, 'event' | 'sessionID' | 'messageID' | 'completionID'>; readonly session: SessionSnapshot; readonly signal: AbortSignal }
 function fail(code: string): never { throw new HostHookError(code, code === 'TRANSCRIPT_CANCELLED' ? 'cancelled' : 'unsupported') }
 function record(value: unknown): value is Readonly<Record<string, JsonValue>> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
@@ -231,6 +236,23 @@ export class StopRecords {
     return modelBlocks(this.admittedOwner(delivery, 'TRANSCRIPT_STOP_MODEL_UNAVAILABLE').completion.records!)
   }
 
+  admitInterruption(event: StopEvent, session: SessionSnapshot, receipt: StopInterruptionReceipt): StopInterruptedModel {
+    if (this.disposed || session.signal.aborted) fail('TRANSCRIPT_CANCELLED')
+    if (!record(receipt) || Object.keys(receipt).some(key => !INTERRUPTION_RECEIPT_FIELDS.has(key)) || receipt.reason !== 'user' || receipt.source !== 'sdk-cli' || typeof receipt.eventID !== 'string' || !receipt.eventID || receipt.eventID.includes('\0') || Buffer.byteLength(receipt.eventID) > MAX_ID_BYTES || typeof receipt.created !== 'number' || !Number.isFinite(receipt.created) || Number.isNaN(new Date(receipt.created).getTime())) fail('TRANSCRIPT_STOP_INTERRUPTION_INVALID')
+    const state = this.states.get(event.sessionID), completion = state?.completions.get(event.completionID)
+    if (event.event !== 'Stop' || event.sessionID !== session.sessionID || event.messageID !== session.turnID || !state || state.signal !== session.signal || !completion || completion.turnID !== event.messageID || completion.turnSignal !== session.turnSignal || !session.turnSignal.aborted) fail('TRANSCRIPT_STOP_INTERRUPTION_UNAVAILABLE')
+    if (completion.interruption || [...state.completions.values()].some(row => row.interruption?.eventID === receipt.eventID)) fail('TRANSCRIPT_STOP_INTERRUPTION_REUSED')
+    const interrupted = freeze({ id: randomUUID(), created: receipt.created, body: { type: 'user', message: { role: 'user', content: [{ type: 'text', text: CLAUDE_USER_INTERRUPTION }] }, promptId: event.messageID, userType: 'external', entrypoint: receipt.source } })
+    const bytes = Buffer.byteLength(JSON.stringify([receipt.eventID, interrupted]))
+    if (this.records >= MAX_RECORDS || this.bytes + bytes > MAX_BYTES) fail('TRANSCRIPT_STOP_LIMIT')
+    const blocks = modelBlocks(completion.records ?? [])
+    completion.interruption = Object.freeze({ eventID: receipt.eventID, record: interrupted })
+    completion.bytes += bytes
+    this.records++
+    this.bytes += bytes
+    return Object.freeze({ ...blocks, interrupted: true })
+  }
+
   reserveContinuation(delivery: StopDelivery, input: JsonValue, options: StopContinuationOptions = {}): StopContinuationReservation {
     const owner: ContinuationOwner = { event: { event: delivery.event.event, sessionID: delivery.event.sessionID, messageID: delivery.event.messageID, completionID: delivery.event.completionID }, session: { ...delivery.session }, signal: delivery.signal }
     const { event, session } = owner
@@ -301,12 +323,12 @@ export class StopRecords {
     const completion = this.states.get(sessionID)?.completions.get(completionID)
     if (!completion) return []
     if (completion.turnID !== turnID || completion.signature !== signature) fail('TRANSCRIPT_STOP_HISTORY_CHANGED')
-    return completion.records ?? []
+    return [...completion.records ?? [], ...completion.interruption ? [completion.interruption.record] : []]
   }
 
   validateHistory(sessionID: string, completionIDs: ReadonlySet<string>, continuationIDs: ReadonlySet<string>): void {
     const state = this.states.get(sessionID)
-    if (state) for (const [id, completion] of state.completions) if (completion.records !== undefined && !completionIDs.has(id)) fail('TRANSCRIPT_STOP_HISTORY_UNAVAILABLE')
+    if (state) for (const [id, completion] of state.completions) if ((completion.records !== undefined || completion.interruption) && !completionIDs.has(id)) fail('TRANSCRIPT_STOP_HISTORY_UNAVAILABLE')
     if (state) for (const [id, row] of state.continuations) if (row.phase !== 'pending' && !continuationIDs.has(id)) fail('TRANSCRIPT_STOP_HISTORY_UNAVAILABLE')
   }
 
@@ -342,7 +364,7 @@ export class StopRecords {
         const previous = this.states.get(session.sessionID)
         if (!previous) return
         for (const row of previous.continuations.values()) if (row.phase === 'pending') row.detach()
-        for (const completion of previous.completions.values()) { this.completions--; this.records -= completion.records?.length ?? 0; this.bytes -= completion.bytes }
+        for (const completion of previous.completions.values()) { this.completions--; this.records -= (completion.records?.length ?? 0) + (completion.interruption ? 1 : 0); this.bytes -= completion.bytes }
         this.states.delete(session.sessionID)
         previous.completions.clear()
         previous.continuations.clear()

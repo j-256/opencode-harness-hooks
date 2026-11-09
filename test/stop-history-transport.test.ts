@@ -1,20 +1,43 @@
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { PromptContexts, PROMPT_REQUEST_HEADER } from '../src/prompt-contexts.js'
 import { Sessions } from '../src/sessions.js'
 
-function fixture(t: { after: (callback: () => void) => void }) {
+function fixture(t: { after: (callback: () => void) => void }, promptContext = false) {
   const sessions = new Sessions(), contexts = new PromptContexts()
   t.after(() => { contexts.dispose(); sessions.dispose() })
   sessions.prompt('session', 'original')
   contexts.remember(sessions.get('session'), ['Same'], [])
   sessions.prompt('session', 'next')
   const session = sessions.get('session')
-  contexts.remember(session, ['Same'], [])
+  contexts.remember(session, ['Same'], promptContext ? [{ sourceID: 'claude', sourceDigest: 'revision', registrationID: 'context', dialect: 'claude-code', configuredOrder: 0, completionOrder: 0, action: { kind: 'context', placement: 'model', channel: 'additionalContext', text: 'CANCEL_NEXT_CONTEXT' } }] : [])
   return { sessions, contexts, session }
 }
 const input = () => ({ completionID: 'answer', assistantText: ['Answer'], reminders: ['Reminder'], feedback: ['Feedback'] })
 const layout = [{ id: 'original', text: ['Same'] }, { id: 'next', text: ['Same'] }]
+const cancellation = JSON.parse(readFileSync(new URL('./fixtures/claude-stop-cancellation-oracle.json', import.meta.url), 'utf8'))
+
+for (const scenario of cancellation.cases) for (const protocol of ['chat', 'responses', 'anthropic'] as const) for (const promptContext of [false, true]) test(`native ${scenario.name} interruption model ordering in ${protocol} with next prompt context ${promptContext}`, async t => {
+  const { contexts, session } = fixture(t, promptContext)
+  contexts.layout(session, layout)
+  const old = contexts.issue(session)!
+  contexts.rememberHistory(session, { completionID: 'answer', assistantText: ['Answer'], reminders: scenario.retainedStopOutput ? [
+    '<system-reminder>\nStop hook blocking error from command: "FIXTURE_COMMAND": CANCEL_STOP_FEEDBACK\n</system-reminder>',
+    '<system-reminder>\nStop hook additional context: CANCEL_STOP_CONTEXT\n</system-reminder>',
+  ] : [], feedback: scenario.retainedStopOutput ? ['Stop hook feedback:\nCANCEL_STOP_FEEDBACK'] : [], interrupted: true })
+  const key = protocol === 'responses' ? 'input' : 'messages', type = protocol === 'responses' ? 'input_text' : 'text'
+  const messages = [{ role: 'user', content: 'Same' }, { role: 'assistant', content: 'Answer' }, { role: 'user', content: 'Same' }]
+  const request = new Request('https://provider.invalid', { method: 'POST', body: JSON.stringify({ [key]: messages }) })
+  await assert.rejects(contexts.project(request, old, session), { code: 'HOST_PROMPT_REQUEST_UNAVAILABLE' })
+  contexts.layout(session, layout)
+  const token = contexts.issue(session, protocol === 'anthropic' ? 'anthropic' : 'openai')!
+  const body = await (await contexts.project(request, token, session)).json()
+  const expected = [...scenario.nextUser.slice(0, -1), 'Same']
+  if (promptContext) expected.splice(scenario.retainedStopOutput ? 2 : 0, 0, '<system-reminder>\nUserPromptSubmit hook additional context: CANCEL_NEXT_CONTEXT\n</system-reminder>\n')
+  assert.deepEqual(body[key][2].content, expected.map(text => ({ type, text })))
+  assert.deepEqual(body[key].slice(0, 2), messages.slice(0, 2))
+})
 
 for (const protocol of ['chat', 'responses', 'anthropic'] as const) test(`retained Stop blocks join only their accepted real prompt in ${protocol}`, async t => {
   const { contexts, session } = fixture(t)
@@ -74,7 +97,7 @@ test('binding retained Stop content invalidates earlier tickets and survives sub
 test('malformed, reused, oversized and cancelled history cannot corrupt retained transport state', async t => {
   const { contexts, sessions, session } = fixture(t)
   const before = contexts.inspect()
-  for (const blocks of [{ ...input(), reminders: Array(1) }, { ...input(), feedback: [1] }, { ...input(), assistantText: [] }, { ...input(), completionID: '' }, { ...input(), reminders: [], feedback: [] }]) {
+  for (const blocks of [{ ...input(), reminders: Array(1) }, { ...input(), feedback: [1] }, { ...input(), assistantText: [] }, { ...input(), completionID: '' }, { ...input(), reminders: [], feedback: [] }, { ...input(), interrupted: 'true' }, { ...input(), interrupted: false }]) {
     assert.throws(() => contexts.rememberHistory(session, blocks as any), { code: 'HOST_PROMPT_HISTORY_UNAVAILABLE' })
     assert.deepEqual(contexts.inspect(), before)
   }

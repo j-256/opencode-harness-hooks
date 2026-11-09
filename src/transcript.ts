@@ -17,7 +17,7 @@ import { ModelContext } from './model-context.js'
 import type { HostModelEvent } from './model-types.js'
 import type { StopDelivery, StopEvent } from './stop.js'
 import { StopRecords } from './stop-records.js'
-import type { StopModelBlocks, StopContinuationOptions } from './stop-records.js'
+import type { StopModelBlocks, StopContinuationOptions, StopInterruptionReceipt, StopInterruptedModel } from './stop-records.js'
 
 const HISTORY_MS = 5000
 const MAX_MESSAGES = 10000
@@ -41,6 +41,7 @@ export interface TranscriptService {
   admitPrompt?(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void
   admitStop?(delivery: StopDelivery): readonly string[]
   stopModelInput?(delivery: StopDelivery): StopModelBlocks
+  admitStopInterruption?(event: StopEvent, session: SessionSnapshot, receipt: StopInterruptionReceipt): StopInterruptedModel
   admitContinuation?(delivery: StopDelivery, readback: unknown): void
   reserveContinuation?(delivery: StopDelivery, input: unknown, options?: StopContinuationOptions): TranscriptContinuationReservation
   observe(event: HostToolEvent, session: SessionSnapshot): void
@@ -199,7 +200,13 @@ export class ClaudeTranscript implements TranscriptService {
     return Object.freeze({ admit: (readback: unknown) => reservation.admit(snapshot(readback) as JsonValue), ...(reservation.suppress ? { suppress: (readback: unknown, previousID: string) => reservation.suppress!(snapshot(readback) as JsonValue, previousID) } : {}), release: reservation.release })
   }
 
-  private stopHost(delivery: StopDelivery): void {
+  admitStopInterruption(event: StopEvent, session: SessionSnapshot, receipt: StopInterruptionReceipt): StopInterruptedModel {
+    this.stopHost({ event })
+    const owner = Object.freeze({ ...session })
+    return this.stops.admitInterruption(snapshot(event), owner, snapshot(receipt))
+  }
+
+  private stopHost(delivery: Pick<StopDelivery, 'event'>): void {
     if (delivery.event.host !== this.options.host) fail('TRANSCRIPT_HOST_MISMATCH')
     if (this.options.host !== 'v2') fail('TRANSCRIPT_STOP_HOST_UNSUPPORTED')
     if (delivery.event.cwd !== this.options.directory) fail('TRANSCRIPT_STOP_CWD_UNAVAILABLE')

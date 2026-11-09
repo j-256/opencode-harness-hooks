@@ -148,6 +148,59 @@ test('reconciliation leases still admit active continuations and cannot later er
   assert.throws(() => lease.suppress!(row, 'next'), { code: 'TRANSCRIPT_STOP_RESERVATION_UNAVAILABLE' })
 })
 
+for (const admitted of [false, true]) test(`SDK interruption preserves the original Stop owner with admitted output ${admitted}`, async t => {
+  const f = await fixture(t, { outputs: [{ decision: 'block', reason: 'CANCEL_STOP_FEEDBACK', hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'CANCEL_STOP_CONTEXT' } }], completionOrder: [0] }, admitted)
+  const receipt = { eventID: 'execution-interruption', created: CREATED + 2, reason: 'user' as const, source: 'sdk-cli' as const }
+  assert.throws(() => f.transcripts.admitStopInterruption(f.event, f.session, receipt), { code: 'TRANSCRIPT_STOP_INTERRUPTION_UNAVAILABLE' })
+  f.runtime.sessions.prompt('session', 'next', 'fixture')
+  const next = f.runtime.sessions.get('session')
+  const blocks = f.transcripts.admitStopInterruption(f.event, f.session, receipt)
+  assert.ok(Object.isFrozen(blocks) && Object.isFrozen(blocks.reminders) && Object.isFrozen(blocks.feedback))
+  assert.deepEqual(blocks, { reminders: admitted ? [
+    `<system-reminder>\nStop hook blocking error from command: "${f.commands[0]}": CANCEL_STOP_FEEDBACK\n</system-reminder>`,
+    '<system-reminder>\nStop hook additional context: CANCEL_STOP_CONTEXT\n</system-reminder>',
+  ] : [], feedback: admitted ? ['Stop hook feedback:\nCANCEL_STOP_FEEDBACK'] : [], interrupted: true })
+  receipt.eventID = 'mutated'
+  assert.throws(() => f.transcripts.admitStopInterruption(f.event, f.session, receipt), { code: 'TRANSCRIPT_STOP_INTERRUPTION_REUSED' })
+  f.runtime.observeModel({ host: 'v2', sessionID: 'session', messageID: 'next', signal: next.turnSignal })
+  f.records.push({ type: 'user', id: 'next', text: 'Next', time: { created: CREATED + 3 } }, secondAnswer())
+  const event = { ...f.event, messageID: 'next', completionID: 'answer-2' }
+  const path = await f.transcripts.prepare(event, next, next.turnSignal)
+  const rows = parse(await readFile(path, 'utf8'))
+  const interruption = rows.find(row => row.userType === 'external')
+  const index = rows.indexOf(interruption)
+  assert.deepEqual(interruption.message, { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user]' }] })
+  assert.equal(interruption.promptId, 'prompt')
+  assert.equal(interruption.entrypoint, 'sdk-cli')
+  assert.equal(interruption.parentUuid, rows[index - 1].uuid)
+  assert.equal(rows[index + 1].parentUuid, interruption.uuid)
+  assert.equal(interruption.timestamp, new Date(CREATED + 2).toISOString())
+  assert.equal(rows.filter(row => row.subtype === 'stop_hook_summary').length, admitted ? 1 : 0)
+  assert.deepEqual(parse(await readFile(await f.transcripts.prepare(event, next, next.turnSignal), 'utf8')), rows)
+  f.records.splice(1, 1)
+  await assert.rejects(f.transcripts.prepare(event, next, next.turnSignal), { code: 'TRANSCRIPT_STOP_HISTORY_UNAVAILABLE' })
+  assert.deepEqual(parse(await readFile(path, 'utf8')), rows)
+  f.runtime.sessions.prompt('session', 'third', 'fixture')
+  assert.throws(() => f.transcripts.admitStopInterruption(event, next, { ...receipt, eventID: 'execution-interruption' }), { code: 'TRANSCRIPT_STOP_INTERRUPTION_REUSED' })
+  f.runtime.sessions.close('session')
+  assert.equal(f.transcripts.inspect().stopBytes, 0)
+  assert.equal(f.transcripts.inspect().stopRecords, 0)
+})
+
+test('SDK interruption refuses foreign owners and malformed receipts without retaining artifacts', async t => {
+  const f = await fixture(t, oracle.cases[0], false)
+  f.runtime.sessions.prompt('session', 'next', 'fixture')
+  const receipt = { eventID: 'execution-interruption', created: CREATED + 2, reason: 'user' as const, source: 'sdk-cli' as const }
+  const before = f.transcripts.inspect()
+  for (const changed of [{ ...receipt, reason: 'shutdown' }, { ...receipt, source: 'tui' }, { ...receipt, created: 9e15 }, { ...receipt, eventID: '' }, { ...receipt, eventID: 'x'.repeat(4097) }, { ...receipt, extra: true }]) assert.throws(() => f.transcripts.admitStopInterruption(f.event, f.session, changed as any), { code: 'TRANSCRIPT_STOP_INTERRUPTION_INVALID' })
+  assert.throws(() => f.transcripts.admitStopInterruption(f.event, f.session, { ...receipt, created: NaN }), { code: 'TRANSCRIPT_SCHEMA_INVALID' })
+  for (const event of [{ ...f.event, completionID: 'foreign' }, { ...f.event, messageID: 'foreign' }]) assert.throws(() => f.transcripts.admitStopInterruption(event, f.session, receipt), { code: 'TRANSCRIPT_STOP_INTERRUPTION_UNAVAILABLE' })
+  assert.throws(() => f.transcripts.admitStopInterruption(f.event, { ...f.session, turnSignal: new AbortController().signal }, receipt), { code: 'TRANSCRIPT_STOP_INTERRUPTION_UNAVAILABLE' })
+  assert.deepEqual(f.transcripts.inspect(), before)
+  f.runtime.sessions.close('session')
+  assert.throws(() => f.transcripts.admitStopInterruption(f.event, f.session, receipt), { code: 'TRANSCRIPT_CANCELLED' })
+})
+
 for (const scenario of oracle.cases) test(`Claude Stop transcript retains native ${scenario.name} records`, async t => {
   const f = await fixture(t, scenario, true)
   assert.equal(f.receipt.control, scenario.preventedContinuation ? 'stop' : 'continue')
