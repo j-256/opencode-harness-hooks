@@ -1,0 +1,51 @@
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+import { Sessions } from '../src/sessions.js'
+
+test('interrupting a captured current turn preserves its session and permits the next prompt', () => {
+  const sessions = new Sessions()
+  sessions.prompt('session', 'first', 'model')
+  const first = sessions.get('session')
+  assert.equal(sessions.interrupt(first), true)
+  assert.equal(first.turnSignal.aborted, true)
+  assert.equal(first.signal.aborted, false)
+  assert.equal(sessions.interrupt(first), false)
+  sessions.prompt('session', 'next', 'model')
+  const next = sessions.get('session')
+  assert.equal(next.turnSignal.aborted, false)
+  assert.equal(next.signal, first.signal)
+  assert.equal(next.model, 'model')
+  sessions.dispose()
+})
+
+test('foreign and delayed interruption owners cannot cancel another prompt or create sessions', () => {
+  const sessions = new Sessions()
+  sessions.prompt('session', 'first')
+  const first = sessions.get('session')
+  for (const owner of [{ ...first, sessionID: 'unknown' }, { ...first, turnID: 'foreign' }, { ...first, signal: new AbortController().signal }, { ...first, turnSignal: new AbortController().signal }]) assert.equal(sessions.interrupt(owner), false)
+  assert.equal(sessions.inspect().retained, 1)
+  assert.equal(first.turnSignal.aborted, false)
+  sessions.prompt('session', 'next')
+  const next = sessions.get('session')
+  assert.equal(sessions.interrupt(first), false)
+  assert.equal(next.turnSignal.aborted, false)
+  sessions.prompt('session', 'first')
+  assert.equal(sessions.interrupt(first), false)
+  const reused = sessions.get('session')
+  assert.equal(reused.turnSignal.aborted, false)
+  sessions.close('session')
+  assert.equal(sessions.interrupt(reused), false)
+  sessions.dispose()
+  assert.equal(sessions.interrupt(first), false)
+})
+
+test('an interruption listener can start a new prompt without the old interrupt touching it', () => {
+  const sessions = new Sessions()
+  sessions.prompt('session', 'first')
+  const first = sessions.get('session')
+  first.turnSignal.addEventListener('abort', () => sessions.prompt('session', 'next'), { once: true })
+  assert.equal(sessions.interrupt(first), true)
+  assert.equal(sessions.get('session').turnID, 'next')
+  assert.equal(sessions.get('session').turnSignal.aborted, false)
+  sessions.dispose()
+})

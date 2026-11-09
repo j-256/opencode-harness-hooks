@@ -50,6 +50,13 @@ export class Sessions {
     state.model = model
   }
 
+  interrupt(owner: SessionSnapshot): boolean {
+    const state = this.states.get(owner.sessionID)
+    if (this.disposed || !owner.turnID || !state || state.controller.signal !== owner.signal || state.turnController.signal !== owner.turnSignal || state.turnID !== owner.turnID || owner.signal.aborted || owner.turnSignal.aborted) return false
+    state.turnController.abort()
+    return true
+  }
+
   close(sessionID: string): void {
     if (this.disposed && !this.states.has(sessionID)) return
     const state = this.states.get(sessionID) ?? this.state(sessionID)

@@ -4,6 +4,8 @@ The package root exports one default definition: `id`, `server()` for OpenCode V
 
 The host contract pins are V1 1.19.5 and V2 2.2.5. The runtime report names the selected contract version; it does not detect or certify an arbitrary installed host version. The executable probes check the actual version before running.
 
+The core `Sessions.interrupt(owner)` operation aborts only the captured current turn, preserving its session for another real prompt. It compares session and turn IDs and both lifetime signals before aborting. It returns `true` only when that call interrupts the matching live turn; stale, foreign, already cancelled, closed or disposed owners return `false` without creating a session or affecting a replacement prompt. Native event classification and interruption artifact admission remain separate operations.
+
 ## Options and snapshot review
 
 Both hosts accept the same plugin options object. V1 passes it as the second element of a plugin tuple; V2 uses the plugin entry's `options` property. Paths below are examples, not automatic source discovery.
