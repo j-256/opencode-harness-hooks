@@ -16,6 +16,12 @@ The root also supplies a bounded [Claude transcript projection](transcripts.md) 
 
 Each required capability is classified as verified, unsupported, or unresolved, with supporting evidence. A required unsupported or unresolved capability prevents an equivalence claim. Missing evidence also prevents that claim. Tests proving an unsupported diagnostic are diagnostic coverage, not successful protocol equivalence.
 
+## V1 Stop exception
+
+OpenCode V1 cannot load configurations containing enabled `Stop` registrations. This is an accepted exception to identical behavior: the expected V1 result is a prominent fatal load error, not Stop execution parity. `HOST_STOP_UNSUPPORTED` identifies every offending source configuration, the `Stop` event and the unavailable `awaited-completion-decision` host capability. The bridge does not skip Stop registrations or approximate them with an idle observer. Native disablement or explicit selection can exclude registrations, and those exclusions remain reported.
+
+The V1 acceptance case tests rejection before any hook or model execution through the actual default entrypoint. A passing rejection test does not make those configurations compatible with V1. V2 Stop parity, all other native behavior and the remaining migration acceptance requirements are unchanged. See [runtime configuration and reproduction](runtime.md) for the diagnostic contract and executable fixture.
+
 ## Source references
 
 - [Claude Code hook reference](https://code.claude.com/docs/en/hooks)
@@ -111,7 +117,7 @@ The pinned V1 host calls plugin event handlers without awaiting their promises. 
 
 Source-native handler families include command, HTTP, MCP tool, prompt, and agent hooks. Their availability and intentional skip behavior differ by dialect and event. Recognition, execution, and equivalent native effects are separate checks.
 
-V2 exposes an awaited `experimental.idle` session hook. An isolated probe of the pinned V2 binary with a deterministic local provider verifies that the hook can admit synthetic input with `resume: false`, continue the same execution and return the continued answer only after the final idle hook completes. This establishes the host mechanism; the plugin's Stop translation, lifecycle limits and migration behavior still require integration evidence. V1's missing awaited completion hook remains a separate gap. Windows is not covered by macOS execution evidence.
+V2 exposes an awaited `experimental.idle` session hook. An isolated probe of the pinned V2 binary with a deterministic local provider verifies that the hook can admit synthetic input with `resume: false`, continue the same execution and return the continued answer only after the final idle hook completes. This establishes the host mechanism; the plugin's Stop translation, lifecycle limits and migration behavior still require integration evidence. V1's missing awaited completion hook follows the explicit Stop rejection exception above. Windows is not covered by macOS execution evidence.
 
 From a source checkout, run that host probe with `npm run test:host:v2 -- --binary /path/to/opencode`, or set `OPENCODE_V2_BINARY`. It requires the pinned V2 binary and Git; it does not install or upgrade OpenCode. The probe uses temporary configuration, a synthetic plugin and a loopback fake provider, then cleans up its server and temporary state. It closes the non-interactive CLI's stdin explicitly. The JSON result contains capability observations rather than credentials or model traffic. The probe verifies the host mechanism independently of the unfinished harness-hook adapter.
 

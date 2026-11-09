@@ -23,7 +23,7 @@ const SECOND_MS = 1000
 const CODEX_PROMPT_CONTEXTS = Object.freeze([{ role: 'developer', content: 'PACKAGE_CODEX_PROMPT_CONTEXT' }, { role: 'developer', content: 'PACKAGE_CODEX_SECOND_CONTEXT' }])
 const PROMPT_SUBMISSIONS = 3
 const run = promisify(execFile)
-const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts]
+const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts] [-s]
 
 Verify the built package's default entrypoint, native options and tool enforcement
 against a pinned OpenCode host. Requires npm run build, Node.js 22+, Git and the
@@ -37,6 +37,8 @@ Options:
       --dialect NAME Native source: codex (default), claude-code, or mixed (both)
       --preapproval  Exercise Claude allow with host permissions set to ask
       --prompts      Check prompt blocking, context roles and retained history
+  -s, --stop-rejection  Verify V1's expected fatal load rejection for Stop configs
+                       V1 only; cannot combine with --prompts or --preapproval
   -h, --help          Show help without requiring a host or dependencies
 
 Success writes JSON to stdout; failures use stderr without provider traffic.
@@ -69,7 +71,7 @@ async function stop(child, done) {
   await bounded(done, SHUTDOWN_MS, 'HOST_CLEANUP_FAILED')
 }
 
-async function verify(hostVersion, binary, dialect, preapproval, prompts) {
+async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRejection) {
   const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
   if (version !== VERSIONS[hostVersion]) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + VERSIONS[hostVersion], 2)
   await dependency('git', ['--version'], 'Git')
@@ -151,7 +153,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 `)
     await run(process.execPath, ['--check', script], { env, timeout: STARTUP_MS, maxBuffer: MAX_BYTES })
     const hook = { type: 'command', command: quote(process.execPath) + ' ' + quote(script) }
-    const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [hook] }], ...(prompts ? { UserPromptSubmit: [{ hooks: [hook, { ...hook, command: hook.command + ' stdout' }, { ...hook, command: hook.command + ' failure' }, { ...hook, command: hook.command + ' timeout', timeout: PROMPT_TIMEOUT_SECONDS }] }] } : {}) } })
+    const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [hook] }], ...(stopRejection ? { Stop: [{ hooks: [hook] }] } : {}), ...(prompts ? { UserPromptSubmit: [{ hooks: [hook, { ...hook, command: hook.command + ' stdout' }, { ...hook, command: hook.command + ' failure' }, { ...hook, command: hook.command + ' timeout', timeout: PROMPT_TIMEOUT_SECONDS }] }] } : {}) } })
     await writeFile(sourcePath, source)
     const selectedDialects = dialect === 'mixed' ? ['claude-code', 'codex'] : [dialect]
     const sources = selectedDialects.map(dialect => ({ id: 'fixture-' + dialect, dialect, path: sourcePath }))
@@ -160,10 +162,12 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     const hostPermission = preapproval ? 'ask' : 'allow'
     const options = { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, digest])), permissionMode }
     const requests = []
+    let providerRequests = 0
     let correlationLeaked = false
     const tool = hostVersion === 'v1' ? 'bash' : 'shell'
     gateway = createServer(async (request, response) => {
       try {
+        providerRequests++
         const chunks = []
         let bytes = 0
         for await (const chunk of request) {
@@ -195,8 +199,19 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     await writeFile(join(config, 'opencode.json'), JSON.stringify(configData))
     child = spawn(binary, [...(hostVersion === 'v1' ? ['--print-logs'] : []), 'serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: project, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     done = new Promise(resolve => child.once('close', resolve))
+    let hostErrors = ''
+    let failureObserved
+    const expectedFailure = new Promise(resolve => { failureObserved = resolve })
+    let noticeObserved
+    const expectedNotice = new Promise(resolve => { noticeObserved = resolve })
     child.stderr.on('data', chunk => {
       for (const code of String(chunk).match(/\b(?:HOST|SOURCE|SESSION|PLUGIN|HANDLER|RUNTIME)_[A-Z_]+\b/g) ?? []) diagnosticCodes.add(code)
+      if (stopRejection) {
+        hostErrors = (hostErrors + chunk).slice(-MAX_BYTES)
+        if (['HOST_STOP_UNSUPPORTED', 'V1', 'Stop', 'awaited-completion-decision', sourcePath, ...sources.map(source => source.id)].every(value => hostErrors.includes(value))) failureObserved()
+        if (hostErrors.includes('HOST_STOP_NOTICE_SHOWN')) noticeObserved(true)
+        else if (hostErrors.includes('HOST_STOP_NOTICE_FAILED')) noticeObserved(false)
+      }
     })
     const ready = new Promise((resolve, reject) => {
       let output = ''
@@ -217,6 +232,20 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
         const response = await fetch(address + path + '?directory=' + encodeURIComponent(project), { method: 'POST', headers, body: JSON.stringify(body), signal: AbortSignal.timeout(CLIENT_MS) })
         if (!response.ok) throw new ProbeError('HOST_API_FAILED: ' + response.status)
         return response.json()
+      }
+      if (stopRejection) {
+        stage = 'stop-rejection'
+        await assert.rejects(async () => {
+          const session = await post('/session', {})
+          await post('/session/' + session.id + '/message', { model: { providerID: 'fixture', modelID: 'fixture' }, parts: [{ type: 'text', text: 'Reject the incompatible Stop configuration' }] })
+        })
+        await bounded(expectedFailure, CLIENT_MS, 'STOP_FAILURE_DIAGNOSTIC_MISSING')
+        assert.equal(await bounded(expectedNotice, CLIENT_MS, 'STOP_FAILURE_NOTICE_MISSING'), true)
+        assert.equal(hostErrors.includes('HOST_STOP_NOTICE_FAILED'), false)
+        assert.equal(requests.length, 0)
+        assert.equal(providerRequests, 0)
+        await assert.rejects(access(capture), { code: 'ENOENT' })
+        return { host: hostVersion, hostVersion: VERSIONS[hostVersion], dialect, defaultEntrypoint: true, nativeOptions: true, expectedStopLoadRejection: true, incompatibleConfigsIdentified: true, unsupportedCapabilityIdentified: true, hostErrorNoticeAccepted: true, noModelOrHookExecution: true, equivalent: false }
       }
       const session = await post('/session', {})
       if (prompts) {
@@ -305,7 +334,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, prompts: { type: 'boolean' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, prompts: { type: 'boolean' }, 'stop-rejection': { type: 'boolean', short: 's' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const host = parsed.values.host
@@ -314,9 +343,11 @@ try {
     if (!DIALECTS.has(dialect)) throw new ProbeError('USAGE_DIALECT: expected codex, claude-code or mixed', 2)
     const preapproval = parsed.values.preapproval ?? false
     if (preapproval && dialect === 'codex') throw new ProbeError('USAGE_PREAPPROVAL: select claude-code or mixed', 2)
+    const stopRejection = parsed.values['stop-rejection'] ?? false
+    if (stopRejection && (host !== 'v1' || preapproval || parsed.values.prompts)) throw new ProbeError('USAGE_STOP_REJECTION: V1 only, without --preapproval or --prompts', 2)
     const binary = parsed.values.binary ?? process.env[host === 'v1' ? 'OPENCODE_V1_BINARY' : 'OPENCODE_V2_BINARY'] ?? 'opencode'
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false)) + '\n')
+    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false, stopRejection)) + '\n')
   }
 } catch (error) {
   process.stderr.write((error instanceof ProbeError ? error.message : 'PACKAGE_PROBE_FAILED') + '\n')

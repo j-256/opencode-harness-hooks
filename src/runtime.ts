@@ -27,6 +27,7 @@ export type { RuntimeOptions, RuntimeReport } from './inspection.js'
 
 const MAX_RESULT_BYTES = 8 * 1024 * 1024
 const MAX_PROMPT_BYTES = 8 * 1024 * 1024
+const STOP_HOST_CAPABILITY = 'awaited-completion-decision'
 type NativeData = NonNullable<NativeEvent['dialectData']>
 
 export interface RuntimeServices {
@@ -77,6 +78,10 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
   const { options, sources } = inspected
   const report: RuntimeReport = services.sessionStart ? Object.freeze({ ...inspected.report, sources: Object.freeze(inspected.report.sources.map(source => Object.freeze({ ...source, unwiredEvents: Object.freeze(source.unwiredEvents.filter(event => event !== 'SessionStart')) }))) }) : inspected.report
   await (services.report ?? (value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', code: 'RUNTIME_REPORT', ...value })) }))(report)
+  if (host === 'v1') {
+    const incompatible = sources.filter(source => source.enabled && source.registrations.some(registration => registration.event === 'Stop'))
+    if (incompatible.length) throw new HostHookError('HOST_STOP_UNSUPPORTED', 'unsupported', `OpenCode V1 cannot load enabled Stop registrations: unsupported host capability "${STOP_HOST_CAPABILITY}"; incompatible configs ${JSON.stringify(incompatible.map(source => ({ id: source.id, dialect: source.dialect, path: source.path })))}`)
+  }
   for (const source of report.sources) {
     if (!Object.hasOwn(options.reviewedDigests, source.id)) throw new HostHookError('SOURCE_REVIEW_REQUIRED', 'unsupported', source.id)
     if (!source.reviewed) throw new HostHookError('SOURCE_REVIEW_MISMATCH', 'unsupported', source.id)

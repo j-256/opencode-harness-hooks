@@ -83,7 +83,7 @@ test('runtime reports before execution, keeps independent registrations and pins
 })
 
 test('runtime rejects unreviewed sources and unwired events before a handler can execute', async t => {
-  const f = await fixture(t, { Stop: [{ hooks: [{ type: 'command', command: 'exit 0' }] }] })
+  const f = await fixture(t, { SessionEnd: [{ hooks: [{ type: 'command', command: 'exit 0' }] }] })
   const reports: unknown[] = []
   await assert.rejects(createRuntime('v1', f.directory, { ...f.options, reviewedDigests: {} }, { report: report => { reports.push(report) } }), { code: 'SOURCE_REVIEW_REQUIRED' })
   await assert.rejects(createRuntime('v1', f.directory, f.options, { report: report => { reports.push(report) } }), { code: 'HOST_EVENT_UNAVAILABLE' })

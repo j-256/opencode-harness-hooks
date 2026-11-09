@@ -1,6 +1,7 @@
 import { createHarnessHooks, setupHarnessHooks } from './plugin.js'
 import type { V2Context } from './plugin.js'
 import { HostHookError } from './hosts/tools.js'
+import { rejectV1Stop } from './hosts/v1-stop.js'
 
 const V1_TRANSFORM_DOMAINS = Object.freeze(['agent', 'catalog', 'command', 'integration', 'reference', 'skill'] as const)
 const V2_CONTEXT_DOMAINS = Object.freeze(['app', 'location', 'event', 'session', 'tool'] as const)
@@ -25,4 +26,11 @@ async function setup(context: unknown): Promise<Awaited<ReturnType<typeof setupH
   return setupHarnessHooks(context as unknown as V2Context)
 }
 
-export default Object.freeze({ id: 'opencode-harness-hooks', server: createHarnessHooks, setup })
+async function server(...args: Parameters<typeof createHarnessHooks>): Promise<Awaited<ReturnType<typeof createHarnessHooks>>> {
+  try { return await createHarnessHooks(...args) } catch (error) {
+    if (error instanceof HostHookError && error.code === 'HOST_STOP_UNSUPPORTED') return rejectV1Stop(args[0], error)
+    throw error
+  }
+}
+
+export default Object.freeze({ id: 'opencode-harness-hooks', server, setup })

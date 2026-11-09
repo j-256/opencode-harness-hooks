@@ -97,9 +97,10 @@ test('package probe help and invalid host/options require no executable and pres
     assert.match(result.stdout, /mixed/)
     assert.match(result.stdout, /--preapproval/)
     assert.match(result.stdout, /--prompts/)
+    assert.match(result.stdout, /--stop-rejection/)
     assert.equal(result.stderr, '')
   }
-  for (const args of [[], ['--host'], ['--host', 'v3'], ['--host', 'constructor'], ['--unknown'], ['--host=v1', '--binary='], ['--host=v1', '--dialect=other'], ['--host=v1', '--preapproval'], ['--host=v2', '--dialect=codex', '--preapproval'], ['--', 'v1']]) {
+  for (const args of [[], ['--host'], ['--host', 'v3'], ['--host', 'constructor'], ['--unknown'], ['--host=v1', '--binary='], ['--host=v1', '--dialect=other'], ['--host=v1', '--preapproval'], ['--host=v2', '--dialect=codex', '--preapproval'], ['--host=v2', '--stop-rejection'], ['--host=v1', '--stop-rejection', '--prompts'], ['--host=v1', '--dialect=mixed', '--stop-rejection', '--preapproval'], ['--', 'v1']]) {
     const result = await invoke(args, process.env, packageProbe)
     assert.equal(result.status, 2, String(args))
     assert.equal(result.stdout, '')
@@ -118,6 +119,19 @@ test('package probe honors literal binary forms and the selected host environmen
   assert.equal(result.status, 3)
   assert.equal(result.stdout, '')
   assert.equal(result.stderr, 'DEPENDENCY_UNAVAILABLE: OpenCode\n')
+})
+
+test('V1 Stop rejection mode parses both flag forms before its conditional host dependency', async () => {
+  for (const flag of ['-s', '--stop-rejection']) {
+    const result = await invoke(['--host=v1', flag, '-b', process.execPath], process.env, packageProbe)
+    assert.equal(result.status, 2)
+    assert.equal(result.stdout, '')
+    assert.match(result.stderr, /HOST_VERSION_MISMATCH/)
+  }
+  const missing = await invoke(['--host=v1', '--stop-rejection'], { ...process.env, OPENCODE_V1_BINARY: '/missing/harness-stop-fixture' }, packageProbe)
+  assert.equal(missing.status, 3)
+  assert.equal(missing.stdout, '')
+  assert.equal(missing.stderr, 'DEPENDENCY_UNAVAILABLE: OpenCode\n')
 })
 
 test('invalid options and missing or empty binary arguments are usage errors', async () => {

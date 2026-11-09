@@ -74,6 +74,9 @@ interface V1Input {
       readonly messages: (options: { readonly path: { readonly id: string }; readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }>
     }
     readonly postSessionIdPermissionsPermissionId?: (options: { readonly path: { readonly id: string; readonly permissionID: string }; readonly body: { readonly response: 'once' }; readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }>
+    readonly tui?: {
+      readonly showToast: (options: { readonly body: { readonly title: string; readonly message: string; readonly variant: 'error'; readonly duration: number }; readonly query: { readonly directory: string }; readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }>
+    }
   }
 }
 interface Prompt {
