@@ -16,13 +16,18 @@ const FAST_HOOK_MS = 20
 const FUNCTION_OUTPUT = 'NATIVE_LIFECYCLE_FUNCTION'
 const SOURCES = Object.freeze(['startup', 'resume'])
 const RESUME_MODES = new Set(['id', 'path'])
+const SELECTIONS = Object.freeze({
+  stable: { startup: ['a', 'b'], resume: ['a', 'b'] },
+  fewer: { startup: ['a', 'b'], resume: ['a'] },
+  more: { startup: ['a'], resume: ['a', 'b'] },
+})
 const STARTUP_ENVIRONMENT = Object.freeze({ tick: '1', dynamic: 'from-pretool', generation: 'startup' })
 const RESUME_ENVIRONMENT = Object.freeze({ id: { tick: '2', dynamic: 'from-pretool', generation: 'resume' }, path: { tick: '1', dynamic: 'updated', generation: 'startup' } })
 const run = promisify(execFile)
 const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'"
 const marker = (source, mode) => `NATIVE_LIFECYCLE_${source}_CONTEXT_${mode}`
 const prompt = source => `NATIVE_LIFECYCLE_${source}_PROMPT: inspect the synthetic environment`
-const HELP = `Usage: node scripts/verify-claude-lifecycle.mjs [-b PATH] [-r id|path]
+const HELP = `Usage: node scripts/verify-claude-lifecycle.mjs [-b PATH] [-r id|path] [-s MODE]
 
 Verify Claude Code ${VERSION} SessionStart startup/resume ordering, per-handler
 environment files, shell code, functions and native transcript/model delivery.
@@ -34,6 +39,7 @@ No build, model account, installation or live configuration change is needed.
 Options:
   -b, --binary PATH  Claude executable (CLAUDE_BINARY, then claude)
   -r, --resume-mode MODE  Resume by session id (default) or transcript path
+  -s, --selection-mode MODE  stable (default), fewer or more handlers on resume
   -h, --help         Show help without requiring a binary
 
 Metadata-only JSON goes to stdout. Diagnostics go to stderr without native
@@ -54,16 +60,18 @@ function textParts(messages) {
   return messages.flatMap(message => (typeof message.content === 'string' ? [{ type: 'text', text: message.content }] : message.content).filter(part => part.type === 'text').map(part => ({ role: message.role, text: part.text })))
 }
 
-function validate(source, events, rows, requests, shellRows, commands, resumeMode) {
+function validate(source, events, rows, requests, shellRows, commands, resumeMode, selectionMode) {
+  const selected = SELECTIONS[selectionMode][source]
+  const completion = selected.length === 1 ? ['a'] : ['b', 'a']
   const trace = events.filter(event => event.source === source)
   const started = trace.filter(event => event.phase === 'start' && event.input.hook_event_name === 'SessionStart')
   const completed = trace.filter(event => event.phase === 'end' && event.input.hook_event_name === 'SessionStart').sort((a, b) => a.time - b.time)
-  assert.equal(started.length, 2)
-  assert.deepEqual(completed.map(event => event.mode), ['b', 'a'])
+  assert.equal(started.length, selected.length)
+  assert.deepEqual(completed.map(event => event.mode), completion)
   assert.ok(Math.max(...started.map(event => event.time)) <= Math.min(...completed.map(event => event.time)))
-  assert.ok(started.every(event => event.input.source === source && event.envFile && event.envExists === (source === 'resume' && resumeMode === 'id') && event.transcriptExists === (source === 'resume')))
+  assert.ok(started.every(event => event.input.source === source && event.envFile && event.envExists === (source === 'resume' && resumeMode === 'id' && SELECTIONS[selectionMode].startup.includes(event.mode)) && event.transcriptExists === (source === 'resume')))
   assert.ok(started.every(event => event.input.session_id === started[0].input.session_id))
-  assert.deepEqual([...started].sort((a, b) => a.mode.localeCompare(b.mode)).map(event => basename(event.envFile)), ['sessionstart-hook-0.sh', 'sessionstart-hook-1.sh'])
+  assert.deepEqual([...started].sort((a, b) => a.mode.localeCompare(b.mode)).map(event => basename(event.envFile)), selected.length === 1 ? ['sessionstart-hook-0.sh'] : ['sessionstart-hook-0.sh', 'sessionstart-hook-1.sh'])
   assert.equal(new Set(started.map(event => dirname(event.envFile))).size, 1)
   assert.ok(trace.every(event => Object.keys(event.variables).length === 0))
   assert.ok(trace.filter(event => event.input.hook_event_name !== 'SessionStart').every(event => !event.envFile))
@@ -73,17 +81,17 @@ function validate(source, events, rows, requests, shellRows, commands, resumeMod
   assert.equal(model.length, 3)
   assert.ok(model[0].time >= completed.at(-1).time)
   const context = textParts(model[0].messages).filter(part => part.text.includes(`NATIVE_LIFECYCLE_${source}_CONTEXT_`))
-  const expected = ['b', 'a'].map(mode => `<system-reminder>\nSessionStart:${source} hook success: ${marker(source, mode)}\n</system-reminder>`)
-  assert.deepEqual(context.map(part => part.role), ['user', 'user'])
+  const expected = completion.map(mode => `<system-reminder>\nSessionStart:${source} hook success: ${marker(source, mode)}\n</system-reminder>`)
+  assert.deepEqual(context.map(part => part.role), selected.length === 1 ? ['user'] : ['user', 'user'])
   assert.deepEqual(context.map(part => part.text), expected)
   const original = textParts(model[0].messages).findIndex(part => part.text.includes(prompt(source)))
   const parts = textParts(model[0].messages)
   assert.ok(parts.findIndex(part => part.text === expected.at(-1)) < original)
   const records = rows.filter(row => row.attachment?.hookEvent === 'SessionStart' && row.attachment.hookName === `SessionStart:${source}`)
-  assert.deepEqual(records.map(row => row.attachment.content), ['b', 'a'].map(mode => marker(source, mode)))
+  assert.deepEqual(records.map(row => row.attachment.content), completion.map(mode => marker(source, mode)))
   assert.equal(new Set(records.map(row => row.attachment.toolUseID)).size, 1)
   for (const [index, row] of records.entries()) {
-    const mode = ['b', 'a'][index]
+    const mode = completion[index]
     assert.equal(row.attachment.type, 'hook_success')
     assert.equal(row.attachment.command, commands[mode])
     assert.equal(row.attachment.stdout, marker(source, mode) + '\n')
@@ -100,14 +108,15 @@ function validate(source, events, rows, requests, shellRows, commands, resumeMod
     const id = `lifecycle-${source}-${index}`
     const shell = shellRows.find(row => row.id === id)
     assert.ok(shell)
-    assert.deepEqual(shell.variables, { a: 'alpha', b: 'beta', shared: 'from-b', ...(source === 'startup' ? STARTUP_ENVIRONMENT : RESUME_ENVIRONMENT[resumeMode]) })
+    const hasB = SELECTIONS[selectionMode].startup.includes('b') || source === 'resume' && resumeMode === 'id' && SELECTIONS[selectionMode].resume.includes('b')
+    assert.deepEqual(shell.variables, { a: 'alpha', ...(hasB ? { b: 'beta' } : {}), shared: hasB ? 'from-b' : 'from-a', ...(source === 'startup' ? STARTUP_ENVIRONMENT : RESUME_ENVIRONMENT[resumeMode]) })
     const result = model.flatMap(request => request.messages).flatMap(message => Array.isArray(message.content) ? message.content : []).find(part => part.type === 'tool_result' && part.tool_use_id === id)
     assert.ok(result && result.is_error !== true && JSON.stringify(result.content).includes(FUNCTION_OUTPUT))
   }
   return { sessionID: started[0].input.session_id, directory: dirname(started[0].envFile) }
 }
 
-async function verify(binary, resumeMode) {
+async function verify(binary, resumeMode, selectionMode) {
   if (process.platform === 'win32') throw new ProbeError('PLATFORM_UNAVAILABLE: POSIX process groups', 2)
   let version
   try { version = (await run(binary, ['--version'], { timeout: LIMITS.durationMs, maxBuffer: LIMITS.maxBytes })).stdout.trim() } catch (error) { throw new ProbeError(error.code === 'ENOENT' || error.code === 'EACCES' ? 'DEPENDENCY_UNAVAILABLE: Claude Code' : 'DEPENDENCY_QUERY_FAILED: Claude Code', error.code === 'ENOENT' || error.code === 'EACCES' ? 3 : 1) }
@@ -122,12 +131,13 @@ async function verify(binary, resumeMode) {
     const hook = join(root, 'hook.cjs'), shellProbe = join(root, 'shell.cjs')
     const envA = `export SESSION_A=alpha\nexport SESSION_SHARED=from-a\nexport SESSION_TICK=$(( SESSION_TICK + 1 ))\nexport SESSION_DYNAMIC=initial\nprintf '%s\\n' '{"type":"source"}' >> "$PROBE_EVALUATIONS"\nfixture_function(){ printf ${FUNCTION_OUTPUT}; }\n`
     const envB = 'export SESSION_B=beta\nexport SESSION_SHARED=from-b\n'
-    await writeFile(hook, `const fs=require('node:fs');const input=JSON.parse(fs.readFileSync(0,'utf8'));const mode=process.argv[2];const source=process.env.PROBE_SOURCE;const log=phase=>fs.appendFileSync(process.env.PROBE_TRACE,JSON.stringify({source,phase,mode,input,time:Date.now(),envFile:process.env.CLAUDE_ENV_FILE,envExists:!!process.env.CLAUDE_ENV_FILE&&fs.existsSync(process.env.CLAUDE_ENV_FILE),transcriptExists:fs.existsSync(input.transcript_path),variables:{a:process.env.SESSION_A,b:process.env.SESSION_B,shared:process.env.SESSION_SHARED,tick:process.env.SESSION_TICK}})+'\\n');log('start');if(input.hook_event_name==='SessionStart'){fs.writeFileSync(process.env.PROBE_BARRIER+'-'+mode,'ready');const timer=setInterval(()=>{if(!fs.existsSync(process.env.PROBE_BARRIER+'-'+(mode==='a'?'b':'a')))return;clearInterval(timer);setTimeout(()=>{fs.appendFileSync(process.env.CLAUDE_ENV_FILE,mode==='a'?${JSON.stringify(envA)}+'export SESSION_GENERATION='+source+'\\n':${JSON.stringify(envB)});log('end');console.log('NATIVE_LIFECYCLE_'+source+'_CONTEXT_'+mode)},mode==='a'?${SLOW_HOOK_MS}:${FAST_HOOK_MS})},10)}else{if(input.hook_event_name==='UserPromptSubmit'||input.hook_event_name==='PreToolUse'&&input.tool_use_id.endsWith('-1')){const records=fs.readFileSync(process.env.PROBE_TRACE,'utf8').trim().split('\\n').map(JSON.parse);const owned=records.find(row=>row.source===source&&row.mode==='a'&&row.input.hook_event_name==='SessionStart');fs.appendFileSync(owned.envFile,'export SESSION_DYNAMIC='+(input.hook_event_name==='UserPromptSubmit'?'from-prompt':'from-pretool')+'\\n')}if(input.hook_event_name==='PreToolUse')fs.writeFileSync(process.env.PROBE_CAPTURE,fs.readFileSync(input.transcript_path));log('end')}`)
+    await writeFile(hook, `const fs=require('node:fs');const input=JSON.parse(fs.readFileSync(0,'utf8'));const mode=process.argv[2];const source=process.env.PROBE_SOURCE;const log=phase=>fs.appendFileSync(process.env.PROBE_TRACE,JSON.stringify({source,phase,mode,input,time:Date.now(),envFile:process.env.CLAUDE_ENV_FILE,envExists:!!process.env.CLAUDE_ENV_FILE&&fs.existsSync(process.env.CLAUDE_ENV_FILE),transcriptExists:fs.existsSync(input.transcript_path),variables:{a:process.env.SESSION_A,b:process.env.SESSION_B,shared:process.env.SESSION_SHARED,tick:process.env.SESSION_TICK}})+'\\n');log('start');if(input.hook_event_name==='SessionStart'){fs.writeFileSync(process.env.PROBE_BARRIER+'-'+mode,'ready');const timer=setInterval(()=>{if(JSON.parse(process.env.PROBE_PARTICIPANTS).some(peer=>!fs.existsSync(process.env.PROBE_BARRIER+'-'+peer)))return;clearInterval(timer);setTimeout(()=>{fs.appendFileSync(process.env.CLAUDE_ENV_FILE,mode==='a'?${JSON.stringify(envA)}+'export SESSION_GENERATION='+source+'\\n':${JSON.stringify(envB)});log('end');console.log('NATIVE_LIFECYCLE_'+source+'_CONTEXT_'+mode)},mode==='a'?${SLOW_HOOK_MS}:${FAST_HOOK_MS})},10)}else{if(input.hook_event_name==='UserPromptSubmit'||input.hook_event_name==='PreToolUse'&&input.tool_use_id.endsWith('-1')){const records=fs.readFileSync(process.env.PROBE_TRACE,'utf8').trim().split('\\n').map(JSON.parse);const owned=records.find(row=>row.source===source&&row.mode==='a'&&row.input.hook_event_name==='SessionStart');fs.appendFileSync(owned.envFile,'export SESSION_DYNAMIC='+(input.hook_event_name==='UserPromptSubmit'?'from-prompt':'from-pretool')+'\\n')}if(input.hook_event_name==='PreToolUse')fs.writeFileSync(process.env.PROBE_CAPTURE,fs.readFileSync(input.transcript_path));log('end')}`)
     await writeFile(shellProbe, `const fs=require('node:fs');const id=process.argv[2];fs.appendFileSync(process.env.PROBE_SHELL_TRACE,JSON.stringify({id,variables:{a:process.env.SESSION_A,b:process.env.SESSION_B,shared:process.env.SESSION_SHARED,tick:process.env.SESSION_TICK,dynamic:process.env.SESSION_DYNAMIC,generation:process.env.SESSION_GENERATION}})+'\\n');if(id.endsWith('-1')){const source=id.split('-')[1];const entry=fs.readFileSync(process.env.PROBE_TRACE,'utf8').trim().split('\\n').map(JSON.parse).find(row=>row.source===source&&row.mode==='a'&&row.input.hook_event_name==='SessionStart');fs.appendFileSync(entry.envFile,'export SESSION_DYNAMIC=updated\\n')}`)
     await Promise.all([hook, shellProbe].map(path => run(process.execPath, ['--check', path], { timeout: LIMITS.durationMs, maxBuffer: LIMITS.maxBytes })))
     const handler = mode => ({ type: 'command', command: process.execPath, args: [hook, mode], timeout: 3 })
     const settings = join(root, 'settings.json'), mcp = join(root, 'mcp.json')
-    await writeFile(settings, JSON.stringify({ hooks: { SessionStart: [{ hooks: [handler('a'), handler('b')] }], UserPromptSubmit: [{ hooks: [handler('prompt')] }], PreToolUse: [{ hooks: [handler('tool')] }], PostToolUse: [{ hooks: [handler('post')] }] } }))
+    const startGroups = selectionMode === 'stable' ? [{ hooks: [handler('a'), handler('b')] }] : SOURCES.map(source => ({ matcher: source, hooks: SELECTIONS[selectionMode][source].map(handler) }))
+    await writeFile(settings, JSON.stringify({ hooks: { SessionStart: startGroups, UserPromptSubmit: [{ hooks: [handler('prompt')] }], PreToolUse: [{ hooks: [handler('tool')] }], PostToolUse: [{ hooks: [handler('post')] }] } }))
     await writeFile(mcp, '{"mcpServers":{}}')
     const requests = []
     let source = 'startup'
@@ -165,13 +175,13 @@ async function verify(binary, resumeMode) {
     for (source of SOURCES) {
       stage = source; count = 0
       const capture = join(root, source + '.jsonl')
-      await runNativeClaude(binary, [...args, ...(resumePath ? ['--resume', resumePath] : [])], prompt(source), project, { ...env, PROBE_SOURCE: source, PROBE_BARRIER: join(root, source), PROBE_CAPTURE: capture })
+      await runNativeClaude(binary, [...args, ...(resumePath ? ['--resume', resumePath] : [])], prompt(source), project, { ...env, PROBE_SOURCE: source, PROBE_PARTICIPANTS: JSON.stringify(SELECTIONS[selectionMode][source]), PROBE_BARRIER: join(root, source), PROBE_CAPTURE: capture })
       const events = await lines(trace)
       const initial = events.find(event => event.source === source)
       assert.ok(initial.input.transcript_path.startsWith(config + '/'))
       resumePath = resumeMode === 'id' ? initial.input.session_id : initial.input.transcript_path
       const commands = Object.fromEntries(['a', 'b'].map(mode => [mode, [process.execPath, ...handler(mode).args].join(' ')]))
-      results.push(validate(source, events, await lines(capture), requests, await lines(shellTrace), commands, resumeMode))
+      results.push(validate(source, events, await lines(capture), requests, await lines(shellTrace), commands, resumeMode, selectionMode))
       assert.equal((await lines(evaluations)).length, results.length * 2 + (source === 'resume' && resumeMode === 'id' ? 2 : 0))
       const writer = events.find(event => event.source === source && event.mode === 'a' && event.input.hook_event_name === 'SessionStart')
       const content = await readFile(writer.envFile, 'utf8')
@@ -179,7 +189,7 @@ async function verify(binary, resumeMode) {
     }
     assert.equal(results[0].sessionID, results[1].sessionID)
     assert.equal(results[0].directory === results[1].directory, resumeMode === 'id')
-    return { claude: VERSION, mode: 'headless', sources: SOURCES, resumeMode, nativeConcurrentStartup: true, completionOrderedContext: true, configuredEnvironmentOrder: true, perHandlerEnvironmentFiles: true, freshResumeEnvironmentNamespace: resumeMode === 'path', resumeEnvironmentGeneration: resumeMode === 'id' ? 'current-activation' : 'prior-activation', resumeEnvironmentFilesAppended: resumeMode === 'id', hookEnvironmentIsolated: true, firstPromptAndModelWait: true, shellFunctionsAndRepeatedCommands: true, shellCodeReplayedPerCommand: true, startupPreToolEnvironmentEditsApplied: true, laterEnvironmentEditsNotRefreshed: true, nativeTranscriptAndContext: true, bridgeLifecycleComparison: 'not-implemented', equivalent: false }
+    return { claude: VERSION, mode: 'headless', sources: SOURCES, resumeMode, selectionMode, nativeConcurrentStartup: SELECTIONS[selectionMode].startup.length > 1, nativeConcurrentResume: SELECTIONS[selectionMode].resume.length > 1, completionOrderedContext: true, configuredEnvironmentOrder: true, perHandlerEnvironmentFiles: true, freshResumeEnvironmentNamespace: resumeMode === 'path', resumeEnvironmentGeneration: resumeMode === 'id' ? 'current-activation' : 'prior-activation', resumeEnvironmentFilesAppended: resumeMode === 'id', retainedFilesReplayedOnShorterSelection: resumeMode === 'id' && selectionMode === 'fewer', hookEnvironmentIsolated: true, firstPromptAndModelWait: true, shellFunctionsAndRepeatedCommands: true, shellCodeReplayedPerCommand: true, startupPreToolEnvironmentEditsApplied: true, laterEnvironmentEditsNotRefreshed: true, nativeTranscriptAndContext: true, bridgeLifecycleComparison: 'not-implemented', equivalent: false }
   } catch (error) { if (error instanceof ProbeError) throw error; throw new ProbeError('LIFECYCLE_CHECK_FAILED: ' + stage) } finally {
     if (gateway) { gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)) }
     await rm(root, { recursive: true, force: true })
@@ -188,13 +198,15 @@ async function verify(binary, resumeMode) {
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { binary: { type: 'string', short: 'b' }, 'resume-mode': { type: 'string', short: 'r' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { binary: { type: 'string', short: 'b' }, 'resume-mode': { type: 'string', short: 'r' }, 'selection-mode': { type: 'string', short: 's' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const binary = parsed.values.binary ?? process.env.CLAUDE_BINARY ?? 'claude'
     const resumeMode = parsed.values['resume-mode'] ?? 'id'
+    const selectionMode = parsed.values['selection-mode'] ?? 'stable'
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
     if (!RESUME_MODES.has(resumeMode)) throw new ProbeError('USAGE_RESUME_MODE: expected id or path', 2)
-    process.stdout.write(JSON.stringify(await verify(binary, resumeMode)) + '\n')
+    if (!Object.hasOwn(SELECTIONS, selectionMode)) throw new ProbeError('USAGE_SELECTION_MODE: expected stable, fewer or more', 2)
+    process.stdout.write(JSON.stringify(await verify(binary, resumeMode, selectionMode)) + '\n')
   }
 } catch (error) { process.stderr.write((error instanceof ProbeError ? error.message : 'LIFECYCLE_PROBE_FAILED') + '\n'); process.exitCode = error instanceof ProbeError ? error.status : 1 }

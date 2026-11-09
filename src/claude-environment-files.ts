@@ -4,17 +4,21 @@ import type { Stats } from 'node:fs'
 import { link, lstat, mkdir, open, unlink } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import type { RegistrationContext } from './host-services.js'
-import type { Registration } from './types.js'
+import type { LoadedSource, Registration } from './types.js'
 
 const DEFAULT_REGISTRATION_LIMIT = 256
+const MAX_SOURCES = 64
+const MAX_SNAPSHOT_REGISTRATIONS = 4096
+const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
 const MAX_ID_BYTES = 4096
 const MAX_MANIFEST_BYTES = 1024
 const PRIVATE_DIRECTORY_MODE = 0o700
 const PRIVATE_FILE_MODE = 0o600
-const MANIFEST_VERSION = 1
+const MANIFEST_VERSION = 2
 
 interface Options {
   readonly directory: string
+  readonly sources: readonly LoadedSource[]
   readonly maxRegistrations?: number
 }
 
@@ -33,6 +37,17 @@ function hash(value: string): string { return createHash('sha256').update(value)
 function validID(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && !value.includes('\0') && Buffer.byteLength(value) <= MAX_ID_BYTES }
 function owned(info: Stats): boolean { return !process.getuid || info.uid === process.getuid() }
 function cancelled(signal?: AbortSignal): void { if (signal?.aborted) fail('ENVIRONMENT_CANCELLED') }
+function eligible(registration: Registration): boolean { return registration.dialect === 'claude-code' && registration.event === 'SessionStart' && registration.handler.type === 'command' && (registration.handler.args !== undefined || registration.handler.shell !== 'powershell') }
+function revision(value: unknown, budget?: { bytes: number }): string {
+  const text = JSON.stringify(value)
+  const bytes = Buffer.byteLength(text)
+  if (bytes > MAX_SNAPSHOT_BYTES || budget && budget.bytes + bytes > MAX_SNAPSHOT_BYTES) fail('ENVIRONMENT_SNAPSHOT_LIMIT')
+  if (budget) budget.bytes += bytes
+  return hash(text)
+}
+function signature(registration: Registration, budget?: { bytes: number }): string {
+  return revision([registration.id, registration.sourceID, registration.dialect, registration.event, registration.groupIndex, registration.handlerIndex, registration.matcher, registration.handler, registration.projectRoot, registration.pluginRoot], budget)
+}
 
 async function privateDirectory(path: string, recursive = false): Promise<void> {
   await mkdir(path, { recursive, mode: PRIVATE_DIRECTORY_MODE }).catch(error => { if (!errno(error, 'EEXIST')) throw error })
@@ -87,10 +102,32 @@ async function reserveManifest(directory: string, text: string, signal?: AbortSi
 export class ClaudeEnvironmentFiles {
   private readonly directory: string
   private readonly limit: number
+  private readonly revision: string
+  private readonly reviewed = new Map<string, { readonly signature: string; readonly digest: string; readonly order: number }>()
 
   constructor(options: Options) {
     const limit = options.maxRegistrations ?? DEFAULT_REGISTRATION_LIMIT
     if (!isAbsolute(options.directory) || options.directory.includes('\0') || !Number.isSafeInteger(limit) || limit < 1 || limit > DEFAULT_REGISTRATION_LIMIT) fail('ENVIRONMENT_OPTIONS_INVALID')
+    if (!Array.isArray(options.sources) || options.sources.length > MAX_SOURCES) fail('ENVIRONMENT_SNAPSHOT_LIMIT')
+    const ids = new Set<string>()
+    const registrationIDs = new Set<string>()
+    const budget = { bytes: 0 }
+    let registrationCount = 0
+    this.revision = revision(options.sources.flatMap((source: LoadedSource) => {
+      if (!validID(source.id) || ids.has(source.id) || !['claude-code', 'codex'].includes(source.dialect) || !/^[a-f0-9]{64}$/.test(source.digest) || !validID(source.path) || !isAbsolute(source.path) || typeof source.enabled !== 'boolean') fail('ENVIRONMENT_SOURCE_INVALID')
+      ids.add(source.id)
+      if (source.dialect !== 'claude-code') return []
+      registrationCount += source.registrations.length
+      if (registrationCount > MAX_SNAPSHOT_REGISTRATIONS) fail('ENVIRONMENT_SNAPSHOT_LIMIT')
+      const registrations = source.registrations.filter(eligible).map(registration => {
+        if (!validID(registration.id) || registration.sourceID !== source.id || registrationIDs.has(registration.id) || registration.sourceDigest !== undefined && registration.sourceDigest !== source.digest) fail('ENVIRONMENT_SOURCE_INVALID')
+        registrationIDs.add(registration.id)
+        const digest = signature(registration, budget)
+        if (source.enabled) this.reviewed.set(registration.id, { signature: digest, digest: source.digest, order: this.reviewed.size })
+        return [registration.id, digest]
+      })
+      return [[source.id, source.digest, source.enabled, source.path, source.projectRoot, source.pluginRoot, registrations]]
+    }), budget)
     this.directory = options.directory
     this.limit = limit
   }
@@ -101,21 +138,27 @@ export class ClaudeEnvironmentFiles {
       if (!validID(sessionID)) fail('ENVIRONMENT_SESSION_INVALID')
       if (registrations.length > this.limit) fail('ENVIRONMENT_REGISTRATION_LIMIT')
       const ids = new Set<string>()
-      const revisions = registrations.map(registration => {
+      let previousOrder = -1
+      const selected = registrations.map(registration => {
         if (!validID(registration.id) || !validID(registration.sourceID) || ids.has(registration.id)) fail('ENVIRONMENT_REGISTRATION_INVALID')
         ids.add(registration.id)
-        if (registration.dialect !== 'claude-code' || registration.event !== 'SessionStart' || registration.handler.type !== 'command' || registration.handler.args === undefined && registration.handler.shell === 'powershell') fail('ENVIRONMENT_EVENT_UNSUPPORTED')
-        if (typeof registration.sourceDigest !== 'string' || !/^[a-f0-9]{64}$/.test(registration.sourceDigest)) fail('ENVIRONMENT_SOURCE_REVISION_UNAVAILABLE')
-        return [registration.id, registration.sourceID, registration.sourceDigest] as const
+        if (!eligible(registration)) fail('ENVIRONMENT_EVENT_UNSUPPORTED')
+        const reviewed = this.reviewed.get(registration.id)
+        if (!reviewed) fail('ENVIRONMENT_REGISTRATION_UNREVIEWED')
+        if (registration.sourceDigest !== undefined && registration.sourceDigest !== reviewed.digest) fail('ENVIRONMENT_SOURCE_REVISION_UNAVAILABLE')
+        if (signature(registration) !== reviewed.signature) fail('ENVIRONMENT_REGISTRATION_UNREVIEWED')
+        if (reviewed.order <= previousOrder) fail('ENVIRONMENT_REGISTRATION_ORDER_INVALID')
+        previousOrder = reviewed.order
+        return registration.id
       })
       cancelled(signal)
       const directory = join(this.directory, hash(sessionID))
-      const files = revisions.map(([registrationID], index) => Object.freeze({ registrationID, path: join(directory, `sessionstart-hook-${index}.sh`) }))
+      const files = selected.map((registrationID, index) => Object.freeze({ registrationID, path: join(directory, `sessionstart-hook-${index}.sh`) }))
       const context: Record<string, RegistrationContext> = Object.create(null) as Record<string, RegistrationContext>
       for (const file of files) context[file.registrationID] = Object.freeze({ envFile: file.path })
       const plan = Object.freeze({ files: Object.freeze(files), registrationContext: Object.freeze(context) })
       if (!files.length) return plan
-      const manifest = JSON.stringify({ version: MANIFEST_VERSION, layout: hash(JSON.stringify(revisions)) }) + '\n'
+      const manifest = JSON.stringify({ version: MANIFEST_VERSION, layout: this.revision }) + '\n'
       await privateDirectory(this.directory, true)
       cancelled(signal)
       await privateDirectory(directory)

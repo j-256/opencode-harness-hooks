@@ -25,16 +25,17 @@ test('Claude lifecycle oracle help and preconditions require no live configurati
     assert.match(result.stdout, /SessionStart/)
     assert.match(result.stdout, /environment/)
     assert.match(result.stdout, /--resume-mode/)
+    assert.match(result.stdout, /--selection-mode/)
     assert.match(result.stdout, /2\.1\.318/)
     assert.equal(result.stderr, '')
   }
-  for (const args of [['--unknown'], ['-b'], ['--binary='], ['--resume-mode=other'], ['-r'], ['--', 'unexpected']]) {
+  for (const args of [['--unknown'], ['-b'], ['--binary='], ['--resume-mode=other'], ['--selection-mode=other'], ['-r'], ['-s'], ['--', 'unexpected']]) {
     const result = await invoke(args, process.env, lifecycleProbe)
     assert.equal(result.status, 2)
     assert.equal(result.stdout, '')
     assert.match(result.stderr, /USAGE_/)
   }
-  for (const args of [['-b', node], ['-b' + node], ['--binary=' + node], ['-rid', '-b', node], ['--resume-mode=path', '-b', node]]) {
+  for (const args of [['-b', node], ['-b' + node], ['--binary=' + node], ['-rid', '-b', node], ['--resume-mode=path', '-b', node], ['--selection-mode=fewer', '-b', node], ['-smore', '-b', node]]) {
     const result = await invoke(args, process.env, lifecycleProbe)
     assert.equal(result.status, 2)
     assert.equal(result.stdout, '')
