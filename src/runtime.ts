@@ -18,6 +18,8 @@ import type { RuntimeReport } from './inspection.js'
 import { runService } from './service-execution.js'
 import { SessionError, Sessions } from './sessions.js'
 import type { SessionSnapshot } from './sessions.js'
+import { SessionStarts } from './session-start.js'
+import type { SessionStartEvent, SessionStartServices } from './session-start.js'
 import type { TranscriptService } from './transcript.js'
 import type { JsonValue, LoadedSource, NativeEvent, Registration } from './types.js'
 
@@ -28,6 +30,7 @@ const MAX_PROMPT_BYTES = 8 * 1024 * 1024
 type NativeData = NonNullable<NativeEvent['dialectData']>
 
 export interface RuntimeServices {
+  readonly sessionStart?: SessionStartServices
   readonly host?: Omit<HostServices, 'projectRoot' | 'signal' | 'sessionSignal'>
   readonly tools?: Omit<ToolHostOptions, 'dispatch'>
   readonly nativeData?: (event: HostToolEvent, session: SessionSnapshot, signal: AbortSignal) => Promise<NativeData>
@@ -68,8 +71,11 @@ function resultData(event: HostToolEvent): Record<string, JsonValue> {
 export async function createRuntime(host: HostVersion, directory: string, inputOptions: unknown, services: RuntimeServices = {}) {
   if (!Object.hasOwn(HOST_VERSIONS, host) || typeof directory !== 'string' || !directory) throw new HostHookError('HOST_INPUT_INVALID', 'failed')
   directory = resolve(directory)
-  services = { ...services, ...(services.host ? { host: snapshotCommandContexts(services.host) } : {}), ...(services.tools ? { tools: { ...services.tools } } : {}) }
-  const { options, sources, report } = await inspectSources(host, directory, inputOptions)
+  services = { ...services, ...(services.host ? { host: snapshotCommandContexts({ ...services.host, environment: { ...services.host.environment } }) } : {}), ...(services.tools ? { tools: { ...services.tools } } : {}), ...(services.sessionStart ? { sessionStart: { ...services.sessionStart } } : {}) }
+  const environment = { ...(services.host?.environment ?? process.env) }
+  const inspected = await inspectSources(host, directory, inputOptions)
+  const { options, sources } = inspected
+  const report: RuntimeReport = services.sessionStart ? Object.freeze({ ...inspected.report, sources: Object.freeze(inspected.report.sources.map(source => Object.freeze({ ...source, unwiredEvents: Object.freeze(source.unwiredEvents.filter(event => event !== 'SessionStart')) }))) }) : inspected.report
   await (services.report ?? (value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', code: 'RUNTIME_REPORT', ...value })) }))(report)
   for (const source of report.sources) {
     if (!Object.hasOwn(options.reviewedDigests, source.id)) throw new HostHookError('SOURCE_REVIEW_REQUIRED', 'unsupported', source.id)
@@ -78,7 +84,6 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
   }
   const sessions = new Sessions()
   const active = new Set<Promise<DispatchResult>>()
-  const environment = { ...(services.host?.environment ?? process.env) }
   let observerFailures = 0
   const diagnostic = services.dispatchDiagnostic ?? ((value: DispatchResult['diagnostic']) => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', code: 'DISPATCH_RESULT', ...value })) })
   const observe = (dispatch: DispatchResult) => {
@@ -88,9 +93,14 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     } catch { observerFailures++ }
     return dispatch
   }
+  const starts = services.sessionStart && sources.some(source => source.enabled && source.registrations.some(registration => registration.event === 'SessionStart')) ? new SessionStarts({ host, sources, sessions, hostServices: { ...services.host, environment, projectRoot: directory }, ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}), services: services.sessionStart, observe }) : undefined
   const reported = new WeakSet<object>()
   const needsModelArtifacts = !!services.transcripts?.observeModel && sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.length)
   const observeModel = (event: HostModelEvent) => {
+    if (starts) {
+      if (event.host !== host) throw new HostHookError('HOST_VERSION_MISMATCH', 'unsupported')
+      starts.requireReady(event.sessionID)
+    }
     if (!needsModelArtifacts) return
     const started = performance.now()
     try {
@@ -135,6 +145,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
       const signal = AbortSignal.any([event.signal, session.signal, session.turnSignal])
       const pending = (async () => {
         if (signal.aborted) throw new HostHookError('HOST_TOOL_CANCELLED', 'cancelled')
+        if (starts) await runService(null, signal, () => starts.wait(event.sessionID))
         if (sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.length)) services.transcripts?.observe(event, session)
         const base: NativeEvent = { host, event: event.event, sessionID: event.sessionID, cwd: directory, tool: event.tool, toolInput: event.event === 'PreToolUse' ? event.toolInput : event.effectiveInput }
         const selected = matched(sources, base).filter(registration => !nativeSkip(registration, base))
@@ -170,6 +181,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     const signal = AbortSignal.any([event.signal, session.signal, session.turnSignal])
     const pending = (async () => {
       if (signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')
+      if (starts) await runService(null, signal, () => starts.wait(event.sessionID))
       const base: NativeEvent = { host, event: 'UserPromptSubmit', sessionID: event.sessionID, cwd: directory }
       const selected = matched(sources, base).filter(registration => !nativeSkip(registration, base))
       let nativeData = selected.length && services.promptData ? await runService(null, signal, current => services.promptData!(event, session, current)) : undefined
@@ -196,5 +208,11 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     if (session.turnID !== event.messageID) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
     services.transcripts?.admitPrompt?.(event, session, dispatch)
   }
-  return { report, sessions, tools, prompt, admitPrompt, promptOperation, observeModel, needsModelArtifacts, hasPromptHooks: sources.some(source => source.registrations.some(registration => registration.event === 'UserPromptSubmit')), inspect: () => Object.freeze({ activeDispatches: active.size, observerFailures, sessions: sessions.inspect() }), async dispose() { sessions.dispose(); await Promise.allSettled([...active]); await services.transcripts?.dispose() } }
+  return { report, sessions, tools, prompt, admitPrompt, promptOperation, observeModel, needsModelArtifacts,
+    start: (event: SessionStartEvent) => starts ? starts.start(event) : Promise.reject(new HostHookError('HOST_EVENT_UNAVAILABLE', 'unsupported')),
+    waitForStart: (sessionID: string) => starts ? starts.wait(sessionID) : Promise.resolve(undefined),
+    hasPromptHooks: sources.some(source => source.registrations.some(registration => registration.event === 'UserPromptSubmit')),
+    inspect: () => Object.freeze({ activeDispatches: active.size, observerFailures, sessions: sessions.inspect(), ...(starts ? { sessionStarts: starts.inspect() } : {}) }),
+    async dispose() { sessions.dispose(); await Promise.allSettled([...active, ...(starts ? [starts.dispose()] : [])]); await services.transcripts?.dispose() },
+  }
 }

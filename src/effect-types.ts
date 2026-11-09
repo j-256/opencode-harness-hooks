@@ -8,6 +8,16 @@ export interface CommandArtifact extends ExecutionResult {
   readonly timeoutMs: number | null
 }
 
+export interface NativeFailureArtifact {
+  readonly type: 'hook_non_blocking_error'
+  readonly completedAt: number
+  readonly stdout: string
+  readonly stderr: string
+  readonly exitCode: number
+  readonly command?: string
+  readonly durationMs?: number
+}
+
 export type PermissionDecision = 'allow' | 'deny' | 'ask' | 'defer'
 export type HookAction =
   | { readonly kind: 'permission'; readonly decision: PermissionDecision; readonly reason: string }
@@ -30,6 +40,7 @@ export interface InterpretedOutput {
 
 export interface HookEffect extends InterpretedOutput {
   readonly commandArtifact?: CommandArtifact
+  readonly nativeFailureArtifact?: NativeFailureArtifact
   readonly diagnostic: {
     readonly sourceID: string
     readonly sourceDigest?: string

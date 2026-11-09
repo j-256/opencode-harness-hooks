@@ -164,7 +164,6 @@ test('matches native handler availability before consulting services and reports
     ['claude-code', 'SessionStart', { type: 'http', url: 'http://invalid' }],
     ['claude-code', 'PermissionRequest', { type: 'agent', prompt: 'unused' }],
     ['claude-code', 'Setup', { type: 'mcp_tool', server: 'unused', tool: 'unused' }],
-    ['claude-code', 'SessionStart', { type: 'mcp_tool', server: 'unused', tool: 'unused' }],
     ['codex', 'SessionEnd', { type: 'mcp_tool', server: 'unused', tool: 'unused' }],
   ] as const) {
     const result = await executeRegistration(registration(dialect, handler, name), event(root, name), host)
@@ -177,6 +176,36 @@ test('matches native handler availability before consulting services and reports
   const background = await executeRegistration(registration('codex', { type: 'command', command: 'unused', async: true }), event(root), host)
   assert.equal(background.status, 'unsupported')
   assert.equal(background.code, 'HOST_BACKGROUND_UNAVAILABLE')
+})
+
+test('native startup rejections remain nonblocking artifacts and tool conditions suppress those records', async t => {
+  const { executeRegistration } = await import('../src/handlers.js')
+  const root = await fixture(t)
+  const host = { environment, projectRoot: root }
+  for (const source of ['startup', 'resume']) {
+    const input = { event: 'SessionStart', sessionID: 'session', cwd: root, data: { source } }
+    for (const type of ['prompt', 'agent', 'mcp_tool'] as const) {
+      const handler: Handler = type === 'mcp_tool' ? { type, server: 'unused', tool: 'unused', onFailure: 'block' } : { type, prompt: 'PRIVATE_PROMPT', onFailure: 'block' }
+      const result = await executeRegistration(registration('claude-code', handler, 'SessionStart'), input, host)
+      assert.equal(result.status, 'failed')
+      assert.equal(result.code, 'NATIVE_HANDLER_EVENT_UNSUPPORTED')
+      assert.deepEqual(result.actions, [])
+      assert.ok(result.status === 'failed' && result.nativeFailureArtifact)
+      const { completedAt, ...artifact } = result.nativeFailureArtifact
+      assert.ok(Number.isFinite(completedAt) && completedAt > 0)
+      assert.deepEqual(artifact, {
+        type: 'hook_non_blocking_error', stdout: '', exitCode: 1,
+        stderr: type === 'mcp_tool' ? "mcp_tool hooks are not available for the 'SessionStart' hook event (no MCP client context)" : `Failed to run: ${type}-type hooks are not supported for SessionStart events (no conversation context is available). Use a command-type hook instead.`,
+        ...(type === 'mcp_tool' ? {} : { command: 'PRIVATE_PROMPT', durationMs: 0 }),
+      })
+      assert.equal(JSON.stringify(result.diagnostic).includes('PRIVATE_PROMPT'), false)
+      const conditioned = await executeRegistration(registration('claude-code', { ...handler, if: 'Bash(*)' }, 'SessionStart'), input, host)
+      assert.equal(conditioned.status, 'skipped')
+      assert.equal(conditioned.code, 'NATIVE_CONDITION_EVENT')
+      assert.equal('nativeFailureArtifact' in conditioned, false)
+      assert.deepEqual(conditioned.actions, [])
+    }
+  }
 })
 
 test('Claude conditions receive native tool input and prevent execution when false or on non-tool events', async t => {

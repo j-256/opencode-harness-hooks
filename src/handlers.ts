@@ -1,7 +1,7 @@
 import { isBackground } from './background-types.js'
 import { performance } from 'node:perf_hooks'
 import { prepareCommand, CommandContextError } from './command-context.js'
-import type { HookAction, HookEffect } from './effect-types.js'
+import type { HookAction, HookEffect, NativeFailureArtifact } from './effect-types.js'
 import { runHttp } from './http-handler.js'
 import { runModel } from './model-handler.js'
 import { runMcp } from './mcp-handler.js'
@@ -16,6 +16,7 @@ import type { NativeEvent, Registration } from './types.js'
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied'])
 const MODEL_EVENTS = new Set(['PermissionDenied', 'PostToolBatch', 'PostToolUse', 'PostToolUseFailure', 'PreToolUse', 'Stop', 'SubagentStop', 'TaskCompleted', 'TaskCreated', 'TeammateIdle', 'UserPromptExpansion', 'UserPromptSubmit'])
+const MCP_START_REJECTION = "mcp_tool hooks are not available for the 'SessionStart' hook event (no MCP client context)"
 type InactiveStatus = 'skipped' | 'unsupported' | 'background'
 export type HandlerResult = HookEffect | {
   readonly status: InactiveStatus
@@ -31,7 +32,7 @@ function result(registration: Registration, status: InactiveStatus | 'failed' | 
   return { status, code, actions, diagnostic: { ...diagnostic, outcome: status } }
 }
 
-export function nativeSkip(registration: Registration, event: NativeEvent): boolean {
+function nativeHandlerSkip(registration: Registration, event: NativeEvent): boolean {
   const type = registration.handler.type
   if (registration.dialect === 'codex') return type === 'prompt' || type === 'agent' || (type === 'mcp_tool' && event.event === 'SessionEnd')
   if ((type === 'prompt' || type === 'agent') && !MODEL_EVENTS.has(event.event) && !(type === 'prompt' && event.event === 'PermissionRequest')) return true
@@ -44,14 +45,41 @@ export function nativeSkip(registration: Registration, event: NativeEvent): bool
   return false
 }
 
+function nativeSkipReason(registration: Registration, event: NativeEvent): string | undefined {
+  if (registration.dialect === 'claude-code' && registration.handler.if !== undefined && !TOOL_EVENTS.has(event.event)) return 'NATIVE_CONDITION_EVENT'
+  if (nativeHandlerSkip(registration, event)) return 'NATIVE_HANDLER_SKIPPED'
+  return undefined
+}
+
+export function nativeSkip(registration: Registration, event: NativeEvent): boolean { return nativeSkipReason(registration, event) !== undefined }
+
+function nativeStartRejection(registration: Registration, event: NativeEvent): NativeFailureArtifact | undefined {
+  if (registration.dialect !== 'claude-code' || event.event !== 'SessionStart' || registration.handler.if !== undefined) return undefined
+  const type = registration.handler.type
+  if ((type === 'prompt' || type === 'agent') && typeof registration.handler.prompt === 'string') return {
+    type: 'hook_non_blocking_error', completedAt: Date.now(), command: registration.handler.prompt, durationMs: 0, stdout: '',
+    stderr: `Failed to run: ${type}-type hooks are not supported for SessionStart events (no conversation context is available). Use a command-type hook instead.`, exitCode: 1,
+  }
+  const source = event.dialectData?.['claude-code']?.source ?? event.data?.source
+  if (type === 'mcp_tool' && (source === 'startup' || source === 'resume')) return { type: 'hook_non_blocking_error', completedAt: Date.now(), stdout: '', stderr: MCP_START_REJECTION, exitCode: 1 }
+  return undefined
+}
+
 export async function executeRegistration(registration: Registration, inputEvent: NativeEvent, services: HostServices): Promise<HandlerResult> {
   const started = performance.now()
   const event = structuredClone(inputEvent)
   const background = isBackground(registration)
   const fail = (code: string) => result(registration, 'failed', code, started, !background && registration.dialect === 'claude-code' && claudeFailureBlocks(registration, code) ? claudeBlock(event, `Hook failed: ${code}`, true) : [])
   if (registration.event !== inputEvent.event) return fail('HANDLER_EVENT_MISMATCH')
-  if (nativeSkip(registration, inputEvent)) return result(registration, 'skipped', 'NATIVE_HANDLER_SKIPPED', started)
-  if (registration.dialect === 'claude-code' && registration.handler.if !== undefined && !TOOL_EVENTS.has(inputEvent.event)) return result(registration, 'skipped', 'NATIVE_CONDITION_EVENT', started)
+  const skipped = nativeSkipReason(registration, inputEvent)
+  if (skipped) {
+    const artifact = nativeStartRejection(registration, event)
+    if (artifact) {
+      const rejected = result(registration, 'failed', 'NATIVE_HANDLER_EVENT_UNSUPPORTED', started)
+      return { ...rejected, status: 'failed', nativeFailureArtifact: artifact, diagnostic: { ...rejected.diagnostic, outcome: 'failed' } }
+    }
+    return result(registration, 'skipped', skipped, started)
+  }
   const host = snapshotCommandContexts({ ...services, environment: { ...services.environment } })
   try {
     const payload = buildPayload(registration, event)
