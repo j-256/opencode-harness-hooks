@@ -156,3 +156,49 @@ test('retains native handler families and fields without executing them during i
   assert.equal(source?.registrations[0]?.handler.async, true)
 })
 
+test('Codex configuration follows native handler fields, ignored extras, and zero deadlines', async t => {
+  const { loadSources } = await import('../src/config.js')
+  const root = await fixture(t)
+  const path = join(root, 'hooks.json')
+  await writeFile(path, JSON.stringify({ hooks: { PreToolUse: [{ matcher: null, hooks: [
+    { type: 'command', command: '', timeout: 0, args: 'ignored', if: 'ignored', onFailure: 'ignored', statusMessage: null },
+    { type: 'prompt' }, { type: 'agent', prompt: 7 },
+  ] }] } }))
+  const [source] = await loadSources([{ id: 'codex', dialect: 'codex', path }])
+  assert.deepEqual(source?.registrations.map(item => item.handler), [
+    { type: 'command', command: '', timeout: 0 }, { type: 'prompt' }, { type: 'agent' },
+  ])
+  assert.equal(source?.registrations[0]?.matcher, undefined)
+})
+
+test('rejects native Codex schema violations without accepting extra handler families', async t => {
+  const { loadSources } = await import('../src/config.js')
+  const root = await fixture(t)
+  const path = join(root, 'hooks.json')
+  for (const handler of [
+    { type: 'http', url: 'http://127.0.0.1' },
+    { type: 'command', command: 'unused', timeout: 0.5 },
+    { type: 'mcp_tool', server: 'server', tool: 'tool', input: { nested: [null] } },
+  ]) {
+    await writeFile(path, JSON.stringify({ hooks: { Stop: [{ hooks: [handler] }] } }))
+    await assert.rejects(loadSources([{ id: 'codex', dialect: 'codex', path }]), /SOURCE_HANDLER/)
+  }
+  await writeFile(path, JSON.stringify({ unrelated: 'SECRET_SENTINEL', hooks: {} }))
+  await assert.rejects(loadSources([{ id: 'codex', dialect: 'codex', path }]), /SOURCE_SCHEMA/)
+})
+
+test('Codex honors the deprecated feature alias while preferring the canonical feature key', async t => {
+  const { loadSources } = await import('../src/config.js')
+  const root = await fixture(t)
+  const path = join(root, 'config.toml')
+  for (const [flags, expected] of [
+    ['codex_hooks = false', false],
+    ['codex_hooks = false\nhooks = true', true],
+    ['codex_hooks = true\nhooks = false', false],
+  ] as const) {
+    await writeFile(path, `[features]\n${flags}\n[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "unused"\n`)
+    const [source] = await loadSources([{ id: 'codex', dialect: 'codex', path }])
+    assert.equal(source?.enabled, expected)
+  }
+})
+

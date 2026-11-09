@@ -3,12 +3,17 @@ import { createHash } from 'node:crypto'
 import { resolve, extname } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { HANDLER_TYPES, isHookEvent } from './contracts.js'
+import type { Dialect } from './contracts.js'
 import type { ExcludedRegistration, ExclusionReason, Handler, LoadedSource, Registration, SourceSpec } from './types.js'
 
 const DEFAULT_SOURCE_BYTES = 1024 * 1024
 const MAX_SOURCE_BYTES = 64 * DEFAULT_SOURCE_BYTES
 const READ_CHUNK_BYTES = 64 * 1024
 const SOURCE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/
+const CODEX_HANDLER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  command: ['type', 'command', 'commandWindows', 'command_windows', 'timeout', 'async', 'statusMessage', 'additionalContextLimit'],
+  mcp_tool: ['type', 'server', 'tool', 'input', 'timeout', 'statusMessage'], prompt: ['type'], agent: ['type'],
+})
 
 export class SourceError extends Error {
   constructor(readonly code: string, readonly sourceID: string) {
@@ -74,12 +79,28 @@ async function readSource(spec: SourceSpec, maxBytes: number): Promise<Buffer> {
   }
 }
 
-function validateHandler(value: unknown, sourceID: string): Handler {
+function codexHandler(value: Record<string, unknown>, sourceID: string): Record<string, unknown> {
+  const fields = CODEX_HANDLER_FIELDS[String(value.type)]
+  if (!fields) throw new SourceError('SOURCE_HANDLER', sourceID)
+  const handler = Object.fromEntries(Object.entries(value).filter(([key]) => fields.includes(key)))
+  for (const key of ['commandWindows', 'command_windows', 'timeout', 'statusMessage', 'additionalContextLimit']) if (handler[key] === null) delete handler[key]
+  if (handler.commandWindows !== undefined && handler.command_windows !== undefined) throw new SourceError('SOURCE_HANDLER', sourceID)
+  if (handler.command_windows !== undefined) { handler.commandWindows = handler.command_windows; delete handler.command_windows }
+  if (handler.additionalContextLimit !== undefined && (!Number.isSafeInteger(handler.additionalContextLimit) || Number(handler.additionalContextLimit) < 0)) throw new SourceError('SOURCE_HANDLER', sourceID)
+  const representable = (item: unknown): boolean => item !== null && (typeof item !== 'object' || Object.values(item).every(representable))
+  if (handler.input !== undefined && !representable(handler.input)) throw new SourceError('SOURCE_HANDLER', sourceID)
+  return handler
+}
+
+function validateHandler(raw: unknown, sourceID: string, dialect: Dialect): Handler {
   const fail = () => { throw new SourceError('SOURCE_HANDLER', sourceID) }
-  if (!record(value) || typeof value.type !== 'string' || !HANDLER_TYPES.includes(value.type)) return fail()
-  const required = value.type === 'command' ? ['command'] : value.type === 'http' ? ['url'] : value.type === 'mcp_tool' ? ['server', 'tool'] : ['prompt']
-  for (const key of required) if (typeof value[key] !== 'string' || !(value[key] as string).trim()) fail()
-  if (value.timeout !== undefined && (typeof value.timeout !== 'number' || !Number.isFinite(value.timeout) || value.timeout <= 0)) fail()
+  if (!record(raw) || typeof raw.type !== 'string' || !HANDLER_TYPES.includes(raw.type)) return fail()
+  const value = dialect === 'codex' ? codexHandler(raw, sourceID) : raw
+  const skipped = dialect === 'codex' && (value.type === 'prompt' || value.type === 'agent')
+  const required = skipped ? [] : value.type === 'command' ? ['command'] : value.type === 'http' ? ['url'] : value.type === 'mcp_tool' ? ['server', 'tool'] : ['prompt']
+  for (const key of required) if (typeof value[key] !== 'string' || (dialect !== 'codex' && !(value[key] as string).trim())) fail()
+  if (value.timeout !== undefined && (typeof value.timeout !== 'number' || !Number.isFinite(value.timeout) || (dialect === 'codex' ? !Number.isSafeInteger(value.timeout) || value.timeout < 0 : value.timeout <= 0))) fail()
+  for (const key of ['statusMessage', 'commandWindows']) if (value[key] !== undefined && typeof value[key] !== 'string') fail()
   for (const key of ['args', 'allowedEnvVars']) {
     if (value[key] !== undefined && (!Array.isArray(value[key]) || value[key].some(item => typeof item !== 'string'))) fail()
   }
@@ -112,8 +133,10 @@ async function loadSource(spec: SourceSpec, maxBytes: number): Promise<LoadedSou
     throw new SourceError('SOURCE_PARSE', spec.id)
   }
   if (!record(data) || (data.hooks !== undefined && !record(data.hooks))) throw new SourceError('SOURCE_SCHEMA', spec.id)
+  if (spec.dialect === 'codex' && extname(spec.path).toLowerCase() !== '.toml' && (Object.keys(data).some(key => !['description', 'hooks'].includes(key)) || (data.description != null && typeof data.description !== 'string'))) throw new SourceError('SOURCE_SCHEMA', spec.id)
   if (data.disableAllHooks !== undefined && typeof data.disableAllHooks !== 'boolean') throw new SourceError('SOURCE_SCHEMA', spec.id)
-  const enabled = spec.dialect === 'claude-code' ? data.disableAllHooks !== true : !record(data.features) || data.features.hooks !== false
+  const codexFeature = record(data.features) ? data.features.hooks ?? data.features.codex_hooks : undefined
+  const enabled = spec.dialect === 'claude-code' ? data.disableAllHooks !== true : codexFeature !== false
   const roots = {
     ...(spec.projectRoot !== undefined ? { projectRoot: resolve(spec.projectRoot) } : {}),
     ...(spec.pluginRoot !== undefined ? { pluginRoot: resolve(spec.pluginRoot) } : {}),
@@ -125,9 +148,9 @@ async function loadSource(spec: SourceSpec, maxBytes: number): Promise<LoadedSou
     if (!isHookEvent(spec.dialect, event)) throw new SourceError('SOURCE_EVENT', spec.id)
     if (!Array.isArray(groups)) throw new SourceError('SOURCE_GROUP', spec.id)
     for (const [groupIndex, group] of groups.entries()) {
-      if (!record(group) || !Array.isArray(group.hooks) || (group.matcher !== undefined && typeof group.matcher !== 'string')) throw new SourceError('SOURCE_GROUP', spec.id)
+      if (!record(group) || !Array.isArray(group.hooks) || (group.matcher != null && typeof group.matcher !== 'string') || (group.matcher === null && spec.dialect !== 'codex')) throw new SourceError('SOURCE_GROUP', spec.id)
       for (const [handlerIndex, rawHandler] of group.hooks.entries()) {
-        const handler = validateHandler(rawHandler, spec.id)
+        const handler = validateHandler(rawHandler, spec.id, spec.dialect)
         const id = `${spec.id}:${event}:${groupIndex}:${handlerIndex}`
         const nativeKey = `${resolve(spec.path)}:${event.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()}:${groupIndex}:${handlerIndex}`
         const states = record(data.hooks) && record(data.hooks.state) ? data.hooks.state : {}
@@ -137,7 +160,7 @@ async function loadSource(spec: SourceSpec, maxBytes: number): Promise<LoadedSou
         if (reason) excluded.push({ id, event, type: handler.type, reason })
         else registrations.push({
           id, sourceID: spec.id, dialect: spec.dialect, event, groupIndex, handlerIndex, handler, ...roots,
-          ...(group.matcher !== undefined ? { matcher: group.matcher } : {}),
+          ...(typeof group.matcher === 'string' ? { matcher: group.matcher } : {}),
         })
       }
     }
