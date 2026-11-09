@@ -136,3 +136,15 @@ test('invalid matchers do not prevent other runtime registrations and unmatched 
   assert.equal(result.entries[1]?.result.status, 'success')
   assert.equal((await runtime.tools.dispatch({ ...event, event: 'PostToolUse', result: undefined })).entries.length, 0)
 })
+
+test('an explicitly invalid native transcript path is not replaced by an apparently valid projection', async t => {
+  const f = await fixture(t, { PreToolUse: [{ hooks: [{ type: 'command', command: 'exit 0' }] }] })
+  let prepared = false
+  const runtime = await createRuntime('v1', f.directory, { ...f.options, sources: f.options.sources.map(source => ({ ...source, dialect: 'claude-code' })) }, {
+    report: () => {}, nativeData: async () => ({ 'claude-code': { transcript_path: null } }), transcripts: { observe: () => {}, prepare: async () => { prepared = true; return '/must-not-be-used' }, dispose: async () => {} },
+  })
+  t.after(() => runtime.dispose())
+  runtime.sessions.prompt('session', 'turn', 'fixture')
+  await assert.rejects(runtime.tools.dispatch({ host: 'v1', event: 'PreToolUse', sessionID: 'session', callID: 'call', tool: 'bash', toolInput: { command: 'original' }, effectiveInput: { command: 'original' }, signal: new AbortController().signal }), { code: 'HOST_NATIVE_METADATA_UNAVAILABLE' })
+  assert.equal(prepared, false)
+})

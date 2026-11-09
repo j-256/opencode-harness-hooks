@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import definition from '../src/index.js'
+import { setupHarnessHooks } from '../src/plugin.js'
 
 test('the root exports one definition accepted by both host APIs', async () => {
   const root = await import('../src/index.js')
@@ -53,4 +54,44 @@ test('V2 setup failure removes metadata registrations before returning its error
   const options = { sources: [{ id: 'source', dialect: 'codex', path }], reviewedDigests: { source: createHash('sha256').update(source).digest('hex') } }
   await assert.rejects(definition.setup({ location: { directory }, options, session: { hook: async name => { handles.add(name); return { dispose: () => { handles.delete(name) } } } }, tool: { hook: async () => { throw new Error('Fixture registration failure') } } }), /Fixture registration failure/)
   assert.equal(handles.size, 0)
+})
+
+test('the default V1 entrypoint supplies a Claude transcript read by the unchanged native command contract', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'harness-claude-plugin-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const path = join(directory, 'hooks.json')
+  const command = 'const fs=require("node:fs");const p=JSON.parse(fs.readFileSync(0,"utf8"));const rows=fs.readFileSync(p.transcript_path,"utf8").trim().split(String.fromCharCode(10)).map(JSON.parse);if(rows[0].message.content!=="Prompt"||rows.at(-1).message.content[0].input.command!=="original")process.exit(7);console.log(JSON.stringify({hookSpecificOutput:{hookEventName:"PreToolUse",updatedInput:{command:"from-transcript"}}}));'
+  const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: process.execPath, args: ['-e', command] }] }] } })
+  await writeFile(path, source)
+  const options = { sources: [{ id: 'claude', dialect: 'claude-code', path }], reviewedDigests: { claude: createHash('sha256').update(source).digest('hex') }, permissionMode: 'default' }
+  const hooks = await definition.server({ directory, client: { session: {
+    get: async () => ({ data: { id: 'session' } }),
+    messages: async () => ({ data: [
+      { info: { id: 'turn', sessionID: 'session', role: 'user', time: { created: 1 } }, parts: [{ type: 'text', text: 'Prompt' }] },
+      { info: { id: 'answer', sessionID: 'session', parentID: 'turn', role: 'assistant', modelID: 'fixture', time: { created: 2 } }, parts: [{ type: 'tool', callID: 'call', tool: 'bash', state: { status: 'running', input: { command: 'original' } } }] },
+    ] }),
+  } } }, options)
+  t.after(() => hooks.dispose())
+  await hooks['chat.message']({ sessionID: 'session', model: { modelID: 'fixture' } }, { message: { id: 'turn' } })
+  const args = { command: 'original' }
+  await hooks['tool.execute.before']({ sessionID: 'session', callID: 'call', tool: 'bash' }, { args })
+  assert.deepEqual(args, { command: 'from-transcript' })
+})
+
+test('V2 unregisters every callback even when artifact cleanup fails and permits a cleanup retry', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'harness-cleanup-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const path = join(directory, 'hooks.json')
+  const source = '{"hooks":{}}'
+  await writeFile(path, source)
+  const handles = new Set<string>()
+  const hook = async (name: string) => { handles.add(name); return { dispose: () => { handles.delete(name) } } }
+  let cleanup = 0
+  const dispose = await setupHarnessHooks({ location: { directory }, options: { sources: [{ id: 'source', dialect: 'codex', path }], reviewedDigests: { source: createHash('sha256').update(source).digest('hex') } }, session: { hook }, tool: { hook } }, {
+    report: () => {}, transcripts: { observe: () => {}, prepare: async () => { throw new Error('Unused') }, dispose: async () => { if (++cleanup === 1) throw new Error('Fixture artifact cleanup failure') } },
+  })
+  await assert.rejects(dispose(), /Fixture artifact cleanup failure/)
+  assert.equal(handles.size, 0)
+  await dispose()
+  assert.equal(cleanup, 2)
 })

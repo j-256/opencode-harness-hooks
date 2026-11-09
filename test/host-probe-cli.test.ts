@@ -32,9 +32,11 @@ test('package probe help and invalid host/options require no executable and pres
     assert.match(result.stdout, /--host v1\|v2/)
     assert.match(result.stdout, /1\.19\.5/)
     assert.match(result.stdout, /2\.2\.5/)
+    assert.match(result.stdout, /--dialect/)
+    assert.match(result.stdout, /mixed/)
     assert.equal(result.stderr, '')
   }
-  for (const args of [[], ['--host'], ['--host', 'v3'], ['--host', 'constructor'], ['--unknown'], ['--host=v1', '--binary='], ['--', 'v1']]) {
+  for (const args of [[], ['--host'], ['--host', 'v3'], ['--host', 'constructor'], ['--unknown'], ['--host=v1', '--binary='], ['--host=v1', '--dialect=other'], ['--', 'v1']]) {
     const result = await invoke(args, process.env, packageProbe)
     assert.equal(result.status, 2, String(args))
     assert.equal(result.stdout, '')
@@ -43,7 +45,7 @@ test('package probe help and invalid host/options require no executable and pres
 })
 
 test('package probe honors literal binary forms and the selected host environment', async () => {
-  for (const args of [['--host=v1', '-b', process.execPath], ['--host', 'v2', '-b' + process.execPath], ['--host=v1', '--binary=' + process.execPath]]) {
+  for (const args of [['--host=v1', '-b', process.execPath], ['--host', 'v2', '-b' + process.execPath], ['--host=v1', '--binary=' + process.execPath], ['--host=v2', '--dialect=claude-code', '-b', process.execPath], ['--host=v1', '--dialect=mixed', '-b', process.execPath]]) {
     const result = await invoke(args, process.env, packageProbe)
     assert.equal(result.status, 2)
     assert.equal(result.stdout, '')

@@ -8,6 +8,8 @@ The package contract uses one default definition with `id`, V1's `server()` entr
 
 The default definition connects both tool backends through a shared runtime and session coordinator. A portable package probe exercises actual native options, turn/model metadata capture, denied side effects and executed input replacement on both pinned hosts. [Runtime configuration](runtime.md) documents snapshot review, explicit metadata projections, connected events, service boundaries and remaining gaps. The package report retains a negative equivalence result until the complete conformance and migration gates pass.
 
+The root also supplies a bounded [Claude transcript projection](transcripts.md) for its verified text/tool history subset. Native reader acceptance and actual host hook consumption have separate controlled evidence. Unsupported content and missing original inputs remain errors; full transcript, environment persistence and lifecycle equivalence remain required gates.
+
 ## Evidence and completion
 
 Each required capability is classified as verified, unsupported, or unresolved, with supporting evidence. A required unsupported or unresolved capability prevents an equivalence claim. Missing evidence also prevents that claim. Tests proving an unsupported diagnostic are diagnostic coverage, not successful protocol equivalence.

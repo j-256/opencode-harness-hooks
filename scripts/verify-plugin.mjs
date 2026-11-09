@@ -10,13 +10,15 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs, promisify } from 'node:util'
 
 const VERSIONS = Object.freeze({ v1: '1.19.5', v2: '2.2.5' })
+const DIALECTS = new Set(['codex', 'claude-code', 'mixed'])
 const STARTUP_MS = 15000
 const CLIENT_MS = 30000
 const SHUTDOWN_MS = 3000
 const MAX_BYTES = 2 * 1024 * 1024
 const MAX_REQUESTS = 16
+const CONTROLLED_TOOL_CALLS = 2
 const run = promisify(execFile)
-const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH]
+const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME]
 
 Verify the built package's default entrypoint, native options and tool enforcement
 against a pinned OpenCode host. Requires npm run build, Node.js 22+, Git and the
@@ -27,11 +29,12 @@ Options:
       --host VERSION  Required: v1 (${VERSIONS.v1}) or v2 (${VERSIONS.v2})
   -b, --binary PATH   Host executable (OPENCODE_V1_BINARY/OPENCODE_V2_BINARY,
                      then opencode)
+      --dialect NAME Native source: codex (default), claude-code, or mixed (both)
   -h, --help          Show help without requiring a host or dependencies
 
 Success writes JSON to stdout; failures use stderr without provider traffic.
 Exit status: 0 verified; 1 runtime/check failure; 2 usage/version; 3 dependency.
-This exercises a synthetic Codex source with a fixture-declared permission mode.
+This exercises a synthetic native source with a fixture-declared permission mode.
 Native artifact, trust, lifecycle and full dialect parity remain separate gates.
 `
 
@@ -59,7 +62,7 @@ async function stop(child, done) {
   await bounded(done, SHUTDOWN_MS, 'HOST_CLEANUP_FAILED')
 }
 
-async function verify(hostVersion, binary) {
+async function verify(hostVersion, binary, dialect) {
   const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
   if (version !== VERSIONS[hostVersion]) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + VERSIONS[hostVersion], 2)
   await dependency('git', ['--version'], 'Git')
@@ -83,19 +86,38 @@ async function verify(hostVersion, binary) {
     const script = join(root, 'hook.cjs')
     const originalCommand = 'printf original > ' + quote(rewritten)
     const replacementCommand = 'printf rewritten > ' + quote(rewritten)
-    await Promise.all([mkdir(project), mkdir(config, { recursive: true })])
+    await Promise.all([mkdir(project), mkdir(config, { recursive: true }), mkdir(join(root, 'tmp'))])
     const env = {
-      PATH: process.env.PATH, SHELL: '/bin/sh', LANG: 'en_US.UTF-8', TMPDIR: process.env.TMPDIR,
+      PATH: process.env.PATH, SHELL: '/bin/sh', LANG: 'en_US.UTF-8', TMPDIR: join(root, 'tmp'),
       HOME: root, PWD: project, XDG_CONFIG_HOME: join(root, 'config'), XDG_DATA_HOME: join(root, 'data'), XDG_STATE_HOME: join(root, 'state'), XDG_CACHE_HOME: join(root, 'cache'),
       OPENCODE_CONFIG_DIR: config, OPENCODE_DISABLE_PROJECT_CONFIG: '1', OPENCODE_DISABLE_CLAUDE_CODE: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1', OPENCODE_DISABLE_MODELS_FETCH: '1', OPENCODE_DISABLE_EXTERNAL_SKILLS: '1',
       OPENCODE_PASSWORD: password,
     }
     await run('git', ['init', '-q', project], { env, timeout: STARTUP_MS })
-    await writeFile(script, `const fs=require('node:fs');const input=JSON.parse(fs.readFileSync(0,'utf8'));fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify(input)+${JSON.stringify('\n')});console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',...(input.tool_input.command.includes('forbidden')?{permissionDecision:'deny',permissionDecisionReason:'PACKAGE_FIXTURE_DENIED'}:{permissionDecision:'allow',updatedInput:{command:${JSON.stringify(replacementCommand)},description:'Rewritten fixture'}})}}));`)
+    await writeFile(script, String.raw`const fs = require('node:fs')
+const input = JSON.parse(fs.readFileSync(0, 'utf8'))
+const codex = typeof input.turn_id === 'string'
+let transcriptValidated = false
+if (!codex) {
+  const rows = fs.readFileSync(input.transcript_path, 'utf8').trim().split('\n').map(JSON.parse)
+  const blocks = rows.flatMap(row => Array.isArray(row.message?.content) ? row.message.content : [])
+  const call = blocks.findLast(block => block.type === 'tool_use' && block.id === input.tool_use_id)
+  if (!call || call.input.command !== input.tool_input.command || !rows.some(row => row.type === 'user' && JSON.stringify(row.message.content).includes('controlled package fixture'))) process.exit(8)
+  transcriptValidated = true
+}
+fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, transcriptValidated, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
+const decision = input.tool_input.command.includes('forbidden')
+  ? { permissionDecision: 'deny', permissionDecisionReason: 'PACKAGE_FIXTURE_DENIED' }
+  : { ...(codex ? { permissionDecision: 'allow' } : {}), updatedInput: { command: ${JSON.stringify(replacementCommand)}, description: 'Rewritten fixture' } }
+console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...decision } }))
+`)
     await run(process.execPath, ['--check', script], { env, timeout: STARTUP_MS, maxBuffer: MAX_BYTES })
     const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: quote(process.execPath) + ' ' + quote(script) }] }] } })
     await writeFile(sourcePath, source)
-    const options = { sources: [{ id: 'fixture', dialect: 'codex', path: sourcePath }], reviewedDigests: { fixture: createHash('sha256').update(source).digest('hex') }, permissionMode: 'bypassPermissions' }
+    const selectedDialects = dialect === 'mixed' ? ['claude-code', 'codex'] : [dialect]
+    const sources = selectedDialects.map(dialect => ({ id: 'fixture-' + dialect, dialect, path: sourcePath }))
+    const digest = createHash('sha256').update(source).digest('hex')
+    const options = { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, digest])), permissionMode: 'bypassPermissions' }
     const requests = []
     const tool = hostVersion === 'v1' ? 'bash' : 'shell'
     gateway = createServer(async (request, response) => {
@@ -114,7 +136,7 @@ async function verify(hostVersion, binary) {
           requests.push(body)
         }
         const index = requests.length
-        const useTool = primary && index <= 2
+        const useTool = primary && index <= CONTROLLED_TOOL_CALLS
         const args = index === 1 ? { command: 'printf forbidden > ' + quote(denied), description: 'Denied fixture' } : { command: originalCommand, description: 'Original fixture' }
         const delta = useTool ? { role: 'assistant', tool_calls: [{ index: 0, id: 'call_' + index, type: 'function', function: { name: tool, arguments: JSON.stringify(args) } }] } : { role: 'assistant', content: 'PACKAGE_FIXTURE_DONE' }
         const chunk = (value, finish_reason) => ({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta: value, finish_reason }] })
@@ -166,14 +188,22 @@ async function verify(hostVersion, binary) {
     assert.equal(await readFile(rewritten, 'utf8'), 'rewritten')
     stage = 'native-payloads'
     const payloads = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
-    assert.equal(payloads.length, 2)
-    assert.ok(payloads.every(payload => payload.tool_name === 'Bash' && payload.model === 'fixture' && typeof payload.turn_id === 'string' && payload.turn_id && payload.permission_mode === 'bypassPermissions'))
-    assert.equal(payloads[1].tool_input.command, originalCommand)
+    assert.equal(payloads.length, CONTROLLED_TOOL_CALLS * sources.length)
+    assert.ok(payloads.every(payload => payload.tool_name === 'Bash' && typeof payload.tool_use_id === 'string' && payload.tool_use_id && payload.permission_mode === 'bypassPermissions'))
+    for (let index = 1; index <= CONTROLLED_TOOL_CALLS; index++) {
+      const group = payloads.filter(payload => payload.tool_use_id === 'call_' + index)
+      assert.deepEqual(group.map(payload => payload.nativeDialect).sort(), [...selectedDialects].sort())
+      assert.ok(group.every(payload => index !== CONTROLLED_TOOL_CALLS || payload.tool_input.command === originalCommand))
+      for (const payload of group) {
+        if (payload.nativeDialect === 'codex') assert.ok(payload.model === 'fixture' && typeof payload.turn_id === 'string' && payload.turn_id)
+        else assert.equal(payload.transcriptValidated, true)
+      }
+    }
     stage = 'model-visible-denial'
     assert.ok(JSON.stringify(requests[1].messages).includes('PACKAGE_FIXTURE_DENIED'))
     stage = 'final-answer'
     assert.ok(JSON.stringify(answer).includes('PACKAGE_FIXTURE_DONE'))
-    return { host: version, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, hostTurnAndModelObserved: true, fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
+    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, requiredPayloadMetadataObserved: true, ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
   } catch (error) {
     if (error instanceof ProbeError) throw error
     throw new ProbeError('PACKAGE_CHECK_FAILED: ' + stage + ' ' + (error.code ?? error.name ?? 'unknown') + (diagnosticCodes.size ? ' diagnostics=' + [...diagnosticCodes].sort().join(',') : ''))
@@ -186,14 +216,16 @@ async function verify(hostVersion, binary) {
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { host: { type: 'string' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const host = parsed.values.host
     if (!Object.hasOwn(VERSIONS, host ?? '')) throw new ProbeError('USAGE_HOST: expected v1 or v2', 2)
+    const dialect = parsed.values.dialect ?? 'codex'
+    if (!DIALECTS.has(dialect)) throw new ProbeError('USAGE_DIALECT: expected codex, claude-code or mixed', 2)
     const binary = parsed.values.binary ?? process.env[host === 'v1' ? 'OPENCODE_V1_BINARY' : 'OPENCODE_V2_BINARY'] ?? 'opencode'
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    process.stdout.write(JSON.stringify(await verify(host, binary)) + '\n')
+    process.stdout.write(JSON.stringify(await verify(host, binary, dialect)) + '\n')
   }
 } catch (error) {
   process.stderr.write((error instanceof ProbeError ? error.message : 'PACKAGE_PROBE_FAILED') + '\n')
