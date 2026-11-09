@@ -30,11 +30,20 @@ test('native Stop invalid options and values fail before dependency checks', asy
 })
 
 test('native Stop dialect, aggregation and binary argument forms reject the wrong executable version', async () => {
-  for (const args of [['-dclaude-code', '-b', node], ['--dialect=codex', '--binary=' + node], ['-dcodex', '-b' + node], ['--dialect', 'claude-code', '--binary', node], ['--aggregation', '-dclaude-code', '-b', node], ['--aggregation', '-dcodex', '-b', node]]) {
+  for (const args of [['-dclaude-code', '-b', node], ['--dialect=codex', '--binary=' + node], ['-dcodex', '-b' + node], ['--dialect', 'claude-code', '--binary', node], ['--aggregation', '-dclaude-code', '-b', node], ['--aggregation', '-dcodex', '-b', node], ['--outputs', '-dclaude-code', '-b', node]]) {
     const result = await invoke(args)
     assert.equal(result.status, 2)
     assert.equal(result.stdout, '')
     assert.match(result.stderr, /NATIVE_VERSION_MISMATCH/)
+  }
+})
+
+test('native Stop output characterization rejects incompatible fixture selections before dependency checks', async () => {
+  for (const args of [['--outputs', '--aggregation'], ['--outputs', '--dialect', 'codex']]) {
+    const result = await invoke(args, { PATH: '' })
+    assert.equal(result.status, 2)
+    assert.equal(result.stdout, '')
+    assert.match(result.stderr, /USAGE_/)
   }
 })
 

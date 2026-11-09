@@ -14,17 +14,20 @@ import { Sessions } from '../src/sessions.js'
 
 const CREATED = Date.parse('2026-01-01T00:00:00Z')
 const oracle = JSON.parse(readFileSync(new URL('./fixtures/claude-stop-aggregation-oracle.json', import.meta.url), 'utf8'))
+const outputs = JSON.parse(readFileSync(new URL('./fixtures/claude-stop-output-oracle.json', import.meta.url), 'utf8'))
 const parse = (text: string) => text.trim().split('\n').map(line => JSON.parse(line))
 
-async function fixture(t: TestContext, scenario: { outputs: unknown[]; completionOrder: number[] }, admitRecords = false) {
+interface OutputInput { readonly stdout: string; readonly stderr: string; readonly exitCode: number; readonly delayMs: number; readonly timeoutSeconds?: number }
+async function fixture(t: TestContext, scenario: { outputs: unknown[]; completionOrder: number[] } | { input: OutputInput }, admitRecords = false) {
   const directory = await mkdtemp(join(tmpdir(), 'harness-stop-records-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const script = join(directory, 'hook.cjs')
-  const body = `const index=Number(process.argv[2]);const outputs=${JSON.stringify(scenario.outputs)};const order=${JSON.stringify(scenario.completionOrder)};setTimeout(()=>console.log(JSON.stringify(outputs[index])),order.indexOf(index)?350:25)`
+  const body = 'input' in scenario ? `require('node:fs').readFileSync(0,'utf8');setTimeout(()=>{process.stdout.write(${JSON.stringify(scenario.input.stdout)});process.stderr.write(${JSON.stringify(scenario.input.stderr)});process.exitCode=${scenario.input.exitCode}},${scenario.input.delayMs})` : `const index=Number(process.argv[2]);const outputs=${JSON.stringify(scenario.outputs)};const order=${JSON.stringify(scenario.completionOrder)};setTimeout(()=>console.log(JSON.stringify(outputs[index])),order.indexOf(index)?350:25)`
   await writeFile(script, body)
-  const commands = scenario.outputs.map((_, index) => [process.execPath, script, String(index)].join(' '))
+  const indices = 'input' in scenario ? [0] : scenario.outputs.map((_, index) => index)
+  const commands = indices.map(index => [process.execPath, script, String(index)].join(' '))
   const path = join(directory, 'hooks.json')
-  const source = JSON.stringify({ hooks: { Stop: [{ hooks: scenario.outputs.map((_, index) => ({ type: 'command', command: process.execPath, args: [script, String(index)] })) }] } })
+  const source = JSON.stringify({ hooks: { Stop: [{ hooks: indices.map(index => ({ type: 'command', command: process.execPath, args: [script, String(index)], ...('input' in scenario && scenario.input.timeoutSeconds !== undefined ? { timeout: scenario.input.timeoutSeconds } : {}) })) }] } })
   await writeFile(path, source)
   const records: unknown[] = [
     { type: 'user', id: 'prompt', text: 'Original', time: { created: CREATED } },
@@ -159,7 +162,7 @@ test('admitted Stop records survive a real next turn and changed or pruned histo
 })
 
 test('unverified Stop output artifacts reject explicitly without erasing a prepared snapshot', async t => {
-  const f = await fixture(t, { outputs: [{ systemMessage: 'Private warning' }], completionOrder: [0] })
+  const f = await fixture(t, { outputs: [{ terminalSequence: '\x07' }], completionOrder: [0] })
   const before = await readFile(f.transcriptPath, 'utf8')
   assert.throws(() => f.transcripts.admitStop(f.delivery), { code: 'TRANSCRIPT_STOP_EFFECT_UNSUPPORTED' })
   assert.equal(f.transcripts.inspect().stopRecords, 0)
@@ -167,6 +170,29 @@ test('unverified Stop output artifacts reject explicitly without erasing a prepa
   assert.equal(await readFile(f.transcriptPath, 'utf8'), before)
   await f.runtime.dispose()
   assert.equal(f.transcripts.inspect().stopBytes, 0)
+})
+
+for (const scenario of outputs.cases) test(`Claude Stop output records agree with native ${scenario.name}`, async t => {
+  const f = await fixture(t, scenario, true)
+  assert.equal(f.receipt.control, scenario.records.at(-1).preventedContinuation ? 'stop' : scenario.modelRequests > 1 ? 'continue' : 'complete')
+  await f.transcripts.prepare(f.event, f.session, f.session.turnSignal)
+  const rows = parse(await readFile(f.transcriptPath, 'utf8'))
+  const owned = rows.slice(rows.findIndex(row => row.type === 'assistant') + 1)
+  const batch = owned.at(-1).toolUseID
+  const normalize = (value: unknown, key = ''): unknown => {
+    if (key === 'durationMs') { assert.ok(typeof value === 'number' && Number.isFinite(value) && value >= 0); return '{duration}' }
+    if (key === 'toolUseID') { assert.equal(value, batch); return '{batch}' }
+    if (key === 'promptId') { assert.equal(value, 'prompt'); return '{turn}' }
+    if (typeof value === 'string') return value.replaceAll(f.commands[0]!, '{command}')
+    if (Array.isArray(value)) return value.map(item => normalize(item))
+    if (value !== null && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, value]) => [key, normalize(value, key)]))
+    return value
+  }
+  const bodies = owned.map(row => Object.fromEntries(Object.entries(row).filter(([key]) => !['parentUuid', 'isSidechain', 'uuid', 'timestamp', 'cwd', 'sessionId', 'version'].includes(key))))
+  assert.deepEqual(normalize(bodies), scenario.records)
+  assert.ok(rows.every(row => row.sessionId === 'session' && row.cwd === f.directory && row.version === '2.1.318' && row.isSidechain === false && Number.isFinite(Date.parse(row.timestamp))))
+  for (let index = 1; index < rows.length; index++) assert.equal(rows[index].parentUuid, rows[index - 1].uuid)
+  await f.unchanged()
 })
 
 test('identical decision and additional-context text retains both native record forms', async t => {
@@ -180,6 +206,12 @@ test('identical decision and additional-context text retains both native record 
   assert.deepEqual(owned[2].attachment.content, ['Same'])
   assert.deepEqual(owned[3].hookErrors, ['Same'])
   assert.deepEqual(owned[3].hookAdditionalContext, ['Same'])
+})
+
+test('unimplemented asynchronous and malformed-syntax artifacts cannot become successful Stop receipts', async t => {
+  for (const stdout of ['{"async":true,"decision":"block","reason":"Ignored"}\n', '{bad}\n']) {
+    await assert.rejects(fixture(t, { input: { stdout, stderr: '', exitCode: 0, delayMs: 0 } }, true), { code: 'TRANSCRIPT_STOP_OUTPUT_UNSUPPORTED' })
+  }
 })
 
 test('unadmitted completion snapshots have a finite shared budget and session closure releases it', () => {

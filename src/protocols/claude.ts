@@ -3,11 +3,13 @@ import type { HookAction, InterpretedOutput, PermissionDecision } from '../effec
 import type { ExecutionResult } from '../runner.js'
 import type { JsonValue, NativeEvent, Registration } from '../types.js'
 import { failure, optionalBooleans, optionalStrings, record, success, text } from './shared.js'
+import { parseClaudeStopOutput } from './claude-output.js'
 
 const STOP_EVENTS = new Set(['Stop', 'SubagentStop', 'TeammateIdle'])
 const CONTINUATION_EVENTS = new Set(['Stop', 'SubagentStop'])
 const APPROVAL_OUTPUT_EVENTS = new Set(['PreToolUse', 'Stop'])
 const DEFAULT_STOP_REASON = 'Blocked by hook'
+const DEFAULT_PREVENTION_REASON = 'Stop hook prevented continuation'
 const EMPTY_STOP_STDERR = 'No stderr output'
 const EXIT_BLOCK_EVENTS = new Set(['PreToolUse', 'UserPromptSubmit', 'UserPromptExpansion', ...STOP_EVENTS, 'TaskCreated', 'TaskCompleted', 'ConfigChange', 'PostToolBatch', 'PreCompact', 'PreModelSwitch', 'Elicitation', 'ElicitationResult', 'WorktreeCreate'])
 const TOP_BLOCK_EVENTS = new Set(['UserPromptSubmit', 'UserPromptExpansion', 'TaskCreated', 'ConfigChange', 'PreCompact', 'PostToolBatch'])
@@ -86,7 +88,13 @@ export function interpretClaude(registration: Registration, event: NativeEvent, 
   if (result.exitCode === 2 && STOP_EVENTS.has(name) && !stdout && /No such file or directory|ENOENT|Cannot find module/i.test(result.stderr)) return failure('COMMAND_FAILED')
   let body: unknown
   let invalid = false
-  if (stdout.startsWith('{') && stdout.endsWith('}')) {
+  if (name === 'Stop') {
+    const parsed = parseClaudeStopOutput(result.stdout)
+    if (parsed.kind === 'async') return failure('NATIVE_ASYNC_OUTPUT_UNSUPPORTED')
+    if (parsed.kind === 'invalid' && parsed.category === 'event') return failure('INVALID_OUTPUT')
+    invalid = parsed.kind === 'invalid' || parsed.kind === 'unmapped-syntax'
+    if (parsed.kind === 'sync') body = parsed.body
+  } else if (stdout.startsWith('{') && stdout.endsWith('}')) {
     try {
       body = JSON.parse(stdout)
       invalid = !record(body) || !valid(body, name)
@@ -108,11 +116,11 @@ export function interpretClaude(registration: Registration, event: NativeEvent, 
     return success(actions)
   }
   const hook = record(body.hookSpecificOutput) ? body.hookSpecificOutput : {}
-  if (!DISCARD_UNIVERSAL.has(name) && typeof body.systemMessage === 'string') actions.push({ kind: 'warning', text: body.systemMessage })
+  if (!DISCARD_UNIVERSAL.has(name) && typeof body.systemMessage === 'string' && (name !== 'Stop' || body.systemMessage.length > 0)) actions.push({ kind: 'warning', text: body.systemMessage })
   if (body.continue === false && !DISCARD_CONTINUE.has(name)) {
     if (name === 'TaskCompleted') actions.push({ kind: 'native-extension', name: 'taskCompletionStop', value: { reason: text(body.stopReason) } })
-    else actions.push({ kind: 'stop-session', reason: text(body.stopReason) })
-    return success(actions)
+    else actions.push({ kind: 'stop-session', reason: name === 'Stop' ? text(body.stopReason) || DEFAULT_PREVENTION_REASON : text(body.stopReason) })
+    if (name !== 'Stop') return success(actions)
   }
   if (name === 'PreToolUse' || name === 'PreModelSwitch') {
     let decision = hook.permissionDecision as PermissionDecision | undefined

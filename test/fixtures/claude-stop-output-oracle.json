@@ -1,0 +1,3178 @@
+{
+  "oracle": "native-cli-loopback",
+  "runtime": "Claude Code",
+  "version": "2.1.318",
+  "scope": "Foreground command Stop output bodies, summary fields and owned model content; common envelope and execution measurements are checked separately",
+  "normalizations": [
+    "Executed command display",
+    "Batch and original prompt identity",
+    "Measured duration with presence and numeric checks"
+  ],
+  "cases": [
+    {
+      "name": "empty",
+      "input": {
+        "stdout": "",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": false,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "plain",
+      "input": {
+        "stdout": "NATIVE_STOP_STDOUT\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "NATIVE_STOP_STDOUT",
+            "stdout": "NATIVE_STOP_STDOUT\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "empty-json",
+      "input": {
+        "stdout": "{}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "warning",
+      "input": {
+        "stdout": "{\"systemMessage\":\"NATIVE_STOP_WARNING\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"systemMessage\":\"NATIVE_STOP_WARNING\"}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "attachment": {
+            "type": "hook_system_message",
+            "content": "NATIVE_STOP_WARNING",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "block-warning",
+      "input": {
+        "stdout": "{\"systemMessage\":\"NATIVE_STOP_WARNING\",\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\nNATIVE_STOP_FEEDBACK"
+          },
+          "isMeta": true
+        },
+        {
+          "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "blockingError": {
+              "blockingError": "NATIVE_STOP_FEEDBACK",
+              "command": "{command}"
+            }
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook blocking error from command: \"{command}\": NATIVE_STOP_FEEDBACK\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "attachment": {
+            "type": "hook_system_message",
+            "content": "NATIVE_STOP_WARNING",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "NATIVE_STOP_FEEDBACK"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook blocking error from command: \"{command}\": NATIVE_STOP_FEEDBACK\n</system-reminder>\n"
+        },
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\nNATIVE_STOP_FEEDBACK"
+        }
+      ]
+    },
+    {
+      "name": "additional-context",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "attachment": {
+            "type": "hook_additional_context",
+            "content": [
+              "NATIVE_STOP_ADDITIONAL"
+            ],
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook additional context: NATIVE_STOP_ADDITIONAL\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [
+            "NATIVE_STOP_ADDITIONAL"
+          ],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook additional context: NATIVE_STOP_ADDITIONAL\n</system-reminder>"
+        }
+      ]
+    },
+    {
+      "name": "suppress-warning",
+      "input": {
+        "stdout": "{\"suppressOutput\":true,\"systemMessage\":\"NATIVE_STOP_WARNING\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"suppressOutput\":true,\"systemMessage\":\"NATIVE_STOP_WARNING\"}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "attachment": {
+            "type": "hook_system_message",
+            "content": "NATIVE_STOP_WARNING",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "empty-stderr",
+      "input": {
+        "stdout": "",
+        "stderr": "",
+        "exitCode": 2,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\n[{command}]: No stderr output"
+          },
+          "isMeta": true
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "[{command}]: No stderr output"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\n[{command}]: No stderr output"
+        }
+      ]
+    },
+    {
+      "name": "failure-output",
+      "input": {
+        "stdout": "NATIVE_STOP_STDOUT\n",
+        "stderr": "NATIVE_STOP_FAILURE",
+        "exitCode": 1,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Failed with non-blocking status code: NATIVE_STOP_FAILURE",
+            "stdout": "NATIVE_STOP_STDOUT\n",
+            "exitCode": 1,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Failed with non-blocking status code: NATIVE_STOP_FAILURE"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "invalid-json",
+      "input": {
+        "stdout": "{\"decision\":\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "{\"decision\":",
+            "stdout": "{\"decision\":\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "invalid-schema",
+      "input": {
+        "stdout": "{\"decision\":\"not-valid\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Hook JSON output validation failed \u2014 decision: Invalid option: expected one of \"approve\"|\"block\"\n\nThe hook's output was: {\n  \"decision\": \"not-valid\"\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}",
+            "stdout": "{\"decision\":\"not-valid\"}\n",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Hook JSON output validation failed \u2014 decision: Invalid option: expected one of \"approve\"|\"block\"\n\nThe hook's output was: {\n  \"decision\": \"not-valid\"\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "timeout",
+      "input": {
+        "stdout": "",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 1000,
+        "timeoutSeconds": 0.25
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_cancelled",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "command": "{command}",
+            "durationMs": "{duration}",
+            "timedOut": true,
+            "timeoutMs": 250
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": false,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "approve",
+      "input": {
+        "stdout": "{\"decision\":\"approve\",\"reason\":\"NATIVE_STOP_IGNORED\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"decision\":\"approve\",\"reason\":\"NATIVE_STOP_IGNORED\"}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "mismatched-context",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'UserPromptSubmit'. Full stdout: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"UserPromptSubmit\",\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}",
+            "stdout": "",
+            "exitCode": 1,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'UserPromptSubmit'. Full stdout: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"UserPromptSubmit\",\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "mismatched-block",
+      "input": {
+        "stdout": "{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'UserPromptSubmit'. Full stdout: {\n  \"decision\": \"block\",\n  \"reason\": \"NATIVE_STOP_FEEDBACK\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"UserPromptSubmit\",\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}",
+            "stdout": "",
+            "exitCode": 1,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'UserPromptSubmit'. Full stdout: {\n  \"decision\": \"block\",\n  \"reason\": \"NATIVE_STOP_FEEDBACK\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"UserPromptSubmit\",\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "empty-additional",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"\"}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"\"}}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "empty-block",
+      "input": {
+        "stdout": "{\"decision\":\"block\",\"reason\":\"\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\nBlocked by hook"
+          },
+          "isMeta": true
+        },
+        {
+          "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "blockingError": {
+              "blockingError": "Blocked by hook",
+              "command": "{command}"
+            }
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook blocking error from command: \"{command}\": Blocked by hook\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "Blocked by hook"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook blocking error from command: \"{command}\": Blocked by hook\n</system-reminder>\n"
+        },
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\nBlocked by hook"
+        }
+      ]
+    },
+    {
+      "name": "missing-block-reason",
+      "input": {
+        "stdout": "{\"decision\":\"block\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\nBlocked by hook"
+          },
+          "isMeta": true
+        },
+        {
+          "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "blockingError": {
+              "blockingError": "Blocked by hook",
+              "command": "{command}"
+            }
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook blocking error from command: \"{command}\": Blocked by hook\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "Blocked by hook"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook blocking error from command: \"{command}\": Blocked by hook\n</system-reminder>\n"
+        },
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\nBlocked by hook"
+        }
+      ]
+    },
+    {
+      "name": "whitespace-block",
+      "input": {
+        "stdout": "{\"decision\":\"block\",\"reason\":\"   \"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\n   "
+          },
+          "isMeta": true
+        },
+        {
+          "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "blockingError": {
+              "blockingError": "   ",
+              "command": "{command}"
+            }
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook blocking error from command: \"{command}\":    \n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "   "
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook blocking error from command: \"{command}\":    \n</system-reminder>\n"
+        },
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\n   "
+        }
+      ]
+    },
+    {
+      "name": "whitespace-additional",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"   \"}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"   \"}}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "attachment": {
+            "type": "hook_additional_context",
+            "content": [
+              "   "
+            ],
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook additional context:    \n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [
+            "   "
+          ],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook additional context:    \n</system-reminder>"
+        }
+      ]
+    },
+    {
+      "name": "whitespace-stderr",
+      "input": {
+        "stdout": "",
+        "stderr": "   ",
+        "exitCode": 2,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\n[{command}]:    "
+          },
+          "isMeta": true
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "[{command}]:    "
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\n[{command}]:    "
+        }
+      ]
+    },
+    {
+      "name": "same-text-block-context",
+      "input": {
+        "stdout": "{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\",\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"NATIVE_STOP_FEEDBACK\"}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\nNATIVE_STOP_FEEDBACK"
+          },
+          "isMeta": true
+        },
+        {
+          "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "blockingError": {
+              "blockingError": "NATIVE_STOP_FEEDBACK",
+              "command": "{command}"
+            }
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook blocking error from command: \"{command}\": NATIVE_STOP_FEEDBACK\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "attachment": {
+            "type": "hook_additional_context",
+            "content": [
+              "NATIVE_STOP_FEEDBACK"
+            ],
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook additional context: NATIVE_STOP_FEEDBACK\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "NATIVE_STOP_FEEDBACK"
+          ],
+          "hookAdditionalContext": [
+            "NATIVE_STOP_FEEDBACK"
+          ],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook blocking error from command: \"{command}\": NATIVE_STOP_FEEDBACK\n</system-reminder>"
+        },
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook additional context: NATIVE_STOP_FEEDBACK\n</system-reminder>\n"
+        },
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\nNATIVE_STOP_FEEDBACK"
+        }
+      ]
+    },
+    {
+      "name": "stderr-context",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+        "stderr": "NATIVE_STOP_FEEDBACK",
+        "exitCode": 2,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\n[{command}]: NATIVE_STOP_FEEDBACK"
+          },
+          "isMeta": true
+        },
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+            "stderr": "NATIVE_STOP_FEEDBACK",
+            "exitCode": 2,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "attachment": {
+            "type": "hook_additional_context",
+            "content": [
+              "NATIVE_STOP_ADDITIONAL"
+            ],
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook additional context: NATIVE_STOP_ADDITIONAL\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "[{command}]: NATIVE_STOP_FEEDBACK"
+          ],
+          "hookAdditionalContext": [
+            "NATIVE_STOP_ADDITIONAL"
+          ],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook additional context: NATIVE_STOP_ADDITIONAL\n</system-reminder>\n"
+        },
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\n[{command}]: NATIVE_STOP_FEEDBACK"
+        }
+      ]
+    },
+    {
+      "name": "ignored-stop-fields",
+      "input": {
+        "stdout": "{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\",\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\",\"permissionDecision\":123,\"updatedInput\":\"ignored\",\"watchPaths\":7,\"reloadSkills\":\"ignored\",\"sessionTitle\":99}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\nNATIVE_STOP_FEEDBACK"
+          },
+          "isMeta": true
+        },
+        {
+          "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "blockingError": {
+              "blockingError": "NATIVE_STOP_FEEDBACK",
+              "command": "{command}"
+            }
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook blocking error from command: \"{command}\": NATIVE_STOP_FEEDBACK\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "attachment": {
+            "type": "hook_additional_context",
+            "content": [
+              "NATIVE_STOP_ADDITIONAL"
+            ],
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook additional context: NATIVE_STOP_ADDITIONAL\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "NATIVE_STOP_FEEDBACK"
+          ],
+          "hookAdditionalContext": [
+            "NATIVE_STOP_ADDITIONAL"
+          ],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook blocking error from command: \"{command}\": NATIVE_STOP_FEEDBACK\n</system-reminder>"
+        },
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook additional context: NATIVE_STOP_ADDITIONAL\n</system-reminder>\n"
+        },
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\nNATIVE_STOP_FEEDBACK"
+        }
+      ]
+    },
+    {
+      "name": "invalid-common",
+      "input": {
+        "stdout": "{\"continue\":\"bad\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Hook JSON output validation failed \u2014 continue: expected boolean, received string\n\nThe hook's output was: {\n  \"continue\": \"bad\"\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}",
+            "stdout": "{\"continue\":\"bad\"}\n",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Hook JSON output validation failed \u2014 continue: expected boolean, received string\n\nThe hook's output was: {\n  \"continue\": \"bad\"\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "invalid-multiple",
+      "input": {
+        "stdout": "{\"continue\":\"bad\",\"stopReason\":7,\"decision\":\"allow\",\"systemMessage\":false}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Hook JSON output validation failed \u2014 continue: expected boolean, received string\n\nThe hook's output was: {\n  \"continue\": \"bad\",\n  \"stopReason\": 7,\n  \"decision\": \"allow\",\n  \"systemMessage\": false\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}",
+            "stdout": "{\"continue\":\"bad\",\"stopReason\":7,\"decision\":\"allow\",\"systemMessage\":false}\n",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Hook JSON output validation failed \u2014 continue: expected boolean, received string\n\nThe hook's output was: {\n  \"continue\": \"bad\",\n  \"stopReason\": 7,\n  \"decision\": \"allow\",\n  \"systemMessage\": false\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "missing-event-name",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Hook JSON output validation failed \u2014 hookSpecificOutput is missing required field \"hookEventName\"\n\nThe hook's output was: {\n  \"hookSpecificOutput\": {\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}",
+            "stdout": "{\"hookSpecificOutput\":{\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Hook JSON output validation failed \u2014 hookSpecificOutput is missing required field \"hookEventName\"\n\nThe hook's output was: {\n  \"hookSpecificOutput\": {\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "invalid-context-type",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":12}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Hook JSON output validation failed \u2014 hookSpecificOutput.additionalContext: expected string, received number\n\nThe hook's output was: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"Stop\",\n    \"additionalContext\": 12\n  }\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}",
+            "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":12}}\n",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Hook JSON output validation failed \u2014 hookSpecificOutput.additionalContext: expected string, received number\n\nThe hook's output was: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"Stop\",\n    \"additionalContext\": 12\n  }\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "unknown-output-event",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"NotAnEvent\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Hook JSON output validation failed \u2014 hookSpecificOutput.hookEventName: expected one of \"PreToolUse\" | \"UserPromptSubmit\" | \"UserPromptExpansion\" | \"SessionStart\" | \"Setup\" | \"PreModelSwitch\" | \u2026\n\nThe hook's output was: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"NotAnEvent\",\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}",
+            "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"NotAnEvent\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Hook JSON output validation failed \u2014 hookSpecificOutput.hookEventName: expected one of \"PreToolUse\" | \"UserPromptSubmit\" | \"UserPromptExpansion\" | \"SessionStart\" | \"Setup\" | \"PreModelSwitch\" | \u2026\n\nThe hook's output was: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"NotAnEvent\",\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "invalid-legacy-decision",
+      "input": {
+        "stdout": "{\"decision\":\"ask\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Hook JSON output validation failed \u2014 decision: Invalid option: expected one of \"approve\"|\"block\" (top-level decision is the legacy approve|block field; for \"ask\" use hookSpecificOutput.permissionDecision in a PreToolUse hook)\n\nThe hook's output was: {\n  \"decision\": \"ask\"\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}",
+            "stdout": "{\"decision\":\"ask\"}\n",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Hook JSON output validation failed \u2014 decision: Invalid option: expected one of \"approve\"|\"block\" (top-level decision is the legacy approve|block field; for \"ask\" use hookSpecificOutput.permissionDecision in a PreToolUse hook)\n\nThe hook's output was: {\n  \"decision\": \"ask\"\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "unknown-top-only",
+      "input": {
+        "stdout": "{\"ignored\":42}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"ignored\":42}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "schema-exit2",
+      "input": {
+        "stdout": "{\"decision\":\"not-valid\"}\n",
+        "stderr": "NATIVE_STOP_FAILURE",
+        "exitCode": 2,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\n[{command}]: NATIVE_STOP_FAILURE"
+          },
+          "isMeta": true
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "[{command}]: NATIVE_STOP_FAILURE"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\n[{command}]: NATIVE_STOP_FAILURE"
+        }
+      ]
+    },
+    {
+      "name": "event-exit2",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+        "stderr": "NATIVE_STOP_FAILURE",
+        "exitCode": 2,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'UserPromptSubmit'. Full stdout: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"UserPromptSubmit\",\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}",
+            "stdout": "",
+            "exitCode": 1,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'UserPromptSubmit'. Full stdout: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"UserPromptSubmit\",\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "block-exit1",
+      "input": {
+        "stdout": "{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}\n",
+        "stderr": "NATIVE_STOP_FAILURE",
+        "exitCode": 1,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\nNATIVE_STOP_FEEDBACK"
+          },
+          "isMeta": true
+        },
+        {
+          "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "blockingError": {
+              "blockingError": "NATIVE_STOP_FEEDBACK",
+              "command": "{command}"
+            }
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook blocking error from command: \"{command}\": NATIVE_STOP_FEEDBACK\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "NATIVE_STOP_FEEDBACK"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook blocking error from command: \"{command}\": NATIVE_STOP_FEEDBACK\n</system-reminder>\n"
+        },
+        {
+          "role": "user",
+          "text": "Stop hook feedback:\nNATIVE_STOP_FEEDBACK"
+        }
+      ]
+    },
+    {
+      "name": "stop-warning",
+      "input": {
+        "stdout": "{\"continue\":false,\"stopReason\":\"NATIVE_STOP_REASON\",\"systemMessage\":\"NATIVE_STOP_WARNING\",\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_stopped_continuation",
+            "message": "NATIVE_STOP_REASON",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook stopped continuation: NATIVE_STOP_REASON\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "promptId": "{turn}",
+          "type": "user",
+          "message": {
+            "role": "user",
+            "content": "Stop hook feedback:\nNATIVE_STOP_FEEDBACK"
+          },
+          "isMeta": true
+        },
+        {
+          "attachment": {
+            "type": "hook_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "blockingError": {
+              "blockingError": "NATIVE_STOP_FEEDBACK",
+              "command": "{command}"
+            }
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook blocking error from command: \"{command}\": NATIVE_STOP_FEEDBACK\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "attachment": {
+            "type": "hook_system_message",
+            "content": "NATIVE_STOP_WARNING",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}"
+            }
+          ],
+          "hookErrors": [
+            "NATIVE_STOP_FEEDBACK"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": true,
+          "stopReason": "NATIVE_STOP_REASON",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "failure-whitespace",
+      "input": {
+        "stdout": "NATIVE_STOP_STDOUT\n",
+        "stderr": " \n NATIVE_STOP_FAILURE \t\n",
+        "exitCode": 3,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Failed with non-blocking status code: NATIVE_STOP_FAILURE",
+            "stdout": "NATIVE_STOP_STDOUT\n",
+            "exitCode": 3,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Failed with non-blocking status code: NATIVE_STOP_FAILURE"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "failure-empty",
+      "input": {
+        "stdout": "",
+        "stderr": "",
+        "exitCode": 3,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Failed with non-blocking status code: No stderr output",
+            "stdout": "",
+            "exitCode": 3,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Failed with non-blocking status code: No stderr output"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "plain-stderr-success",
+      "input": {
+        "stdout": "NATIVE_STOP_STDOUT\n",
+        "stderr": "NATIVE_STOP_FAILURE\n",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "NATIVE_STOP_STDOUT",
+            "stdout": "NATIVE_STOP_STDOUT\n",
+            "stderr": "NATIVE_STOP_FAILURE\n",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "stderr-only-success",
+      "input": {
+        "stdout": "",
+        "stderr": "NATIVE_STOP_FAILURE\n",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "",
+            "stderr": "NATIVE_STOP_FAILURE\n",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "structured-exit5",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+        "stderr": "NATIVE_STOP_FAILURE",
+        "exitCode": 5,
+        "delayMs": 200
+      },
+      "modelRequests": 2,
+      "cliResult": "NATIVE_STOP_ANSWER_2",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+            "stderr": "NATIVE_STOP_FAILURE",
+            "exitCode": 5,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "attachment": {
+            "type": "hook_additional_context",
+            "content": [
+              "NATIVE_STOP_ADDITIONAL"
+            ],
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook additional context: NATIVE_STOP_ADDITIONAL\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [
+            "NATIVE_STOP_ADDITIONAL"
+          ],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": [
+        {
+          "role": "user",
+          "text": "<system-reminder>\nStop hook additional context: NATIVE_STOP_ADDITIONAL\n</system-reminder>"
+        }
+      ]
+    },
+    {
+      "name": "two-json-lines",
+      "input": {
+        "stdout": "{}\n{}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "{}\n{}",
+            "stdout": "{}\n{}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "log-before-json",
+      "input": {
+        "stdout": "Log\n{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "Log\n{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}",
+            "stdout": "Log\n{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "json-before-log",
+      "input": {
+        "stdout": "{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}\nLog\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}\nLog",
+            "stdout": "{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}\nLog\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "multiple-json-controls",
+      "input": {
+        "stdout": "{}\n{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Hook output looks like a JSON object but is not valid JSON \u2014 JSON Parse error: Unable to parse JSON string. Emit the payload with a JSON encoder (jq, ConvertTo-Json, json.dumps) rather than string concatenation so backslashes and quotes inside strings are escaped.",
+            "stdout": "{}\n{\"decision\":\"block\",\"reason\":\"NATIVE_STOP_FEEDBACK\"}\n",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Hook output looks like a JSON object but is not valid JSON \u2014 JSON Parse error: Unable to parse JSON string. Emit the payload with a JSON encoder (jq, ConvertTo-Json, json.dumps) rather than string concatenation so backslashes and quotes inside strings are escaped."
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "empty-warning",
+      "input": {
+        "stdout": "{\"systemMessage\":\"\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"systemMessage\":\"\"}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "whitespace-warning",
+      "input": {
+        "stdout": "{\"systemMessage\":\"   \"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"systemMessage\":\"   \"}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "attachment": {
+            "type": "hook_system_message",
+            "content": "   ",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "whitespace-stdout",
+      "input": {
+        "stdout": "   \n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": false,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "missing-stop-reason",
+      "input": {
+        "stdout": "{\"continue\":false}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_stopped_continuation",
+            "message": "Stop hook prevented continuation",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook stopped continuation: Stop hook prevented continuation\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"continue\":false}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": true,
+          "stopReason": "Stop hook prevented continuation",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "empty-stop-reason",
+      "input": {
+        "stdout": "{\"continue\":false,\"stopReason\":\"\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_stopped_continuation",
+            "message": "Stop hook prevented continuation",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook stopped continuation: Stop hook prevented continuation\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"continue\":false,\"stopReason\":\"\"}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": true,
+          "stopReason": "Stop hook prevented continuation",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "whitespace-stop-reason",
+      "input": {
+        "stdout": "{\"continue\":false,\"stopReason\":\"   \"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_stopped_continuation",
+            "message": "   ",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook stopped continuation:    \n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"continue\":false,\"stopReason\":\"   \"}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": true,
+          "stopReason": "   ",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "stop-warning-only",
+      "input": {
+        "stdout": "{\"continue\":false,\"stopReason\":\"NATIVE_STOP_REASON\",\"systemMessage\":\"NATIVE_STOP_WARNING\"}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_stopped_continuation",
+            "message": "NATIVE_STOP_REASON",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook stopped continuation: NATIVE_STOP_REASON\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"continue\":false,\"stopReason\":\"NATIVE_STOP_REASON\",\"systemMessage\":\"NATIVE_STOP_WARNING\"}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "attachment": {
+            "type": "hook_system_message",
+            "content": "NATIVE_STOP_WARNING",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": true,
+          "stopReason": "NATIVE_STOP_REASON",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "stop-context",
+      "input": {
+        "stdout": "{\"continue\":false,\"stopReason\":\"NATIVE_STOP_REASON\",\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_stopped_continuation",
+            "message": "NATIVE_STOP_REASON",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook stopped continuation: NATIVE_STOP_REASON\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "content": "",
+            "stdout": "{\"continue\":false,\"stopReason\":\"NATIVE_STOP_REASON\",\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\"}}\n",
+            "stderr": "",
+            "exitCode": 0,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "attachment": {
+            "type": "hook_additional_context",
+            "content": [
+              "NATIVE_STOP_ADDITIONAL"
+            ],
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop"
+          },
+          "type": "attachment",
+          "rendered": [
+            {
+              "content": "<system-reminder>\nStop hook additional context: NATIVE_STOP_ADDITIONAL\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [
+            "NATIVE_STOP_ADDITIONAL"
+          ],
+          "preventedContinuation": true,
+          "stopReason": "NATIVE_STOP_REASON",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "schema-exit1",
+      "input": {
+        "stdout": "{\"decision\":\"not-valid\"}\n",
+        "stderr": " \n NATIVE_STOP_FAILURE \t\n",
+        "exitCode": 1,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Hook JSON output validation failed \u2014 decision: Invalid option: expected one of \"approve\"|\"block\"\n\nThe hook's output was: {\n  \"decision\": \"not-valid\"\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}\n\nHook exited 1 with stderr:\nNATIVE_STOP_FAILURE",
+            "stdout": "{\"decision\":\"not-valid\"}\n",
+            "exitCode": 1,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Hook JSON output validation failed \u2014 decision: Invalid option: expected one of \"approve\"|\"block\"\n\nThe hook's output was: {\n  \"decision\": \"not-valid\"\n}\n\nExpected schema:\n{\n  \"continue\": \"boolean (optional)\",\n  \"suppressOutput\": \"boolean (optional)\",\n  \"stopReason\": \"string (optional)\",\n  \"decision\": \"\\\"approve\\\" | \\\"block\\\" (optional)\",\n  \"reason\": \"string (optional)\",\n  \"systemMessage\": \"string (optional)\",\n  \"terminalSequence\": \"string (optional)\",\n  \"hookSpecificOutput\": {\n    \"for PreToolUse\": {\n      \"hookEventName\": \"\\\"PreToolUse\\\"\",\n      \"permissionDecision\": \"\\\"allow\\\" | \\\"deny\\\" | \\\"ask\\\" | \\\"defer\\\" (optional)\",\n      \"permissionDecisionReason\": \"string (optional)\",\n      \"updatedInput\": \"object (optional) - Modified tool input to use\"\n    },\n    \"for PermissionRequest\": {\n      \"hookEventName\": \"\\\"PermissionRequest\\\"\",\n      \"decision\": {\n        \"to allow\": {\n          \"behavior\": \"\\\"allow\\\"\",\n          \"updatedInput\": \"object (optional) - Modified tool input to use\",\n          \"updatedPermissions\": \"array (optional) - Permission updates\"\n        },\n        \"to deny\": {\n          \"behavior\": \"\\\"deny\\\"\",\n          \"message\": \"string (optional)\",\n          \"interrupt\": \"boolean (optional)\"\n        }\n      }\n    },\n    \"for UserPromptSubmit\": {\n      \"hookEventName\": \"\\\"UserPromptSubmit\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolUse\": {\n      \"hookEventName\": \"\\\"PostToolUse\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for PostToolBatch\": {\n      \"hookEventName\": \"\\\"PostToolBatch\\\"\",\n      \"additionalContext\": \"string (optional)\"\n    },\n    \"for Stop / SubagentStop\": {\n      \"hookEventName\": \"\\\"Stop\\\" | \\\"SubagentStop\\\"\",\n      \"additionalContext\": \"string (optional) - Feedback for the model; the conversation continues so the model can act on it\"\n    }\n  }\n}\n\nHook exited 1 with stderr:\nNATIVE_STOP_FAILURE"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "mismatched-unknown-fields",
+      "input": {
+        "stdout": "{\"ignored\":42,\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"NATIVE_STOP_ADDITIONAL\",\"ignored\":99}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'UserPromptSubmit'. Full stdout: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"UserPromptSubmit\",\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}",
+            "stdout": "",
+            "exitCode": 1,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'UserPromptSubmit'. Full stdout: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"UserPromptSubmit\",\n    \"additionalContext\": \"NATIVE_STOP_ADDITIONAL\"\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "valid-permission-display",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDisplay\":{\"title\":\"Ask\",\"description\":\"Native prompt\",\"displayName\":\"Fixture\"}}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'PreToolUse'. Full stdout: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"ask\",\n    \"permissionDisplay\": {\n      \"title\": \"Ask\",\n      \"description\": \"Native prompt\",\n      \"displayName\": \"Fixture\"\n    }\n  }\n}",
+            "stdout": "",
+            "exitCode": 1,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'PreToolUse'. Full stdout: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"ask\",\n    \"permissionDisplay\": {\n      \"title\": \"Ask\",\n      \"description\": \"Native prompt\",\n      \"displayName\": \"Fixture\"\n    }\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "invalid-permission-display",
+      "input": {
+        "stdout": "{\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"ask\",\"permissionDisplay\":{\"title\":42,\"description\":null,\"displayName\":[]}}}\n",
+        "stderr": "",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "Stop",
+            "toolUseID": "{batch}",
+            "hookEvent": "Stop",
+            "stderr": "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'PreToolUse'. Full stdout: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"ask\"\n  }\n}",
+            "stdout": "",
+            "exitCode": 1,
+            "command": "{command}",
+            "durationMs": "{duration}"
+          },
+          "type": "attachment"
+        },
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [
+            "Failed to run: Hook returned incorrect event name: expected 'Stop' but got 'PreToolUse'. Full stdout: {\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"PreToolUse\",\n    \"permissionDecision\": \"ask\"\n  }\n}"
+          ],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": true,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    },
+    {
+      "name": "whitespace-success-stderr",
+      "input": {
+        "stdout": "",
+        "stderr": "   \n",
+        "exitCode": 0,
+        "delayMs": 200
+      },
+      "modelRequests": 1,
+      "cliResult": "NATIVE_STOP_ANSWER_1",
+      "records": [
+        {
+          "type": "system",
+          "subtype": "stop_hook_summary",
+          "hookCount": 1,
+          "hookInfos": [
+            {
+              "command": "{command}",
+              "durationMs": "{duration}"
+            }
+          ],
+          "hookErrors": [],
+          "hookAdditionalContext": [],
+          "preventedContinuation": false,
+          "stopReason": "",
+          "hasOutput": false,
+          "level": "suggestion",
+          "toolUseID": "{batch}"
+        }
+      ],
+      "model": []
+    }
+  ]
+}

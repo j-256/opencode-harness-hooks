@@ -69,7 +69,7 @@ test('Stop continuation and continue:false retain dialect and event semantics', 
     assert.deepEqual(interpretOutput(reg('claude-code', name), event(name), result(specific(name, { additionalContext: 'feedback' }))).actions, [additional])
     for (const dialect of ['claude-code', 'codex'] as const) {
       const stopped = interpretOutput(reg(dialect, name), event(name), result({ continue: false, stopReason: 'stop', decision: 'block', reason: 'ignored' }))
-      assert.deepEqual(stopped.actions, [{ kind: 'stop-session', reason: 'stop' }])
+      assert.deepEqual(stopped.actions, name === 'Stop' && dialect === 'claude-code' ? [{ kind: 'stop-session', reason: 'stop' }, { kind: 'continue-turn', text: 'ignored', mode: 'feedback', channel: 'decision' }] : [{ kind: 'stop-session', reason: 'stop' }])
     }
   }
   assert.deepEqual(interpretOutput(reg('codex', 'SubagentStart'), event('SubagentStart'), result({ continue: false })).actions, [])
@@ -113,6 +113,27 @@ test('Claude Stop retains the native output field when continuation text is iden
     { kind: 'continue-turn', text: 'Same', mode: 'feedback', channel: 'stderr' },
     { kind: 'continue-turn', text: 'Same', mode: 'feedback', channel: 'additionalContext' },
   ])
+})
+
+test('Claude Stop discards fields belonging to other output events before validation and effect delivery', async () => {
+  const { interpretOutput } = await import('../src/protocol.js')
+  const effect = interpretOutput(reg('claude-code', 'Stop'), event('Stop'), result({ decision: 'block', reason: 'Native feedback', hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'Native context', permissionDecision: 123, updatedInput: 'Ignored', watchPaths: 7, reloadSkills: 'Ignored', sessionTitle: 99 } }))
+  assert.equal(effect.status, 'success')
+  assert.deepEqual(effect.actions, [{ kind: 'continue-turn', text: 'Native feedback', mode: 'feedback', channel: 'decision' }, { kind: 'continue-turn', text: 'Native context', mode: 'feedback', channel: 'additionalContext' }])
+})
+
+test('Claude Stop retains decision and context artifacts when continue false prevents model delivery', async () => {
+  const { interpretOutput } = await import('../src/protocol.js')
+  const effect = interpretOutput(reg('claude-code', 'Stop'), event('Stop'), result({ continue: false, stopReason: '', decision: 'block', reason: 'Feedback', systemMessage: '', hookSpecificOutput: { hookEventName: 'Stop', additionalContext: 'Context' } }))
+  assert.equal(effect.status, 'success')
+  assert.deepEqual(effect.actions, [{ kind: 'stop-session', reason: 'Stop hook prevented continuation' }, { kind: 'continue-turn', text: 'Feedback', mode: 'feedback', channel: 'decision' }, { kind: 'continue-turn', text: 'Context', mode: 'feedback', channel: 'additionalContext' }])
+})
+
+test('a Claude Stop event-name error stays nonblocking even when the process exits two', async () => {
+  const { interpretOutput } = await import('../src/protocol.js')
+  const effect = interpretOutput(reg('claude-code', 'Stop'), event('Stop'), result(specific('UserPromptSubmit', { additionalContext: 'Wrong event' }), 2, 'Stderr'))
+  assert.equal(effect.status, 'failed')
+  assert.deepEqual(effect.actions, [])
 })
 
 test('post-tool feedback does not retroactively deny an effect and differs by dialect', async () => {
