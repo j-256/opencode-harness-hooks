@@ -1,0 +1,27 @@
+{
+  "version": "2.1.318",
+  "scope": "one running stream-json process interrupted during the first turn",
+  "cases": [
+    {
+      "name": "during-hook",
+      "modelRequests": 2,
+      "retainedStopOutput": false,
+      "nextUser": [
+        "[Request interrupted by user]\n",
+        "LATER_NEXT_PROMPT"
+      ]
+    },
+    {
+      "name": "after-feedback",
+      "modelRequests": 3,
+      "retainedStopOutput": true,
+      "nextUser": [
+        "<system-reminder>\nStop hook blocking error from command: \"FIXTURE_COMMAND\": CANCEL_STOP_FEEDBACK\n</system-reminder>",
+        "<system-reminder>\nStop hook additional context: CANCEL_STOP_CONTEXT\n</system-reminder>",
+        "Stop hook feedback:\nCANCEL_STOP_FEEDBACK\n",
+        "[Request interrupted by user]\n",
+        "LATER_NEXT_PROMPT"
+      ]
+    }
+  ]
+}

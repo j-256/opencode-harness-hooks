@@ -64,6 +64,12 @@ The Claude `--history` fixture exercises one running stream-JSON process with se
 
 A transcript-resume reader can insert a `No response requested.` assistant placeholder after retained Stop feedback. The running-session fixture explicitly rejects that placeholder. Resume-reader acceptance therefore does not establish active-session model delivery. The default V2 adapter preserves this exercised running-session history without a synthetic continuation. Cancellation/reload recovery and complete native Stop behavior remain required.
 
+## Native cancellation reference
+
+The Claude `--cancellation` profile interrupts the first real turn through the stream control protocol, following the [official SDK interrupt request](https://github.com/anthropics/claude-agent-sdk-python/blob/main/src/claude_agent_sdk/_internal/query.py). One case interrupts a running Stop command before it can emit its decision. Another interrupts the continued provider request after Stop feedback has been admitted. Each unchanged source runs in an isolated native process with a loopback provider and a later real prompt; that prompt waits for both the interrupted turn's result and the correlated control acknowledgement.
+
+The running command's unproduced output is absent from native artifacts. Previously admitted feedback and additional context survive interruption. Both cases retain a user interruption record under the original prompt, with `[Request interrupted by user]` as its text. The following model request combines the retained reminders, feedback, interruption and new real prompt in their native order and roles. The [cancellation oracle](../test/fixtures/claude-stop-cancellation-oracle.json) preserves exact owned text blocks and separator newlines, with only matching executed-command displays substituted. A resume placeholder is not inserted. These references do not implement default-root accepted-input cancellation, durable reconciliation or complete cancellation parity; those remain required acceptance gates.
+
 ## Reproduction
 
 From a repository checkout with Node.js 22+, POSIX process groups and the selected pinned executable:
@@ -75,13 +81,14 @@ npm run test:native:stop -- --aggregation --dialect claude-code --binary /path/t
 npm run test:native:stop -- --aggregation --dialect codex --binary /path/to/codex
 npm run test:native:stop -- --outputs --binary /path/to/claude
 npm run test:native:stop -- --history --binary /path/to/claude
+npm run test:native:stop -- --cancellation --binary /path/to/claude
 npm run build
 npm run test:host:v2:stop -- --binary /path/to/v2/opencode
 npm run test:host:v2:stop -- --default-root --binary /path/to/v2/opencode
 npm run test:host:v2:stop -- --default-root --history --binary /path/to/v2/opencode
 ```
 
-The command supports `-h`/`--help`, `-d`/`--dialect`, `-b`/`--binary`, `--aggregation`, `--outputs`, `--history`, `CLAUDE_BINARY` and `CODEX_BINARY`. The dialect defaults to `claude-code`. Output characterization and running-session history require Claude; fixture selectors cannot combine. Generated command scripts pass a syntax check before native execution, and output-characterization waits enforce the timing deadline used by the assertions. The probe requires no package build, model account, installation or live configuration change. Metadata-only JSON goes to stdout; diagnostics go to stderr without commands, outputs, native payloads or local paths. Exit statuses are zero for passing native checks, one for runtime/check failures, two for usage/version/platform preconditions and three for a missing executable.
+The command supports `-h`/`--help`, `-d`/`--dialect`, `-b`/`--binary`, `--aggregation`, `--outputs`, `--history`, `--cancellation`, `CLAUDE_BINARY` and `CODEX_BINARY`. The dialect defaults to `claude-code`. Output characterization, running-session history and cancellation require Claude; fixture selectors cannot combine. Generated command scripts pass a syntax check before native execution, and output-characterization waits enforce the timing deadline used by the assertions. The probe requires no package build, model account, installation or live configuration change. Metadata-only JSON goes to stdout; diagnostics go to stderr without commands, outputs, native payloads or local paths. Exit statuses are zero for passing native checks, one for runtime/check failures, two for usage/version/platform preconditions and three for a missing executable.
 
 The native reference result retains `bridgeStopComparison: "not-implemented"` and `equivalent: false`. Complete V2 cancellation, repeated decisions, background work, subagent completion, remaining handler families and the private migration comparison remain required gates. The V1 exception does not waive these V2 requirements.
 
