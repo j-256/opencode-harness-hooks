@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict'
-import { execFile, spawn } from 'node:child_process'
+import { execFile } from 'node:child_process'
+import { NativeProbeError as ProbeError, NATIVE_CLAUDE_LIMITS, runNativeClaude as native } from './lib/native-claude.mjs'
 import { createHash } from 'node:crypto'
 import { access, mkdtemp, mkdir, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
@@ -23,9 +24,8 @@ const TIMEOUT_STDOUT = 'NATIVE_TIMEOUT_STDOUT'
 const TIMEOUT_STDERR = 'NATIVE_TIMEOUT_STDERR'
 const HOOK_TIMEOUT_SECONDS = 0.5
 const SECOND_MS = 1000
-const CLI_MS = 30000
-const GRACE_MS = 1000
-const MAX_BYTES = 2 * 1024 * 1024
+const CLI_MS = NATIVE_CLAUDE_LIMITS.durationMs
+const MAX_BYTES = NATIVE_CLAUDE_LIMITS.maxBytes
 const MAX_REQUESTS = 12
 const SLOW_HOOK_MS = 200
 const run = promisify(execFile)
@@ -49,30 +49,6 @@ Exit status: 0 verified; 1 runtime/check failure; 2 usage/version/platform;
 3 dependency; 4 required native reader fidelity differs (JSON is preserved).
 This covers supported synthetic attachments, not full native artifact equivalence.
 `
-class ProbeError extends Error { constructor(code, status = 1) { super(code); this.status = status } }
-
-async function native(binary, args, text, cwd, env) {
-  const child = spawn(binary, args, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
-  let output = ''
-  let bytes = 0
-  let failure
-  let escalation
-  const kill = signal => { try { if (child.pid) process.kill(-child.pid, signal) } catch {} }
-  const stop = code => { if (failure) return; failure = code; kill('SIGTERM'); escalation = setTimeout(() => kill('SIGKILL'), GRACE_MS) }
-  const timer = setTimeout(() => stop('NATIVE_TIMEOUT'), CLI_MS)
-  child.stdout.on('data', chunk => { bytes += chunk.length; if (bytes > MAX_BYTES) stop('NATIVE_OUTPUT_LIMIT'); else output += chunk })
-  child.stderr.on('data', chunk => { bytes += chunk.length; if (bytes > MAX_BYTES) stop('NATIVE_OUTPUT_LIMIT') })
-  child.stdin.on('error', () => {})
-  child.stdin.end(text)
-  try {
-    const status = await new Promise((resolve, reject) => { child.once('error', () => reject(new ProbeError('NATIVE_START_FAILED'))); child.once('close', resolve) })
-    if (failure) throw new ProbeError(failure)
-    if (status !== 0) throw new ProbeError('NATIVE_EXECUTION_FAILED')
-    const result = JSON.parse(output)
-    assert.equal(result.is_error, false)
-  } finally { clearTimeout(timer); clearTimeout(escalation); kill('SIGKILL') }
-}
-
 function attachments(rows) {
   return rows.filter(row => row.type === 'attachment' && row.attachment?.hookEvent === 'UserPromptSubmit')
 }
