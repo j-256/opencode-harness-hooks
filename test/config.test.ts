@@ -19,7 +19,7 @@ test('loads native JSON and inline TOML without importing unrelated config or de
     provider: { secret: 'UNRELATED_SECRET_SENTINEL' },
     hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'echo duplicate', timeout: 12 }] }] },
   }))
-  await writeFile(codex, '[provider]\nsecret = "UNRELATED_SECRET_SENTINEL"\n[[hooks.PreToolUse]]\nmatcher = "Bash"\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = "echo duplicate"\ntimeout = 12\n[hooks.state]\ntrusted = true\n')
+  await writeFile(codex, '[provider]\nsecret = "UNRELATED_SECRET_SENTINEL"\n[[hooks.PreToolUse]]\nmatcher = "Bash"\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = "echo duplicate"\ntimeout = 12\n[unrelated]\ntrusted = true\n')
   const sources = await loadSources([
     { id: 'claude', dialect: 'claude-code', path: claude },
     { id: 'codex', dialect: 'codex', path: codex },

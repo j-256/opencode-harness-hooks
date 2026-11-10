@@ -1,9 +1,9 @@
 import { resolve } from 'node:path'
-import { loadSources } from './config.js'
+import { loadSources, snapshotSourceSpec } from './config.js'
 import { HOST_VERSIONS } from './contracts.js'
 import type { Dialect, HostVersion } from './contracts.js'
 import { HostHookError } from './hosts/tools.js'
-import type { SourceSpec } from './types.js'
+import type { LoadedCodexConfig, SourceSpec } from './types.js'
 
 const WIRED_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit'])
 const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions', 'auto'])
@@ -23,6 +23,7 @@ export interface RuntimeReport {
     readonly digest: string
     readonly reviewed: boolean
     readonly enabled: boolean
+    readonly codexConfig?: Omit<LoadedCodexConfig, 'layers'> & { readonly layers: readonly Omit<LoadedCodexConfig['layers'][number], 'path'>[] }
     readonly events: readonly string[]
     readonly unwiredEvents: readonly string[]
     readonly selected: readonly { readonly id: string; readonly event: string; readonly type: string }[]
@@ -38,9 +39,8 @@ function optionsCopy(value: unknown, directory: string): RuntimeOptions {
   if (value.permissionMode !== undefined && (typeof value.permissionMode !== 'string' || !PERMISSION_MODES.has(value.permissionMode))) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
   if (Object.values(value.reviewedDigests).some(digest => typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest))) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
   const sources = value.sources.map(source => {
-    if (!record(source) || typeof source.path !== 'string') throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
-    for (const key of ['projectRoot', 'pluginRoot']) if (source[key] !== undefined && typeof source[key] !== 'string') throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
-    return { ...structuredClone(source), path: resolve(directory, source.path), ...(typeof source.projectRoot === 'string' ? { projectRoot: resolve(directory, source.projectRoot) } : {}), ...(typeof source.pluginRoot === 'string' ? { pluginRoot: resolve(directory, source.pluginRoot) } : {}) } as unknown as SourceSpec
+    if (!record(source)) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
+    return snapshotSourceSpec(source as unknown as SourceSpec, undefined, directory)
   })
   return { sources, reviewedDigests: { ...value.reviewedDigests } as Record<string, string>, ...(typeof value.permissionMode === 'string' ? { permissionMode: value.permissionMode } : {}) }
 }
@@ -54,12 +54,13 @@ export async function inspectSources(host: HostVersion, directory: string, input
     host, hostContractVersion: HOST_VERSIONS[host], equivalent: false,
     sources: Object.freeze(sources.map(source => Object.freeze({
       id: source.id, dialect: source.dialect, digest: source.digest, reviewed: Object.hasOwn(options.reviewedDigests, source.id) && options.reviewedDigests[source.id] === source.digest, enabled: source.enabled,
+      ...(source.codexConfig ? { codexConfig: Object.freeze({ ...source.codexConfig, layers: Object.freeze(source.codexConfig.layers.map(({ path: _path, ...layer }) => Object.freeze(layer))) }) } : {}),
       events: Object.freeze([...new Set(source.registrations.map(registration => registration.event))]),
       unwiredEvents: Object.freeze([...new Set(source.registrations.map(registration => registration.event).filter(event => !WIRED_EVENTS.has(event)))]),
       selected: Object.freeze(source.registrations.map(registration => Object.freeze({ id: registration.id, event: registration.event, type: registration.handler.type }))),
       excluded: source.excluded,
     }))),
-    unresolved: Object.freeze(['native-trust-and-reload', ...(sources.some(source => source.dialect === 'codex') ? ['codex-config-layer-state'] : []), 'native-artifacts', 'permission-mode-projection', 'tool-result-projection', 'post-failure-mapping', 'non-tool-events', 'native-effects-and-lifecycle', 'migration-parity']),
+    unresolved: Object.freeze(['native-trust-and-reload', ...(sources.some(source => source.dialect === 'codex' && !source.codexConfig) ? ['codex-config-layer-state'] : []), ...(sources.some(source => source.codexConfig) ? ['codex-config-context-authentication'] : []), 'native-artifacts', 'permission-mode-projection', 'tool-result-projection', 'post-failure-mapping', 'non-tool-events', 'native-effects-and-lifecycle', 'migration-parity']),
   })
   return { options, sources, report }
 }

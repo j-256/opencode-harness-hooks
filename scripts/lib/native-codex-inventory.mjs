@@ -3,8 +3,19 @@ import { NativeProbeError, NATIVE_PROCESS_LIMITS } from './native-process.mjs'
 
 const REQUEST_IDS = Object.freeze({ INITIALIZE: 1, LIST: 2 })
 
-export async function listNativeCodexHooks(binary, cwd, env) {
-  const child = spawn(binary, ['app-server'], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
+export function listNativeCodexHooks(binary, cwd, env, overrides = []) {
+  return readNativeCodex(binary, cwd, env, 'hooks/list', { cwds: [cwd], forceReload: true }, overrides)
+}
+export function readNativeCodexConfig(binary, cwd, env, overrides = []) {
+  return readNativeCodex(binary, cwd, env, 'config/read', { includeLayers: true, cwd }, overrides)
+}
+export function readNativeCodexRequirements(binary, cwd, env) {
+  return readNativeCodex(binary, cwd, env, 'configRequirements/read', {})
+}
+
+async function readNativeCodex(binary, cwd, env, method, params, overrides = []) {
+  if (!Array.isArray(overrides) || overrides.length > 64 || overrides.some(value => typeof value !== 'string' || Buffer.byteLength(value) > NATIVE_PROCESS_LIMITS.maxBytes)) throw new NativeProbeError('NATIVE_INVENTORY_OVERRIDE_INVALID', 2)
+  const child = spawn(binary, ['app-server', ...overrides.map(value => '--config=' + value)], { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
   const decoder = new TextDecoder('utf-8', { fatal: true })
   let pending = '', bytes = 0, reply, failure, escalation
   let initialized = false
@@ -33,7 +44,7 @@ export async function listNativeCodexHooks(binary, cwd, env) {
           if (initialized || value.error || !value.result) { stop('NATIVE_INVENTORY_INITIALIZE_FAILED'); return }
           initialized = true
           send({ method: 'initialized', params: {} })
-          send({ id: REQUEST_IDS.LIST, method: 'hooks/list', params: { cwds: [cwd], forceReload: true } })
+          send({ id: REQUEST_IDS.LIST, method, params })
         } else if (value.id === REQUEST_IDS.LIST) {
           if (!initialized || reply || value.error || !value.result) { stop('NATIVE_INVENTORY_LIST_FAILED'); return }
           reply = value.result

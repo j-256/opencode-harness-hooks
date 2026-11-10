@@ -17,6 +17,23 @@ export interface SourceSelection {
   readonly excludeCommands?: readonly string[]
 }
 
+export interface CodexConfigLayer {
+  readonly scope: 'user' | 'session' | 'other'
+  readonly path?: string
+  readonly settings?: Readonly<Record<string, JsonValue>>
+  readonly disabled?: boolean
+}
+export interface CodexConfigContext {
+  readonly layers: readonly CodexConfigLayer[]
+  readonly sourceLayer?: number
+  readonly featureRequirements?: { readonly hooks?: boolean }
+}
+export interface LoadedCodexConfig {
+  readonly layers: readonly { readonly scope: CodexConfigLayer['scope']; readonly path?: string; readonly digest: string; readonly disabled: boolean }[]
+  readonly sourceLayer?: number
+  readonly featureRequirements?: { readonly hooks?: boolean }
+}
+
 export interface SourceSpec {
   readonly id: string
   readonly dialect: Dialect
@@ -24,6 +41,7 @@ export interface SourceSpec {
   readonly projectRoot?: string
   readonly pluginRoot?: string
   readonly selection?: SourceSelection
+  readonly codexConfig?: CodexConfigContext
 }
 
 export interface Registration {
@@ -55,6 +73,7 @@ export interface LoadedSource {
   readonly path: string
   readonly digest: string
   readonly enabled: boolean
+  readonly codexConfig?: LoadedCodexConfig
   readonly projectRoot?: string
   readonly pluginRoot?: string
   readonly registrations: readonly Registration[]

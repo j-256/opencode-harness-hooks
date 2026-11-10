@@ -18,7 +18,7 @@ test('native Codex source help requires no executable, dependencies or build', a
   for (const flag of ['-h', '--help']) {
     const result = await invoke([flag], { PATH: '' })
     assert.equal(result.status, 0)
-    for (const text of ['--binary', 'CODEX_BINARY', '0.167.0', 'hooks/list', 'Exit status', 'config.toml', 'hooks.json']) assert.ok(result.stdout.includes(text), text)
+    for (const text of ['--binary', 'CODEX_BINARY', '0.167.0', 'hooks/list', 'Exit status', 'config.toml', 'hooks.json', 'session state', 'feature requirements']) assert.ok(result.stdout.includes(text), text)
     assert.equal(result.stderr, '')
   }
 })

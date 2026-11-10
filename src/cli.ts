@@ -24,7 +24,8 @@ OPTIONS.json is a UTF-8 JSON object with the plugin options schema:
   {"sources":[{"id":"native","dialect":"claude-code","path":"hooks.json"}],
    "reviewedDigests":{},"permissionMode":"default"}
 sources must be nonempty; each source has an id, dialect (claude-code or codex)
-and path. Optional projectRoot, pluginRoot and selection follow docs/runtime.md.
+and path. Optional projectRoot, pluginRoot, selection and the Codex codexConfig
+context follow docs/runtime.md.
 reviewedDigests may be omitted for inspection and maps source IDs to reviewed
 SHA-256 configuration digests. permissionMode is an optional native projection.
 Source paths resolve against DIR; OPTIONS.json resolves against cwd. Use --

@@ -36,7 +36,7 @@ test('inspection help documents invocation, input schema and statuses without op
     const result = await invoke([flag])
     assert.equal(result.status, 0)
     assert.equal(result.stderr, '')
-    for (const field of ['inspect', '--host', '--directory', 'sources', 'reviewedDigests', '--require-equivalent', 'Exit status']) assert.ok(result.stdout.includes(field), field)
+    for (const field of ['inspect', '--host', '--directory', 'sources', 'codexConfig', 'reviewedDigests', '--require-equivalent', 'Exit status']) assert.ok(result.stdout.includes(field), field)
   }
 })
 

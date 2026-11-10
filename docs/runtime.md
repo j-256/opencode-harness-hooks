@@ -32,9 +32,37 @@ The [read-only inspector](inspection.md) loads these options without executing h
 
 `reviewedDigests` pins the exact configuration bytes that the caller reviewed. An absent or different digest prevents activation. The runtime emits a metadata-only source report before execution, including the digest, enabled state, selected events, exclusions and unwired events. This review layer is a bridge extension. It does not implement or certify native Codex hook trust, managed configuration rules, plugin content fingerprints, or Claude project trust. Native trust remains an acceptance gate.
 
-The runtime retains its immutable source snapshot for the lifetime of that plugin activation, including subsequent sessions. Editing a configuration file does not replace that snapshot or execute its new registrations. Reactivation reads the source again and requires a matching reviewed digest. The digest covers configuration bytes, not the contents of referenced executables or scripts. No source file is modified.
+The runtime retains its immutable source snapshot for the lifetime of that plugin activation, including subsequent sessions. Editing a configuration file does not replace that snapshot or execute its new registrations. Reactivation reads the source again and requires a matching reviewed digest. The digest covers configuration and declared context, while referenced executables and scripts require separate provenance. No source file is modified.
 
 `permissionMode` is an explicit native-vocabulary projection selected by the caller. It does not change OpenCode permissions, obtain approval, or prove that a native permission mode has equivalent host behavior. Without it or an explicit metadata service, hooks requiring that field fail before execution. A production projection needs separate evidence; the controlled host fixtures declare their mode alongside synthetic host permissions.
+
+## Codex configuration context
+
+A Codex source can declare the native settings layers that affect its hooks. This example selects registrations from `hooks.json` and reads their user settings from `config.toml`:
+
+```json
+{
+  "id": "native",
+  "dialect": "codex",
+  "path": "hooks.json",
+  "codexConfig": {
+    "sourceLayer": 0,
+    "layers": [
+      { "scope": "user", "path": "config.toml" }
+    ]
+  }
+}
+```
+
+`layers` is ordered from low to high precedence. Each layer has `scope: "user"`, `"session"` or `"other"`, an optional `disabled` boolean, and exactly one of `path` or `settings`. File layers read explicit TOML paths. Session layers use `settings`, a normalized native layer table supplied by the caller or metadata service. A selected profile can also be supplied as a normalized user layer. Relative layer paths resolve against the host project directory. The native `config/read` response lists layers in the opposite order; a caller using that response must reverse it.
+
+Only the selected source's `path` supplies registrations. Configuration layers supply settings and never import their hook definitions. A selected inline TOML source must appear as a file layer in its explicit stack. Without `codexConfig`, an inline TOML source retains its own user-style settings and a JSON source has no external settings projection. No global layers are discovered automatically.
+
+User and session layers may supply per-hook state, including when a layer is disabled. Other origins, including project and managed layers, cannot write user hook state. Later eligible layers merge enablement and native trust-hash fields independently. Native key trimming and raw table order are preserved. Effective active configuration is validated separately: a later layer can repair a malformed lower field, while raw state extraction still skips that malformed lower entry. Parsed trust hashes do not grant native hook trust in the adapter.
+
+Active layers supply ordinary feature flags. The canonical `hooks` flag takes precedence over its deprecated `codex_hooks` alias after merging. Optional `featureRequirements: { "hooks": true }` or `false` projects the native effective requirement and takes precedence over those flags. The caller supplies its native provenance. `sourceLayer`, when present, identifies the owning layer by index; disabling that layer excludes the source's registrations. Context authentication, native source discovery and full managed policy behavior remain required integration work, reported as `codex-config-context-authentication`. Declaring a context does not establish those capabilities.
+
+An explicit context changes the review digest to a versioned aggregate of the primary source identity and bytes, ordered layer identities and content, owning-layer index and feature requirements. Inline settings retain JSON entry order because trimmed-key collisions can depend on it. Use the inspector's digest for `reviewedDigests`; hashing only the primary file is insufficient. Without a context, the primary-file SHA-256 remains unchanged. File and inline inputs share the source byte ceiling, with bounded immutable snapshots created before asynchronous reads. Accessors, unsupported JSON values, cycles and excessive nesting are rejected. Reports contain layer scope, digest and disablement metadata while omitting layer paths and unrelated settings.
 
 ## Connected behavior and gaps
 

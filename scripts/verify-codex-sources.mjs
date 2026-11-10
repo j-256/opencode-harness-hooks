@@ -3,6 +3,7 @@ import { access, mkdtemp, mkdir, readFile, realpath, rename, rm, symlink, writeF
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { parseArgs } from 'node:util'
+import { verifyNativeCodexLayers } from './lib/native-codex-layers.mjs'
 import { listNativeCodexHooks } from './lib/native-codex-inventory.mjs'
 import { NativeProbeError as ProbeError, nativeCheckError, runNativeProcess } from './lib/native-process.mjs'
 
@@ -16,6 +17,7 @@ read-only app-server hooks/list. Requires Node.js 22+, POSIX and pinned Codex.
 Uses isolated temporary HOME/config/project state; no package build, model
 account, hook execution, installation or live configuration changes.
 Exercises hooks.json, inline config.toml, state overrides and source symlinks.
+Checks user/project/session state precedence and effective feature requirements.
 Machine-managed native sources can remain present and are counted separately.
 
 Options:
@@ -87,7 +89,9 @@ async function verify(binary) {
       assert.equal(await exists(marker), false)
       results.push({ name, sourceIdentity: true, eventOrder: true, stateMatches: true, sourceBytesUnchanged: true, hooksExecuted: false, additionalManagedHandlers: first.data[0].hooks.filter(row => row.isManaged).length })
     }
-    return { version, cases: results, disabledRegistrationOrdinalPreserved: true, nativeInventoryReference: true, bridgeSourceLayers: 'not-implemented', equivalent: false }
+    stage = 'layers'
+    const layers = await verifyNativeCodexLayers(binary, root)
+    return { version, cases: results, layers, disabledRegistrationOrdinalPreserved: true, nativeInventoryReference: true, bridgeSourceComparison: 'not-implemented', equivalent: false }
   } catch (error) { throw nativeCheckError('NATIVE_SOURCE_CHECK_FAILED', stage, error, import.meta.url) } finally { await rm(root, { recursive: true, force: true }) }
 }
 
