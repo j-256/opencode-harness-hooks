@@ -12,13 +12,14 @@ const CODEX_RESTRICTED_ENV = new Set([
   'OPENAI_FEDERATION_RULE_ID', 'OPENAI_IDENTITY_TOKEN_FILE', 'OPENAI_WORKLOAD_IDENTITY_CONTEXT',
 ])
 const CLAUDE_PATH_VARIABLES = new Set(['CLAUDE_PROJECT_DIR', 'CLAUDE_PLUGIN_ROOT', 'CLAUDE_PLUGIN_DATA'])
+const HOOK_HOST_ENVIRONMENT = Object.freeze({ OPENCODE_HARNESS_HOOKS: '1' })
 
 export class CommandContextError extends Error {
   constructor(readonly code: string) { super(code); this.name = 'CommandContextError' }
 }
 
 function commandEnvironment(registration: Registration, payload: Readonly<Record<string, JsonValue>>, host: HostServices): NodeJS.ProcessEnv {
-  const environment: NodeJS.ProcessEnv = { ...host.environment }
+  const environment: NodeJS.ProcessEnv = { ...host.environment, ...HOOK_HOST_ENVIRONMENT }
   const context = host.sourceContext?.[registration.sourceID]
   if (registration.dialect === 'claude-code') {
     for (const key of Object.keys(environment)) {

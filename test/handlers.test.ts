@@ -26,6 +26,29 @@ function event(cwd: string, name = 'PreToolUse'): NativeEvent {
 
 const environment = { PATH: process.env.PATH, SHELL: '/bin/sh' }
 
+test('command hooks identify the compatibility host without changing native payload or inherited environment', async t => {
+  const { executeRegistration } = await import('../src/handlers.js')
+  const root = await fixture(t)
+  const script = join(root, 'host-marker.cjs')
+  await writeFile(script, `const fs=require('node:fs');const payload=JSON.parse(fs.readFileSync(0,'utf8'));fs.writeFileSync(process.argv[2],JSON.stringify({marker:process.env.OPENCODE_HARNESS_HOOKS,payload}));console.log('{}');`)
+  const inherited = { ...environment, OPENCODE_HARNESS_HOOKS: 'stale' }
+  const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
+  for (const dialect of ['claude-code', 'codex'] as const) {
+    const output = join(root, dialect + '.json')
+    const handler = dialect === 'claude-code' ? { type: 'command' as const, command: process.execPath, args: [script, output] } : { type: 'command' as const, command: [process.execPath, script, output].map(quote).join(' ') }
+    const result = await executeRegistration(registration(dialect, handler), event(root), { environment: inherited, projectRoot: root })
+    assert.equal(result.status, 'success')
+    const captured = JSON.parse(await readFile(output, 'utf8'))
+    assert.equal(captured.marker, '1')
+    assert.equal(captured.payload.session_id, 'session')
+    assert.equal(captured.payload.hook_event_name, 'PreToolUse')
+    assert.equal(captured.payload.tool_name, 'Bash')
+    assert.deepEqual(captured.payload.tool_input, { command: 'original' })
+    assert.equal(captured.payload.OPENCODE_HARNESS_HOOKS, undefined)
+  }
+  assert.equal(inherited.OPENCODE_HARNESS_HOOKS, 'stale')
+})
+
 test('command artifact capture is opt-in and excludes stdin and environment from records and diagnostics', async t => {
   const { executeRegistration } = await import('../src/handlers.js')
   const root = await fixture(t)
