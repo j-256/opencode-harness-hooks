@@ -84,6 +84,7 @@ export interface NativeEvent {
   readonly host?: HostVersion
   readonly event: string
   readonly sessionID: string
+  readonly nativeSessionIDs?: Readonly<Partial<Record<Dialect, string>>>
   readonly cwd: string
   readonly tool?: string
   readonly toolInput?: Readonly<Record<string, JsonValue>>

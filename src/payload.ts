@@ -4,6 +4,7 @@ import { nativeToolInput } from './tool-schema.js'
 import type { JsonValue, NativeEvent, Registration } from './types.js'
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied'])
+const MAX_SESSION_ID_BYTES = 4096
 const CLAUDE_PERMISSION_EVENTS = new Set(['UserPromptSubmit', 'UserPromptExpansion', ...TOOL_EVENTS, 'PostToolBatch', 'Stop', 'SubagentStop', 'TaskCompleted', 'TeammateIdle'])
 const CLAUDE_COMMON = ['prompt_id', 'scratchpad_dir', 'agent_id', 'agent_type', 'effort']
 const MODEL_SWITCH_FIELDS = ['from_model', 'to_model', 'requested_model', 'source', 'context_tokens', 'prompt_cache_warm', 'cache_ttl', 'estimated_cache_write_usd', 'pricing']
@@ -52,6 +53,17 @@ export class PayloadError extends Error {
   }
 }
 
+function sessionIdentity(registration: Registration, event: NativeEvent): string {
+  const identities = event.nativeSessionIDs
+  if (identities === undefined) return event.sessionID
+  if (!identities || typeof identities !== 'object' || Array.isArray(identities)) throw new PayloadError('PAYLOAD_INVALID', 'session_id')
+  if (!Object.hasOwn(identities, registration.dialect)) return event.sessionID
+  const identity = identities[registration.dialect]
+  if (identity === undefined) return event.sessionID
+  if (typeof identity !== 'string' || !identity || identity.length > MAX_SESSION_ID_BYTES || Buffer.byteLength(identity) > MAX_SESSION_ID_BYTES || identity.includes('\0')) throw new PayloadError('PAYLOAD_INVALID', 'session_id')
+  return identity
+}
+
 function toolInput(registration: Registration, event: NativeEvent): JsonValue {
   if (event.toolInput === undefined || event.tool === undefined) throw new PayloadError('PAYLOAD_MISSING', 'tool_input')
   try { return nativeToolInput(event.host ?? 'v1', event.tool, event.toolInput) } catch { throw new PayloadError('PAYLOAD_TOOL_INPUT_AMBIGUOUS') }
@@ -61,7 +73,7 @@ export function buildPayload(registration: Registration, event: NativeEvent): Re
   if (registration.event !== event.event) throw new PayloadError('PAYLOAD_EVENT_MISMATCH')
   if (!isHookEvent(registration.dialect, event.event)) throw new PayloadError('PAYLOAD_EVENT_UNSUPPORTED')
   const data = { ...event.data, ...event.dialectData?.[registration.dialect] }
-  const payload: Record<string, JsonValue> = { session_id: event.sessionID, cwd: event.cwd, hook_event_name: event.event }
+  const payload: Record<string, JsonValue> = { session_id: sessionIdentity(registration, event), cwd: event.cwd, hook_event_name: event.event }
   if (registration.dialect === 'claude-code' && (typeof data.transcript_path !== 'string' || !data.transcript_path)) {
     throw new PayloadError('PAYLOAD_MISSING', 'transcript_path')
   }

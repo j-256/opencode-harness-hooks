@@ -45,6 +45,53 @@ async function connect(t: TestContext, f: Awaited<ReturnType<typeof fixture>>, s
   return runtime
 }
 
+test('mixed Stop preserves native payload session identities without changing host lifetime or receipt ownership', async t => {
+  const f = await fixture(t)
+  const capture = join(f.directory, 'native-identities.jsonl'), script = join(f.directory, 'identities.cjs')
+  await writeFile(script, `const fs=require('node:fs');const payload=JSON.parse(fs.readFileSync(0,'utf8'));fs.appendFileSync(${JSON.stringify(capture)},JSON.stringify({payload,thread:process.env.CODEX_THREAD_ID??null})+'\\n');console.log(JSON.stringify({decision:'block',reason:'Feedback'}));`)
+  const bytes = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: [process.execPath, script].map(quote).join(' ') }] }] } })
+  await writeFile(f.path, bytes)
+  const sources = (['claude-code', 'codex'] as const).map(dialect => ({ id: dialect, dialect, path: f.path }))
+  const digest = createHash('sha256').update(bytes).digest('hex')
+  const deliveries: StopDelivery[] = []
+  const runtime = await createRuntime('v2', f.directory, { sources, reviewedDigests: { 'claude-code': digest, codex: digest }, permissionMode: 'default' }, { ...quiet, host: { environment: { PATH: process.env.PATH, HOME: f.directory, SHELL: '/bin/sh' } }, stop: { diagnostic: () => {}, admit: async delivery => { deliveries.push(delivery) } } })
+  t.after(() => runtime.dispose())
+  runtime.sessions.prompt('session', 'prompt', 'model')
+  const owner = runtime.sessions.get('session')
+  const nativeSessionIDs = { 'claude-code': 'claude-thread', codex: '1982c3ae-f864-4aab-9ae3-22f2c9cef652' }
+  const input = { ...f.event(), nativeSessionIDs, data: { transcript_path: join(f.directory, 'claude.jsonl'), last_assistant_message: 'Answer', background_tasks: [], session_crons: [] }, dialectData: { codex: { transcript_path: join(f.directory, 'codex.jsonl') } } }
+  const expectedIDs = { ...nativeSessionIDs }
+  const pending = runtime.stop(input)
+  nativeSessionIDs.codex = 'changed-after-submission'
+  const receipt = await pending
+  const rows = (await readFile(capture, 'utf8')).trim().split('\n').map(row => JSON.parse(row))
+  assert.deepEqual(new Set(rows.map(row => row.payload.session_id)), new Set(Object.values(expectedIDs)))
+  assert.equal(rows.find(row => row.payload.session_id === expectedIDs.codex).thread, expectedIDs.codex)
+  assert.equal(rows.find(row => row.payload.session_id === expectedIDs['claude-code']).thread, null)
+  assert.equal(receipt.sessionID, 'session')
+  assert.equal(receipt.messageID, 'prompt')
+  assert.equal(receipt.control, 'continue')
+  assert.equal(deliveries[0]!.event.sessionID, 'session')
+  assert.equal(deliveries[0]!.session.signal, owner.signal)
+  assert.equal(deliveries[0]!.dispatch.diagnostic.sessionID, 'session')
+  assert.deepEqual(runtime.sessions.get('session'), owner)
+  assert.equal((await runtime.stop({ ...input, nativeSessionIDs: expectedIDs })).dispatchID, receipt.dispatchID)
+  await assert.rejects(runtime.stop(input), { code: 'HOST_STOP_IDENTITY_CONFLICT' })
+  await assert.rejects(runtime.stop({ ...input, completionID: 'invalid-native', nativeSessionIDs: { codex: '' } }), { code: 'HOST_NATIVE_METADATA_UNAVAILABLE' })
+  assert.equal((await readFile(capture, 'utf8')).trim().split('\n').length, rows.length)
+  runtime.sessions.close('session')
+  assert.equal(owner.signal.aborted, true)
+})
+
+test('core Stop treats an undefined optional native identity as omission', async t => {
+  const f = await fixture(t)
+  const runtime = await connect(t, f, { admit: async () => {} })
+  const input = { ...f.event(), nativeSessionIDs: { codex: undefined } } as unknown as StopEvent
+  const receipt = await runtime.stop(input)
+  assert.equal(receipt.sessionID, 'session')
+  assert.equal((await f.payloads())[0].session_id, 'session')
+})
+
 test('core Stop awaits feedback admission and keeps independent registrations in the same logical turn', async t => {
   const f = await fixture(t, 2)
   const admitted = deferred(), release = deferred()

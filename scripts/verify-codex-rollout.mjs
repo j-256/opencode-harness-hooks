@@ -16,6 +16,7 @@ records through pinned Codex ${VERSION} read-only hooks/list and thread/read.
 Requires Node.js 22+, POSIX, npm ci and npm run build in this checkout.
 Uses isolated synthetic sources, identities and history. Executes one generated
 command through the adapter core; starts no model, account or OpenCode host.
+Checks distinct host/native session identities and the native hook environment.
 No installation or live configuration changes. This is not default plugin
 integration, native trust, native identity allocation or full parity.
 
@@ -60,7 +61,7 @@ async function verify(binary) {
     await mkdir(dirname(nativePath), { recursive: true })
     await symlink(path, nativePath)
     await writeFile(join(nativeHome, 'config.toml'), '[features]\nhooks=true\n')
-    await writeFile(script, `const fs=require('node:fs');const input=JSON.parse(fs.readFileSync(0,'utf8'));const records=fs.readFileSync(input.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);if(!records.some(row=>row.type==='response_item'&&row.payload.role==='assistant'&&row.payload.content.some(part=>part.text==='Answer')))process.exit(9);fs.writeFileSync(${JSON.stringify(trace)},JSON.stringify({sessionID:input.session_id,turnID:input.turn_id,readArtifact:true}));console.log(JSON.stringify({decision:'block',reason:${JSON.stringify(scenario.feedback[0])}}))`)
+    await writeFile(script, `const fs=require('node:fs');const input=JSON.parse(fs.readFileSync(0,'utf8'));const records=fs.readFileSync(input.transcript_path,'utf8').trim().split('\\n').map(JSON.parse);if(!records.some(row=>row.type==='response_item'&&row.payload.role==='assistant'&&row.payload.content.some(part=>part.text==='Answer'))||records[0].payload.id!==input.session_id||process.env.CODEX_THREAD_ID!==input.session_id)process.exit(9);fs.writeFileSync(${JSON.stringify(trace)},JSON.stringify({sessionID:input.session_id,turnID:input.turn_id,readArtifact:true}));console.log(JSON.stringify({decision:'block',reason:${JSON.stringify(scenario.feedback[0])}}))`)
     const sourcePath = join(nativeHome, 'hooks.json'), command = [process.execPath, script].map(quote).join(' ')
     const sourceBytes = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command }] }] } })
     await writeFile(sourcePath, sourceBytes)
@@ -82,9 +83,11 @@ async function verify(binary) {
         await rollout.appendStop(scenario.identity.threadID, persisted, delivery.signal)
       } },
     })
-    runtime.sessions.prompt(scenario.identity.threadID, scenario.identity.turnID, 'fixture')
-    const receipt = await runtime.stop({ host: 'v2', event: 'Stop', sessionID: scenario.identity.threadID, messageID: scenario.identity.turnID, completionID: 'fixture-completion', cwd: project, data: { transcript_path: path, last_assistant_message: 'Answer' } })
+    const hostSessionID = 'ses_opencode_fixture'
+    runtime.sessions.prompt(hostSessionID, scenario.identity.turnID, 'fixture')
+    const receipt = await runtime.stop({ host: 'v2', event: 'Stop', sessionID: hostSessionID, nativeSessionIDs: { codex: scenario.identity.threadID }, messageID: scenario.identity.turnID, completionID: 'fixture-completion', cwd: project, data: { transcript_path: path, last_assistant_message: 'Answer' } })
     assert.equal(receipt.control, 'continue')
+    assert.equal(receipt.sessionID, hostSessionID)
     assert.deepEqual(JSON.parse(await readFile(trace, 'utf8')), { sessionID: scenario.identity.threadID, turnID: scenario.identity.turnID, readArtifact: true })
     stage = 'native-reader'
     const before = await readFile(path)
@@ -105,7 +108,7 @@ async function verify(binary) {
     await writeFile(invalidPath, rows.map(row => JSON.stringify(row) + '\n').join(''))
     const invalid = await readNativeCodexThread(binary, project, { ...env, CODEX_HOME: invalidHome }, scenario.identity.threadID)
     assert.equal(invalid.thread.turns.flatMap(turn => turn.items).filter(item => item.type === 'hookPrompt').length, 0)
-    return { version, coreStopDispatch: true, commandReadNativeArtifact: true, inventoryBound: true, nativeReaderAccepted: true, exactHookPrompt: true, malformedRecordsOmitted: true, sourceBytesUnchanged: true, defaultPluginIntegration: false, nativeTrustEnforced: false, equivalent: false }
+    return { version, coreStopDispatch: true, commandReadNativeArtifact: true, nativePayloadIdentityMatchesJournal: true, hostReceiptIdentityPreserved: true, inventoryBound: true, nativeReaderAccepted: true, exactHookPrompt: true, malformedRecordsOmitted: true, sourceBytesUnchanged: true, defaultPluginIntegration: false, nativeTrustEnforced: false, equivalent: false }
   } catch (error) { throw nativeCheckError('CODEX_ROLLOUT_CHECK_FAILED', stage, error, import.meta.url) } finally {
     try { await runtime?.dispose() } finally { try { await rollout?.dispose() } finally { await rm(root, { recursive: true, force: true }) } }
   }

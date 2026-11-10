@@ -123,3 +123,39 @@ test('metadata cannot override identity or native tool normalization and returne
   ;(payload.tool_input as Record<string, unknown>).file_path = 'changed'
   assert.equal(event.toolInput?.filePath, 'a.ts')
 })
+
+test('explicit native session identities are dialect-specific while host correlation and reserved metadata stay separate', async () => {
+  const { buildPayload } = await import('../src/payload.js')
+  const nativeSessionIDs = { 'claude-code': 'claude-session', codex: '1982c3ae-f864-4aab-9ae3-22f2c9cef652' }
+  const projected = { ...event, nativeSessionIDs, data: { ...event.data, session_id: 'shared-metadata' }, dialectData: { 'claude-code': { ...event.dialectData?.['claude-code'], session_id: 'claude-metadata' }, codex: { ...event.dialectData?.codex, session_id: 'codex-metadata' } } }
+  for (const dialect of ['claude-code', 'codex'] as const) {
+    const payload = buildPayload(registration(dialect), projected)
+    assert.equal(payload.session_id, nativeSessionIDs[dialect])
+    assert.equal(payload.cwd, event.cwd)
+    assert.equal(payload.hook_event_name, event.event)
+    assert.equal(payload.tool_name, 'Edit')
+  }
+  assert.equal(projected.sessionID, 'session')
+  assert.deepEqual(projected.nativeSessionIDs, nativeSessionIDs)
+  assert.equal(buildPayload(registration('claude-code'), { ...event, nativeSessionIDs: { codex: nativeSessionIDs.codex } }).session_id, event.sessionID)
+})
+
+test('an invalid explicit native session identity is rejected instead of falling back to host identity', async () => {
+  const { buildPayload } = await import('../src/payload.js')
+  for (const dialect of ['claude-code', 'codex'] as const) for (const value of ['', '\0', 'native\0session', 'x'.repeat(4097), '字'.repeat(1366), null, 1, {}]) {
+    const input = { ...event, nativeSessionIDs: { [dialect]: value } } as unknown as NativeEvent
+    assert.throws(() => buildPayload(registration(dialect), input), /PAYLOAD_INVALID:session_id/)
+  }
+  for (const nativeSessionIDs of [null, [], 1, 'invalid']) {
+    assert.throws(() => buildPayload(registration('codex'), { ...event, nativeSessionIDs } as unknown as NativeEvent), /PAYLOAD_INVALID:session_id/)
+  }
+})
+
+test('undefined optional native identities mean omission before and after JSON event snapshots', async () => {
+  const { buildPayload } = await import('../src/payload.js')
+  for (const dialect of ['claude-code', 'codex'] as const) {
+    const input = { ...event, nativeSessionIDs: { [dialect]: undefined } } as unknown as NativeEvent
+    assert.equal(buildPayload(registration(dialect), input).session_id, event.sessionID)
+    assert.equal(buildPayload(registration(dialect), JSON.parse(JSON.stringify(input))).session_id, event.sessionID)
+  }
+})
