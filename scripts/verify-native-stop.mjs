@@ -10,10 +10,11 @@ import { NativeProbeError as ProbeError, NATIVE_PROCESS_LIMITS as LIMITS, native
 import { createStopAggregationFixture, stopAggregationCases, validateStopAggregation } from './lib/native-stop-aggregation.mjs'
 import { createStopOutputFixture, stopOutputCases, validateStopOutput } from './lib/native-stop-outputs.mjs'
 import { STOP_HISTORY_PROMPTS, createStopHistoryFixture, stopHistoryCases, validateStopHistory } from './lib/native-stop-history.mjs'
+import { createStopArtifactFixture, stopArtifactCases, validateStopArtifacts } from './lib/native-stop-artifacts.mjs'
 import { CANCELLATION_MODES, armStopCancellation, createStopCancellationFixture, stopCancellationCases, validateStopCancellation } from './lib/native-stop-cancellation.mjs'
 
 const VERSIONS = Object.freeze({ 'claude-code': '2.1.318', codex: '0.167.0' })
-const FIXTURES = Object.freeze({ DEFAULT: 'default', AGGREGATION: 'aggregation', OUTPUTS: 'outputs', HISTORY: 'history', CANCELLATION: 'cancellation' })
+const FIXTURES = Object.freeze({ DEFAULT: 'default', AGGREGATION: 'aggregation', OUTPUTS: 'outputs', HISTORY: 'history', CANCELLATION: 'cancellation', ARTIFACTS: 'artifacts' })
 const MODES = Object.freeze(['block-json', 'block-stderr', 'failure-policy', 'stop-output'])
 const CONTINUATIONS = new Set(['block-json', 'block-stderr'])
 const MODEL = 'claude-sonnet-4-6'
@@ -26,7 +27,7 @@ const HOOK_TIMEOUT_SECONDS = 10
 const MAX_REQUESTS = 4
 const run = promisify(execFile)
 const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'"
-const HELP = `Usage: node scripts/verify-native-stop.mjs [-d claude-code|codex] [-b PATH] [--aggregation|--outputs|--history|--cancellation]
+const HELP = `Usage: node scripts/verify-native-stop.mjs [-d claude-code|codex] [-b PATH] [--aggregation|--outputs|--history|--cancellation|--artifacts]
 
 Verify native Stop payloads, awaited decisions, continuation input and artifacts.
 Requires Node.js 22+, POSIX and the selected pinned executable: Claude Code
@@ -42,6 +43,7 @@ Options:
       --outputs      Exercise Claude command output, error and timeout artifacts
       --history      Exercise retained Claude Stop output at the next real prompt
       --cancellation Exercise interrupted Claude Stop commands and retained input
+      --artifacts    Codex only (--dialect codex): HookPrompt escaping/order/identity
   -h, --help          Show help without binaries or dependencies
 
 Metadata-only JSON goes to stdout; diagnostics go to stderr without native
@@ -196,7 +198,7 @@ async function verify(dialect, binary, fixture) {
   const root = await realpath(await mkdtemp(join(tmpdir(), 'harness-native-stop-')))
   let gateway, stage = 'setup', mode, interruption
   const requests = [], cases = []
-  const aggregation = fixture === FIXTURES.AGGREGATION, outputs = fixture === FIXTURES.OUTPUTS, history = fixture === FIXTURES.HISTORY, cancellation = fixture === FIXTURES.CANCELLATION
+  const aggregation = fixture === FIXTURES.AGGREGATION, outputs = fixture === FIXTURES.OUTPUTS, history = fixture === FIXTURES.HISTORY, cancellation = fixture === FIXTURES.CANCELLATION, artifacts = fixture === FIXTURES.ARTIFACTS
   try {
     gateway = createServer(async (request, response) => {
       try {
@@ -227,15 +229,15 @@ async function verify(dialect, binary, fixture) {
       } catch { if (!response.headersSent) response.writeHead(500); response.end('{}') }
     })
     await new Promise(resolve => gateway.listen(0, '127.0.0.1', resolve))
-    for (const scenario of cancellation ? await stopCancellationCases() : history ? await stopHistoryCases() : outputs ? await stopOutputCases() : aggregation ? await stopAggregationCases(dialect) : MODES.map(name => ({ name }))) {
+    for (const scenario of artifacts ? await stopArtifactCases() : cancellation ? await stopCancellationCases() : history ? await stopHistoryCases() : outputs ? await stopOutputCases() : aggregation ? await stopAggregationCases(dialect) : MODES.map(name => ({ name }))) {
       mode = scenario.name
       stage = mode
-      const state = join(root, mode), project = join(state, 'project'), home = join(state, 'home'), config = join(state, 'config')
+      const state = join(root, mode), project = join(state, 'project'), home = join(state, 'home'), config = join(state, artifacts ? 'config <&>"\'' : 'config')
       await Promise.all([project, home, config].map(path => mkdir(path, { recursive: true })))
       const trace = join(state, 'hooks.jsonl'), hook = join(state, 'hook.cjs'), settings = join(state, 'settings.json'), mcp = join(state, 'mcp.json')
-      if (!aggregation && !outputs && !history && !cancellation) await writeFile(hook, `const fs=require('node:fs');const input=JSON.parse(fs.readFileSync(0,'utf8'));const path=${JSON.stringify(trace)};const rows=fs.existsSync(path)?fs.readFileSync(path,'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse):[];const ordinal=rows.filter(row=>row.phase==='start').length;if(ordinal>=${MAX_REQUESTS})process.exit(9);const transcriptExists=typeof input.transcript_path==='string'&&fs.existsSync(input.transcript_path);const log=phase=>fs.appendFileSync(path,JSON.stringify({phase,ordinal,input,transcriptExists,time:Date.now()})+'\\n');log('start');setTimeout(()=>{log('end');if(ordinal)return;if(${JSON.stringify(mode)}==='block-json')console.log(JSON.stringify({decision:'block',reason:${JSON.stringify(FEEDBACK)}}));else if(${JSON.stringify(mode)}==='block-stderr'){process.stderr.write(${JSON.stringify(FEEDBACK)});process.exit(2)}else if(${JSON.stringify(mode)}==='failure-policy'){process.stderr.write(${JSON.stringify(FAILURE)});process.exit(1)}else console.log(JSON.stringify({continue:false,stopReason:${JSON.stringify(REASON)}}))},${DELAY_MS})`)
+      if (!aggregation && !outputs && !history && !cancellation && !artifacts) await writeFile(hook, `const fs=require('node:fs');const input=JSON.parse(fs.readFileSync(0,'utf8'));const path=${JSON.stringify(trace)};const rows=fs.existsSync(path)?fs.readFileSync(path,'utf8').trim().split('\\n').filter(Boolean).map(JSON.parse):[];const ordinal=rows.filter(row=>row.phase==='start').length;if(ordinal>=${MAX_REQUESTS})process.exit(9);const transcriptExists=typeof input.transcript_path==='string'&&fs.existsSync(input.transcript_path);const log=phase=>fs.appendFileSync(path,JSON.stringify({phase,ordinal,input,transcriptExists,time:Date.now()})+'\\n');log('start');setTimeout(()=>{log('end');if(ordinal)return;if(${JSON.stringify(mode)}==='block-json')console.log(JSON.stringify({decision:'block',reason:${JSON.stringify(FEEDBACK)}}));else if(${JSON.stringify(mode)}==='block-stderr'){process.stderr.write(${JSON.stringify(FEEDBACK)});process.exit(2)}else if(${JSON.stringify(mode)}==='failure-policy'){process.stderr.write(${JSON.stringify(FAILURE)});process.exit(1)}else console.log(JSON.stringify({continue:false,stopReason:${JSON.stringify(REASON)}}))},${DELAY_MS})`)
       const command = { type: 'command', command: dialect === 'claude-code' ? process.execPath : [process.execPath, hook].map(quote).join(' '), ...(dialect === 'claude-code' ? { args: [hook] } : {}), timeout: HOOK_TIMEOUT_SECONDS, ...(mode === 'failure-policy' ? { onFailure: 'block' } : {}) }
-      const commands = cancellation ? await createStopCancellationFixture(scenario, trace, hook) : history ? await createStopHistoryFixture(scenario, trace, hook) : outputs ? await createStopOutputFixture(scenario, trace, hook) : aggregation ? await createStopAggregationFixture(scenario, trace, hook, dialect) : [command]
+      const commands = artifacts ? await createStopArtifactFixture(scenario, trace, hook) : cancellation ? await createStopCancellationFixture(scenario, trace, hook) : history ? await createStopHistoryFixture(scenario, trace, hook) : outputs ? await createStopOutputFixture(scenario, trace, hook) : aggregation ? await createStopAggregationFixture(scenario, trace, hook, dialect) : [command]
       await run(process.execPath, ['--check', hook], { timeout: LIMITS.durationMs, maxBuffer: LIMITS.maxBytes })
       await writeFile(settings, JSON.stringify({ hooks: { Stop: [{ hooks: commands }], ...(history && scenario.promptContext ? { UserPromptSubmit: [{ hooks: commands }] } : {}) } })); await writeFile(mcp, '{"mcpServers":{}}')
       const env = { PATH: process.env.PATH, HOME: home, SHELL: '/bin/sh', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_NON_ESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' }
@@ -258,7 +260,7 @@ async function verify(dialect, binary, fixture) {
       assert.deepEqual(await readFile(hook), commandSnapshot)
       const events = await readRecords(trace)
       const nativeRows = await readRecords(events[0].input.transcript_path), nativeRequests = requests.filter(row => row.mode === mode)
-      cases.push(cancellation ? validateStopCancellation(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' ')) : history ? validateStopHistory(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), project) : outputs ? validateStopOutput(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), project) : aggregation ? validateStopAggregation(dialect, scenario, events, nativeRows, nativeRequests, execution, commands.map((_, index) => [process.execPath, hook, String(index)].join(' ')), sourcePath, project) : validate(dialect, mode, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), sourcePath, project))
+      cases.push(artifacts ? validateStopArtifacts(scenario, events, nativeRows, nativeRequests, execution, sourcePath) : cancellation ? validateStopCancellation(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' ')) : history ? validateStopHistory(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), project) : outputs ? validateStopOutput(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), project) : aggregation ? validateStopAggregation(dialect, scenario, events, nativeRows, nativeRequests, execution, commands.map((_, index) => [process.execPath, hook, String(index)].join(' ')), sourcePath, project) : validate(dialect, mode, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), sourcePath, project))
     }
     return { dialect, version: VERSIONS[dialect], cases, codexTrustBypassed: dialect === 'codex', fixtureSourceUnchanged: true, nativeContinuationInputAndArtifacts: true, bridgeStopComparison: 'not-implemented', equivalent: false }
   } catch (error) { throw nativeCheckError('NATIVE_STOP_CHECK_FAILED', stage, error, import.meta.url) } finally {
@@ -269,7 +271,7 @@ async function verify(dialect, binary, fixture) {
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { dialect: { type: 'string', short: 'd' }, binary: { type: 'string', short: 'b' }, aggregation: { type: 'boolean' }, outputs: { type: 'boolean' }, history: { type: 'boolean' }, cancellation: { type: 'boolean' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { dialect: { type: 'string', short: 'd' }, binary: { type: 'string', short: 'b' }, aggregation: { type: 'boolean' }, outputs: { type: 'boolean' }, history: { type: 'boolean' }, cancellation: { type: 'boolean' }, artifacts: { type: 'boolean' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const dialect = parsed.values.dialect ?? 'claude-code'
@@ -277,9 +279,10 @@ try {
     if (parsed.values.outputs && (parsed.values.aggregation || dialect !== 'claude-code')) throw new ProbeError('USAGE_OUTPUT_FIXTURE: --outputs requires claude-code without --aggregation', 2)
     if (parsed.values.history && (parsed.values.outputs || parsed.values.aggregation || dialect !== 'claude-code')) throw new ProbeError('USAGE_HISTORY_FIXTURE: --history requires claude-code without other fixtures', 2)
     if (parsed.values.cancellation && (parsed.values.outputs || parsed.values.aggregation || parsed.values.history || dialect !== 'claude-code')) throw new ProbeError('USAGE_CANCELLATION_FIXTURE: --cancellation requires claude-code without other fixtures', 2)
+    if (parsed.values.artifacts && (dialect !== 'codex' || parsed.values.aggregation || parsed.values.outputs || parsed.values.history || parsed.values.cancellation)) throw new ProbeError('USAGE_ARTIFACT_FIXTURE: --artifacts requires codex without other fixtures', 2)
     const binary = parsed.values.binary ?? process.env[dialect === 'claude-code' ? 'CLAUDE_BINARY' : 'CODEX_BINARY'] ?? (dialect === 'claude-code' ? 'claude' : 'codex')
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    const fixture = parsed.values.cancellation ? FIXTURES.CANCELLATION : parsed.values.history ? FIXTURES.HISTORY : parsed.values.outputs ? FIXTURES.OUTPUTS : parsed.values.aggregation ? FIXTURES.AGGREGATION : FIXTURES.DEFAULT
+    const fixture = parsed.values.artifacts ? FIXTURES.ARTIFACTS : parsed.values.cancellation ? FIXTURES.CANCELLATION : parsed.values.history ? FIXTURES.HISTORY : parsed.values.outputs ? FIXTURES.OUTPUTS : parsed.values.aggregation ? FIXTURES.AGGREGATION : FIXTURES.DEFAULT
     process.stdout.write(JSON.stringify(await verify(dialect, binary, fixture)) + '\n')
   }
 } catch (error) { process.stderr.write((error instanceof ProbeError ? error.message : 'NATIVE_STOP_PROBE_FAILED') + '\n'); process.exitCode = error instanceof ProbeError ? error.status : 1 }

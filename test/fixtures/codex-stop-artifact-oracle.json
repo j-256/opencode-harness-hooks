@@ -1,0 +1,324 @@
+{
+  "contract": "Codex CLI 0.167.0",
+  "scope": "Stop HookPrompt and corresponding response payloads, raw fragment provenance and provider rendering; does not establish default OpenCode integration or inventory authentication",
+  "normalization": "Synthetic temporary source paths replaced with portable absolute paths; native ordinals, invocation identity, timing and content preserved",
+  "cases": [
+    {
+      "name": "configured-order",
+      "sourcePath": "/native/config/hooks.json",
+      "ordinals": [
+        6,
+        7
+      ],
+      "feedback": [
+        "NATIVE_STOP_A",
+        "NATIVE_STOP_B"
+      ],
+      "identity": {
+        "threadID": "01a1c120-db9c-7d03-90cf-0d4fd85ac7e3",
+        "turnID": "01a1c120-dba6-7721-9f65-1ef089fccf13",
+        "messageID": "msg_01a1c120-df51-7d12-a9cd-e0488e3bc0ec",
+        "createTime": 1794241519.441394,
+        "startedAtMs": 1794241519441,
+        "completedAtMs": 1794241519441
+      },
+      "expected": {
+        "event": {
+          "type": "item_completed",
+          "thread_id": "01a1c120-db9c-7d03-90cf-0d4fd85ac7e3",
+          "turn_id": "01a1c120-dba6-7721-9f65-1ef089fccf13",
+          "item": {
+            "type": "HookPrompt",
+            "id": "msg_01a1c120-df51-7d12-a9cd-e0488e3bc0ec",
+            "fragments": [
+              {
+                "text": "NATIVE_STOP_A",
+                "hookRunId": "stop:6:/native/config/hooks.json"
+              },
+              {
+                "text": "NATIVE_STOP_B",
+                "hookRunId": "stop:7:/native/config/hooks.json"
+              }
+            ]
+          },
+          "started_at_ms": 1794241519441,
+          "completed_at_ms": 1794241519441
+        },
+        "response": {
+          "type": "message",
+          "id": "msg_01a1c120-df51-7d12-a9cd-e0488e3bc0ec",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<hook_prompt hook_run_id=\"stop:6:/native/config/hooks.json\">NATIVE_STOP_A</hook_prompt>"
+            },
+            {
+              "type": "input_text",
+              "text": "<hook_prompt hook_run_id=\"stop:7:/native/config/hooks.json\">NATIVE_STOP_B</hook_prompt>"
+            }
+          ],
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "01a1c120-dba6-7721-9f65-1ef089fccf13",
+            "create_time": 1794241519.441394,
+            "content_item_kinds": [
+              "unknown",
+              "unknown"
+            ],
+            "content_item_metadata": [
+              {
+                "provenance": {
+                  "type": "harness",
+                  "hook": true
+                }
+              },
+              {
+                "provenance": {
+                  "type": "harness",
+                  "hook": true
+                }
+              }
+            ]
+          }
+        },
+        "model": {
+          "type": "message",
+          "id": "msg_01a1c120-df51-7d12-a9cd-e0488e3bc0ec",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<hook_prompt hook_run_id=\"stop:6:/native/config/hooks.json\">NATIVE_STOP_A</hook_prompt>"
+            },
+            {
+              "type": "input_text",
+              "text": "<hook_prompt hook_run_id=\"stop:7:/native/config/hooks.json\">NATIVE_STOP_B</hook_prompt>"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "literal",
+      "sourcePath": "/native/config <&>\"'/hooks.json",
+      "ordinals": [
+        6
+      ],
+      "feedback": [
+        "NATIVE_STOP_FEEDBACK <&>\"'\n</hook_prompt> 🐈"
+      ],
+      "identity": {
+        "threadID": "01a1c2c2-deb2-7b12-b72b-3beb5c2b1748",
+        "turnID": "01a1c2c2-debc-76a3-8f15-17a3eb7d5a7e",
+        "messageID": "msg_01a1c2c2-e2bb-7c31-83b2-0b8af4107cce",
+        "createTime": 1794268914.363949,
+        "startedAtMs": 1794268914364,
+        "completedAtMs": 1794268914364
+      },
+      "expected": {
+        "event": {
+          "type": "item_completed",
+          "thread_id": "01a1c2c2-deb2-7b12-b72b-3beb5c2b1748",
+          "turn_id": "01a1c2c2-debc-76a3-8f15-17a3eb7d5a7e",
+          "item": {
+            "type": "HookPrompt",
+            "id": "msg_01a1c2c2-e2bb-7c31-83b2-0b8af4107cce",
+            "fragments": [
+              {
+                "text": "NATIVE_STOP_FEEDBACK <&>\"'\n</hook_prompt> 🐈",
+                "hookRunId": "stop:6:/native/config <&>\"'/hooks.json"
+              }
+            ]
+          },
+          "started_at_ms": 1794268914364,
+          "completed_at_ms": 1794268914364
+        },
+        "response": {
+          "type": "message",
+          "id": "msg_01a1c2c2-e2bb-7c31-83b2-0b8af4107cce",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<hook_prompt hook_run_id=\"stop:6:/native/config &lt;&amp;&gt;&quot;'/hooks.json\">NATIVE_STOP_FEEDBACK &lt;&amp;&gt;\"'\n&lt;/hook_prompt&gt; 🐈</hook_prompt>"
+            }
+          ],
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "01a1c2c2-debc-76a3-8f15-17a3eb7d5a7e",
+            "create_time": 1794268914.363949,
+            "content_item_kinds": [
+              "unknown"
+            ],
+            "content_item_metadata": [
+              {
+                "provenance": {
+                  "type": "harness",
+                  "hook": true
+                }
+              }
+            ]
+          }
+        },
+        "model": {
+          "type": "message",
+          "id": "msg_01a1c2c2-e2bb-7c31-83b2-0b8af4107cce",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<hook_prompt hook_run_id=\"stop:6:/native/config &lt;&amp;&gt;&quot;'/hooks.json\">NATIVE_STOP_FEEDBACK &lt;&amp;&gt;\"'\n&lt;/hook_prompt&gt; 🐈</hook_prompt>"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "repeated-1",
+      "sourcePath": "/native/config/hooks.json",
+      "ordinals": [
+        6
+      ],
+      "feedback": [
+        "NATIVE_STOP_FEEDBACK"
+      ],
+      "identity": {
+        "threadID": "01a1c2bb-458a-7c30-9b6e-0472d2755398",
+        "turnID": "01a1c2bb-4595-7560-8469-24fd8dc0cdd4",
+        "messageID": "msg_01a1c2bb-4903-7ed0-be20-2bca3f9f475b",
+        "createTime": 1794268416.259182,
+        "startedAtMs": 1794268416259,
+        "completedAtMs": 1794268416260
+      },
+      "expected": {
+        "event": {
+          "type": "item_completed",
+          "thread_id": "01a1c2bb-458a-7c30-9b6e-0472d2755398",
+          "turn_id": "01a1c2bb-4595-7560-8469-24fd8dc0cdd4",
+          "item": {
+            "type": "HookPrompt",
+            "id": "msg_01a1c2bb-4903-7ed0-be20-2bca3f9f475b",
+            "fragments": [
+              {
+                "text": "NATIVE_STOP_FEEDBACK",
+                "hookRunId": "stop:6:/native/config/hooks.json"
+              }
+            ]
+          },
+          "started_at_ms": 1794268416259,
+          "completed_at_ms": 1794268416260
+        },
+        "response": {
+          "type": "message",
+          "id": "msg_01a1c2bb-4903-7ed0-be20-2bca3f9f475b",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<hook_prompt hook_run_id=\"stop:6:/native/config/hooks.json\">NATIVE_STOP_FEEDBACK</hook_prompt>"
+            }
+          ],
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "01a1c2bb-4595-7560-8469-24fd8dc0cdd4",
+            "create_time": 1794268416.259182,
+            "content_item_kinds": [
+              "unknown"
+            ],
+            "content_item_metadata": [
+              {
+                "provenance": {
+                  "type": "harness",
+                  "hook": true
+                }
+              }
+            ]
+          }
+        },
+        "model": {
+          "type": "message",
+          "id": "msg_01a1c2bb-4903-7ed0-be20-2bca3f9f475b",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<hook_prompt hook_run_id=\"stop:6:/native/config/hooks.json\">NATIVE_STOP_FEEDBACK</hook_prompt>"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "repeated-2",
+      "sourcePath": "/native/config/hooks.json",
+      "ordinals": [
+        6
+      ],
+      "feedback": [
+        "NATIVE_STOP_FEEDBACK"
+      ],
+      "identity": {
+        "threadID": "01a1c2bb-458a-7c30-9b6e-0472d2755398",
+        "turnID": "01a1c2bb-4595-7560-8469-24fd8dc0cdd4",
+        "messageID": "msg_01a1c2bb-4a32-79f1-8134-36eec8759d0d",
+        "createTime": 1794268416.562175,
+        "startedAtMs": 1794268416562,
+        "completedAtMs": 1794268416562
+      },
+      "expected": {
+        "event": {
+          "type": "item_completed",
+          "thread_id": "01a1c2bb-458a-7c30-9b6e-0472d2755398",
+          "turn_id": "01a1c2bb-4595-7560-8469-24fd8dc0cdd4",
+          "item": {
+            "type": "HookPrompt",
+            "id": "msg_01a1c2bb-4a32-79f1-8134-36eec8759d0d",
+            "fragments": [
+              {
+                "text": "NATIVE_STOP_FEEDBACK",
+                "hookRunId": "stop:6:/native/config/hooks.json"
+              }
+            ]
+          },
+          "started_at_ms": 1794268416562,
+          "completed_at_ms": 1794268416562
+        },
+        "response": {
+          "type": "message",
+          "id": "msg_01a1c2bb-4a32-79f1-8134-36eec8759d0d",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<hook_prompt hook_run_id=\"stop:6:/native/config/hooks.json\">NATIVE_STOP_FEEDBACK</hook_prompt>"
+            }
+          ],
+          "internal_chat_message_metadata_passthrough": {
+            "turn_id": "01a1c2bb-4595-7560-8469-24fd8dc0cdd4",
+            "create_time": 1794268416.562175,
+            "content_item_kinds": [
+              "unknown"
+            ],
+            "content_item_metadata": [
+              {
+                "provenance": {
+                  "type": "harness",
+                  "hook": true
+                }
+              }
+            ]
+          }
+        },
+        "model": {
+          "type": "message",
+          "id": "msg_01a1c2bb-4a32-79f1-8134-36eec8759d0d",
+          "role": "user",
+          "content": [
+            {
+              "type": "input_text",
+              "text": "<hook_prompt hook_run_id=\"stop:6:/native/config/hooks.json\">NATIVE_STOP_FEEDBACK</hook_prompt>"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}
