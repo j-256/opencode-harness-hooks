@@ -16,6 +16,8 @@ export type { StopEvent, StopReceipt, StopDelivery, StopDiagnostic, StopServices
 export { compileCodexStopPrompt } from './codex-stop-prompts.js'
 export { bindCodexStopInventory } from './codex-stop-inventory.js'
 export type { CodexStopInventoryInput } from './codex-stop-inventory.js'
+export { CodexRollout } from './codex-rollout.js'
+export type { CodexRolloutOptions, CodexRolloutHistoryRecord } from './codex-rollout.js'
 export type { CodexStopPromptInput, CodexStopPromptIdentity, CodexStopRegistrationIdentity, CodexStopPromptArtifacts, CodexStopFragmentOrigin } from './codex-stop-prompts.js'
 export type { StopModelBlocks, StopContinuationOptions, StopInterruptionReceipt, StopInterruptedModel, StopAbortedAssistant } from './stop-records.js'
 export { HostHookError } from './hosts/tools.js'

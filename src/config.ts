@@ -3,6 +3,7 @@ import { constants } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { resolve, extname, dirname, basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
+import { snapshotJsonObject } from './bounded-json.js'
 import { HANDLER_TYPES, isHookEvent } from './contracts.js'
 import type { Dialect } from './contracts.js'
 import type { CodexConfigContext, CodexConfigLayer, JsonValue, LoadedCodexConfig, ExcludedRegistration, ExclusionReason, Handler, LoadedSource, Registration, SourceSpec } from './types.js'
@@ -12,7 +13,6 @@ const MAX_SOURCE_BYTES = 64 * DEFAULT_SOURCE_BYTES
 const READ_CHUNK_BYTES = 64 * 1024
 const SOURCE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/
 const MAX_CONFIG_LAYERS = 64
-const MAX_SETTINGS_DEPTH = 128
 const CODEX_CONTEXT_FORMAT = 'opencode-harness-hooks/codex-config/v1'
 const CODEX_STATE_FIELDS = Object.freeze(['enabled', 'trusted_hash', 'trusted_content_hash'])
 interface SettingsSnapshot { readonly value: Readonly<Record<string, JsonValue>>; readonly text: string; readonly bytes: number }
@@ -68,61 +68,8 @@ function validateSpec(spec: SourceSpec): void {
 }
 
 function snapshotSettings(value: unknown, maxBytes: number, sourceID: string): SettingsSnapshot {
-  const visiting = new Set<object>()
-  let bytes = 0
-  const charge = (count: number) => { bytes += count; if (bytes > maxBytes) throw new SourceError('SOURCE_SIZE', sourceID) }
-  const string = (text: string) => {
-    charge(2)
-    for (let index = 0; index < text.length; index++) {
-      const code = text.charCodeAt(index)
-      if (code === 0x22 || code === 0x5c || [0x08, 0x09, 0x0a, 0x0c, 0x0d].includes(code)) charge(2)
-      else if (code < 0x20) charge(6)
-      else if (code < 0x80) charge(1)
-      else if (code < 0x800) charge(2)
-      else if (code >= 0xd800 && code <= 0xdbff && text.charCodeAt(index + 1) >= 0xdc00 && text.charCodeAt(index + 1) <= 0xdfff) { charge(4); index++ }
-      else charge(code >= 0xd800 && code <= 0xdfff ? 6 : 3)
-    }
-  }
-  const visit = (item: unknown, depth: number): JsonValue => {
-    if (depth > MAX_SETTINGS_DEPTH || item === undefined || typeof item === 'function' || typeof item === 'symbol' || typeof item === 'bigint' || typeof item === 'number' && !Number.isFinite(item)) throw new SourceError('SOURCE_SPEC', sourceID)
-    if (typeof item === 'string') { string(item); return item }
-    if (item === null || typeof item !== 'object') { charge(JSON.stringify(item).length); return item as JsonValue }
-    if (visiting.has(item) || !Array.isArray(item) && ![Object.prototype, null].includes(Object.getPrototypeOf(item))) throw new SourceError('SOURCE_SPEC', sourceID)
-    visiting.add(item)
-    charge(2)
-    let result: JsonValue
-    if (Array.isArray(item)) {
-      const array: JsonValue[] = []
-      for (let index = 0; index < item.length; index++) {
-        if (index) charge(1)
-        const entry = Object.getOwnPropertyDescriptor(item, String(index))
-        if (entry && !('value' in entry)) throw new SourceError('SOURCE_SPEC', sourceID)
-        array.push(visit(entry ? entry.value : null, depth + 1))
-      }
-      result = array
-    } else {
-      const object: Record<string, JsonValue> = Object.create(null)
-      let first = true
-      for (const key in item) {
-        if (!Object.hasOwn(item, key)) continue
-        const entry = Object.getOwnPropertyDescriptor(item, key)!
-        if (!entry.enumerable) continue
-        if (!('value' in entry)) throw new SourceError('SOURCE_SPEC', sourceID)
-        if (!first) charge(1)
-        first = false
-        string(key)
-        charge(1)
-        object[key] = visit(entry.value, depth + 1)
-      }
-      result = object
-    }
-    visiting.delete(item)
-    return result
-  }
-  if (!record(value)) throw new SourceError('SOURCE_SPEC', sourceID)
-  const snapshot = visit(value, 0) as Readonly<Record<string, JsonValue>>
-  const result = { value: snapshot, text: JSON.stringify(snapshot), bytes }
-  settingsSnapshots.set(snapshot, result)
+  const result = snapshotJsonObject(value, maxBytes, kind => { throw new SourceError(kind === 'size' ? 'SOURCE_SIZE' : 'SOURCE_SPEC', sourceID) })
+  settingsSnapshots.set(result.value, result)
   return result
 }
 

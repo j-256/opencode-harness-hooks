@@ -69,6 +69,7 @@ function freeze<T>(value: T): T {
   return value
 }
 function escapeText(value: string): string { return value.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;') }
+export function renderCodexHookPrompt(text: string, hookRunID: string): string { return `<hook_prompt hook_run_id="${escapeText(hookRunID).replaceAll('"', '&quot;')}">${escapeText(text)}</hook_prompt>` }
 
 export function compileCodexStopPrompt(input: CodexStopPromptInput): CodexStopPromptArtifacts | undefined {
   const { dispatch, identity } = input
@@ -123,7 +124,7 @@ export function compileCodexStopPrompt(input: CodexStopPromptInput): CodexStopPr
     if (inputBytes > maxBytes) fail('CODEX_STOP_ARTIFACT_LIMIT')
     const hookRunId = `stop:${registration.ordinal}:${source.path}`
     fragments.push({ text: row.action.text, hookRunId })
-    content.push({ type: 'input_text', text: `<hook_prompt hook_run_id="${escapeText(hookRunId).replaceAll('"', '&quot;')}">${escapeText(row.action.text)}</hook_prompt>` })
+    content.push({ type: 'input_text', text: renderCodexHookPrompt(row.action.text, hookRunId) })
     origins.push({ sourceID: registration.sourceID, sourceDigest: registration.sourceDigest, registrationID: registration.registrationID, ordinal: registration.ordinal, sourcePath: source.path, configuredOrder: row.configuredOrder })
   }
   const model: Message = { type: 'message', id: identity.messageID, role: 'user', content }

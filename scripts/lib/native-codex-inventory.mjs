@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { NativeProbeError, NATIVE_PROCESS_LIMITS } from './native-process.mjs'
 
 const REQUEST_IDS = Object.freeze({ INITIALIZE: 1, LIST: 2 })
+const MAX_THREAD_ID_BYTES = 4096
 
 export function listNativeCodexHooks(binary, cwd, env, overrides = []) {
   return readNativeCodex(binary, cwd, env, 'hooks/list', { cwds: [cwd], forceReload: true }, overrides)
@@ -11,6 +12,10 @@ export function readNativeCodexConfig(binary, cwd, env, overrides = []) {
 }
 export function readNativeCodexRequirements(binary, cwd, env) {
   return readNativeCodex(binary, cwd, env, 'configRequirements/read', {})
+}
+export function readNativeCodexThread(binary, cwd, env, threadID) {
+  if (typeof threadID !== 'string' || !threadID || Buffer.byteLength(threadID) > MAX_THREAD_ID_BYTES) throw new NativeProbeError('NATIVE_THREAD_ID_INVALID', 2)
+  return readNativeCodex(binary, cwd, env, 'thread/read', { threadId: threadID, includeTurns: true })
 }
 
 async function readNativeCodex(binary, cwd, env, method, params, overrides = []) {
