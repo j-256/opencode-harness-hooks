@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -20,7 +20,7 @@ function repath(value: unknown, from: string, to: string): unknown {
   return value
 }
 async function fixture(t: TestContext, scenario = oracle.cases[0], output?: unknown) {
-  const root = await mkdtemp(join(tmpdir(), 'harness-codex-stop-'))
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'harness-codex-stop-')))
   t.after(() => rm(root, { recursive: true, force: true }))
   const script = join(root, 'hook.cjs'), path = join(root, 'hooks <&>"\'.json')
   const scriptBytes = `const fs=require('node:fs');const index=Number(process.argv[2]);const count=${scenario.feedback.length};const input=JSON.parse(fs.readFileSync(0,'utf8'));fs.writeFileSync('started-'+index,'');const timer=setInterval(()=>{if(fs.readdirSync('.').filter(name=>name.startsWith('started-')).length<count)return;clearInterval(timer);setTimeout(()=>console.log(JSON.stringify(${JSON.stringify(output ?? null)}??{decision:'block',reason:${JSON.stringify(scenario.feedback)}[index]})),index===0&&count>1?350:0)},5)`

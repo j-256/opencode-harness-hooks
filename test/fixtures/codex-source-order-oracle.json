@@ -1,0 +1,21 @@
+{
+  "contract": "Codex CLI 0.167.0",
+  "reference": "Read-only app-server hooks/list with reversed event property order in a synthetic hooks.json",
+  "scope": "Event scan order within one source; excludes global ordinal allocation, trust and source-layer discovery",
+  "events": [
+    "PreModelRequest",
+    "PostModelRequest",
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "SessionStart",
+    "SessionEnd",
+    "UserPromptSubmit",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+    "Interrupt"
+  ]
+}

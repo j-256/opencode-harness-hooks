@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtemp, writeFile, readFile, rm } from 'node:fs/promises'
+import { mkdtemp, writeFile, readFile, rm, realpath, symlink, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -92,12 +92,56 @@ test('native feature disablement affects only the selected source', async t => {
 
 test('preserves per-handler Codex disablement from native state keys', async t => {
   const { loadSources } = await import('../src/config.js')
-  const root = await fixture(t)
+  const root = await realpath(await fixture(t))
   const path = join(root, 'config.toml')
   await writeFile(path, `[[hooks.PreToolUse]]\n[[hooks.PreToolUse.hooks]]\ntype = "command"\ncommand = "disabled"\n[hooks.state.${JSON.stringify(path + ':pre_tool_use:0:0')}]\nenabled = false\n`)
   const [source] = await loadSources([{ id: 'codex', dialect: 'codex', path }])
   assert.equal(source?.registrations.length, 0)
   assert.equal(source?.excluded[0]?.reason, 'handler-disabled')
+})
+
+test('Codex ignores enabled-state objects inside hooks JSON', async t => {
+  const { loadSources } = await import('../src/config.js')
+  const root = await realpath(await fixture(t)), path = join(root, 'hooks.json')
+  const bytes = JSON.stringify({ hooks: { Stop: [{ hooks: [{ type: 'command', command: 'unused' }] }], state: { [path + ':stop:0:0']: { enabled: false } } } })
+  await writeFile(path, bytes)
+  const [source] = await loadSources([{ id: 'codex', dialect: 'codex', path }])
+  assert.equal(source?.registrations.length, 1)
+  assert.deepEqual(source?.excluded, [])
+  assert.equal(await readFile(path, 'utf8'), bytes)
+})
+
+test('Codex canonicalizes the source directory and preserves the source filename through symlinks', async t => {
+  const { loadSources } = await import('../src/config.js')
+  const root = await realpath(await fixture(t)), layer = join(root, 'layer'), aliasLayer = join(root, 'alias-layer')
+  await mkdir(layer)
+  await symlink('layer', aliasLayer)
+  const path = join(layer, 'config.toml'), target = join(layer, 'native-config.toml'), alias = join(aliasLayer, 'config.toml')
+  const bytes = `[[hooks.Stop]]\n[[hooks.Stop.hooks]]\ntype = "command"\ncommand = "unused"\n[hooks.state.${JSON.stringify(path + ':stop:0:0')}]\nenabled = false\n`
+  await writeFile(target, bytes)
+  await symlink('native-config.toml', path)
+  const [source] = await loadSources([{ id: 'codex', dialect: 'codex', path: alias }])
+  assert.equal(source?.path, path)
+  assert.equal(source?.registrations.length, 0)
+  assert.equal(source?.excluded[0]?.reason, 'handler-disabled')
+  assert.equal(await readFile(alias, 'utf8'), bytes)
+  await writeFile(target, bytes.replace(path + ':stop:0:0', target + ':stop:0:0'))
+  const [noncanonical] = await loadSources([{ id: 'codex', dialect: 'codex', path: alias }])
+  assert.equal(noncanonical?.registrations.length, 1)
+})
+
+test('Codex scans events in native order while preserving configured groups and handlers', async t => {
+  const { loadSources } = await import('../src/config.js')
+  const root = await fixture(t), path = join(root, 'hooks.json')
+  const oracle = JSON.parse(await readFile(new URL('./fixtures/codex-source-order-oracle.json', import.meta.url), 'utf8')) as { events: string[] }
+  const hooks = Object.fromEntries([...oracle.events].reverse().map(event => [event, [{ hooks: [{ type: 'command', command: event + '-first' }, { type: 'command', command: event + '-second' }] }, { hooks: [{ type: 'command', command: event + '-third' }] }]]))
+  const bytes = JSON.stringify({ hooks })
+  await writeFile(path, bytes)
+  const [source] = await loadSources([{ id: 'codex', dialect: 'codex', path }])
+  assert.deepEqual(source?.registrations.map(row => [row.event, row.groupIndex, row.handlerIndex]), oracle.events.flatMap(event => [[event, 0, 0], [event, 0, 1], [event, 1, 0]]))
+  const [selected] = await loadSources([{ id: 'codex', dialect: 'codex', path, selection: { events: ['Interrupt', 'PreModelRequest'] } }])
+  assert.deepEqual([...new Set(selected?.registrations.map(row => row.event))], ['PreModelRequest', 'Interrupt'])
+  assert.equal(await readFile(path, 'utf8'), bytes)
 })
 
 test('invalid native definitions fail with bounded diagnostics that exclude source text', async t => {

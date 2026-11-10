@@ -1,7 +1,7 @@
-import { open } from 'node:fs/promises'
+import { open, realpath } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { resolve, extname } from 'node:path'
+import { resolve, extname, dirname, basename, join } from 'node:path'
 import { parse as parseToml } from 'smol-toml'
 import { HANDLER_TYPES, isHookEvent } from './contracts.js'
 import type { Dialect } from './contracts.js'
@@ -11,6 +11,12 @@ const DEFAULT_SOURCE_BYTES = 1024 * 1024
 const MAX_SOURCE_BYTES = 64 * DEFAULT_SOURCE_BYTES
 const READ_CHUNK_BYTES = 64 * 1024
 const SOURCE_ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$/
+const CODEX_SOURCE_EVENT_ORDER = Object.freeze([
+  'PreModelRequest', 'PostModelRequest', 'PreToolUse', 'PermissionRequest', 'PostToolUse',
+  'PreCompact', 'PostCompact', 'SessionStart', 'SessionEnd', 'UserPromptSubmit',
+  'SubagentStart', 'SubagentStop', 'Stop', 'Interrupt',
+])
+const CODEX_SOURCE_EVENT_INDEX = new Map(CODEX_SOURCE_EVENT_ORDER.map((event, index) => [event, index]))
 const CODEX_HANDLER_FIELDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   command: ['type', 'command', 'commandWindows', 'command_windows', 'timeout', 'async', 'statusMessage', 'additionalContextLimit'],
   mcp_tool: ['type', 'server', 'tool', 'input', 'timeout', 'statusMessage'], prompt: ['type'], agent: ['type'],
@@ -127,11 +133,16 @@ function exclusion(spec: SourceSpec, enabled: boolean, event: string, handler: H
 }
 
 async function loadSource(spec: SourceSpec, maxBytes: number): Promise<LoadedSource> {
-  const bytes = await readSource(spec, maxBytes)
+  let sourcePath = resolve(spec.path)
+  if (spec.dialect === 'codex') {
+    try { sourcePath = join(await realpath(dirname(sourcePath)), basename(sourcePath)) } catch { throw new SourceError('SOURCE_READ', spec.id) }
+  }
+  const bytes = await readSource({ ...spec, path: sourcePath }, maxBytes)
+  const codexToml = spec.dialect === 'codex' && extname(spec.path).toLowerCase() === '.toml'
   let data: unknown
   try {
     const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes)
-    data = spec.dialect === 'codex' && extname(spec.path).toLowerCase() === '.toml' ? parseToml(text) : JSON.parse(text)
+    data = codexToml ? parseToml(text) : JSON.parse(text)
   } catch {
     throw new SourceError('SOURCE_PARSE', spec.id)
   }
@@ -146,7 +157,10 @@ async function loadSource(spec: SourceSpec, maxBytes: number): Promise<LoadedSou
   }
   const registrations: Registration[] = []
   const excluded: ExcludedRegistration[] = []
-  for (const [event, groups] of Object.entries(data.hooks ?? {})) {
+  const eventGroups = Object.entries(data.hooks ?? {})
+  if (spec.dialect === 'codex') eventGroups.sort(([left], [right]) => (CODEX_SOURCE_EVENT_INDEX.get(left) ?? CODEX_SOURCE_EVENT_ORDER.length) - (CODEX_SOURCE_EVENT_INDEX.get(right) ?? CODEX_SOURCE_EVENT_ORDER.length))
+  const states = codexToml && record(data.hooks) && record(data.hooks.state) ? data.hooks.state : {}
+  for (const [event, groups] of eventGroups) {
     if (event === 'state' && spec.dialect === 'codex') continue
     if (!isHookEvent(spec.dialect, event)) throw new SourceError('SOURCE_EVENT', spec.id)
     if (!Array.isArray(groups)) throw new SourceError('SOURCE_GROUP', spec.id)
@@ -155,8 +169,7 @@ async function loadSource(spec: SourceSpec, maxBytes: number): Promise<LoadedSou
       for (const [handlerIndex, rawHandler] of group.hooks.entries()) {
         const handler = validateHandler(rawHandler, spec.id, spec.dialect)
         const id = `${spec.id}:${event}:${groupIndex}:${handlerIndex}`
-        const nativeKey = `${resolve(spec.path)}:${event.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()}:${groupIndex}:${handlerIndex}`
-        const states = record(data.hooks) && record(data.hooks.state) ? data.hooks.state : {}
+        const nativeKey = `${sourcePath}:${event.replace(/([a-z])([A-Z])/g, '$1_$2').toLowerCase()}:${groupIndex}:${handlerIndex}`
         const state = states[nativeKey]
         const handlerDisabled = spec.dialect === 'codex' && record(state) && state.enabled === false
         const reason = exclusion(spec, enabled, event, handler) ?? (handlerDisabled ? 'handler-disabled' : undefined)
@@ -168,7 +181,7 @@ async function loadSource(spec: SourceSpec, maxBytes: number): Promise<LoadedSou
       }
     }
   }
-  return freeze({ id: spec.id, dialect: spec.dialect, path: resolve(spec.path), digest: createHash('sha256').update(bytes).digest('hex'), enabled, registrations, excluded, ...roots })
+  return freeze({ id: spec.id, dialect: spec.dialect, path: sourcePath, digest: createHash('sha256').update(bytes).digest('hex'), enabled, registrations, excluded, ...roots })
 }
 
 export async function loadSources(specs: readonly SourceSpec[], options: { readonly maxBytes?: number } = {}): Promise<readonly LoadedSource[]> {

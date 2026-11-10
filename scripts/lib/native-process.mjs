@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 export const NATIVE_PROCESS_LIMITS = Object.freeze({ durationMs: 30000, graceMs: 1000, maxBytes: 2 * 1024 * 1024 })
 const MAX_CONVERSATION_PROMPTS = 4
 const INTERRUPT_REQUEST_ID = 'native-fixture-interrupt'
-export class NativeProbeError extends Error { constructor(code, status = 1) { super(code); this.status = status } }
+export class NativeProbeError extends Error { constructor(code, status = 1, systemCode) { super(code); this.status = status; if (systemCode !== undefined) this.systemCode = systemCode } }
 
 export function nativeCheckError(prefix, stage, error, moduleURL) {
   if (error instanceof NativeProbeError) return error
@@ -94,7 +94,7 @@ async function execute(binary, args, input, cwd, env, limits, interruptSignal) {
   if (conversation) send(0)
   else child.stdin.end(input)
   try {
-    const status = await new Promise((resolve, reject) => { child.once('error', () => reject(new NativeProbeError('NATIVE_START_FAILED'))); child.once('close', resolve) })
+    const status = await new Promise((resolve, reject) => { child.once('error', error => reject(new NativeProbeError('NATIVE_START_FAILED', 1, ['ENOENT', 'EACCES'].includes(error.code) ? error.code : undefined))); child.once('close', resolve) })
     if (failure) throw new NativeProbeError(failure)
     if (status !== 0) throw new NativeProbeError('NATIVE_EXECUTION_FAILED')
     if (conversation) {

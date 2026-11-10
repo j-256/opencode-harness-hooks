@@ -51,6 +51,8 @@ test('inspection preserves registrations and exclusions without execution, mutat
   assert.equal(report.installedHostVerified, false)
   assert.equal(report.equivalent, false)
   assert.ok(report.unresolved.includes('migration-parity'))
+  assert.ok(report.unresolved.includes('codex-config-layer-state'))
+  assert.ok(!report.unresolved.includes('native-handler-deduplication'))
   assert.deepEqual(report.sources.map((source: any) => [source.id, source.reviewed, source.selected.length]), [['claude', false, 2], ['codex', true, 3]])
   assert.deepEqual(report.sources[0].excluded.map((item: any) => item.reason), ['event-excluded'])
   assert.deepEqual(report.sources[1].unwiredEvents, ['Stop'])

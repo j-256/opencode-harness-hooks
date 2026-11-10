@@ -59,7 +59,7 @@ export async function inspectSources(host: HostVersion, directory: string, input
       selected: Object.freeze(source.registrations.map(registration => Object.freeze({ id: registration.id, event: registration.event, type: registration.handler.type }))),
       excluded: source.excluded,
     }))),
-    unresolved: Object.freeze(['native-trust-and-reload', 'native-handler-deduplication', 'native-artifacts', 'permission-mode-projection', 'tool-result-projection', 'post-failure-mapping', 'non-tool-events', 'native-effects-and-lifecycle', 'migration-parity']),
+    unresolved: Object.freeze(['native-trust-and-reload', ...(sources.some(source => source.dialect === 'codex') ? ['codex-config-layer-state'] : []), 'native-artifacts', 'permission-mode-projection', 'tool-result-projection', 'post-failure-mapping', 'non-tool-events', 'native-effects-and-lifecycle', 'migration-parity']),
   })
   return { options, sources, report }
 }
