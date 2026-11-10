@@ -1,0 +1,155 @@
+{
+  "contract": "Codex CLI 0.167.0",
+  "reference": "Read-only hooks/list from pinned CLI with synthetic command Stop groups; source bytes unchanged",
+  "source": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/hooks/src/engine/discovery.rs",
+  "cases": [
+    {
+      "name": "default",
+      "handler": {
+        "type": "command",
+        "command": "printf \"native & <hash>\""
+      },
+      "expected": {
+        "currentHash": "sha256:f42f97ad5e4e20624e4745310a73750bfb5744b9cf878bbb045ded0e450ac993",
+        "matcher": null,
+        "timeoutSec": 600,
+        "enabled": true,
+        "relativeOrder": 1
+      }
+    },
+    {
+      "name": "ignored-matcher",
+      "matcher": "invalid[",
+      "handler": {
+        "type": "command",
+        "command": "printf \"native & <hash>\""
+      },
+      "expected": {
+        "currentHash": "sha256:f42f97ad5e4e20624e4745310a73750bfb5744b9cf878bbb045ded0e450ac993",
+        "matcher": null,
+        "timeoutSec": 600,
+        "enabled": true,
+        "relativeOrder": 2
+      }
+    },
+    {
+      "name": "zero-timeout",
+      "handler": {
+        "type": "command",
+        "command": "printf \"native & <hash>\"",
+        "timeout": 0
+      },
+      "expected": {
+        "currentHash": "sha256:354609f459c20009458ff3e31d28bc32598b4815349359102695d6b35b0ee7a5",
+        "matcher": null,
+        "timeoutSec": 1,
+        "enabled": false,
+        "relativeOrder": 3
+      }
+    },
+    {
+      "name": "windows-ignored",
+      "handler": {
+        "type": "command",
+        "command": "printf \"native & <hash>\"",
+        "commandWindows": "different"
+      },
+      "expected": {
+        "currentHash": "sha256:f42f97ad5e4e20624e4745310a73750bfb5744b9cf878bbb045ded0e450ac993",
+        "matcher": null,
+        "timeoutSec": 600,
+        "enabled": true,
+        "relativeOrder": 4
+      }
+    },
+    {
+      "name": "status-and-async",
+      "handler": {
+        "type": "command",
+        "command": "printf \"native & <hash>\"",
+        "statusMessage": "Status 🐈\n",
+        "async": true,
+        "timeout": 7
+      },
+      "expected": {
+        "currentHash": "sha256:72ec1e0599b39e4379d87ac3a96ac67ee2f6021f055a4a89b46ef4bc38bc575d",
+        "matcher": null,
+        "timeoutSec": 7,
+        "enabled": true,
+        "relativeOrder": 5
+      }
+    },
+    {
+      "name": "ignored-context-limit",
+      "handler": {
+        "type": "command",
+        "command": "printf \"native & <hash>\"",
+        "additionalContextLimit": 0
+      },
+      "expected": {
+        "currentHash": "sha256:f42f97ad5e4e20624e4745310a73750bfb5744b9cf878bbb045ded0e450ac993",
+        "matcher": null,
+        "timeoutSec": 600,
+        "enabled": true,
+        "relativeOrder": 6
+      }
+    },
+    {
+      "name": "dispatch-feedback",
+      "handler": {
+        "type": "command",
+        "command": "printf '{\"decision\":\"block\",\"reason\":\"Inventory feedback\"}'"
+      },
+      "expected": {
+        "currentHash": "sha256:b7805f61ebd7f488c2774606b6ad89a0e5c27dc9875fac1845ee1b09bdc9da00",
+        "matcher": null,
+        "timeoutSec": 600,
+        "enabled": true,
+        "relativeOrder": 7
+      }
+    },
+    {
+      "name": "bom-command",
+      "handler": {
+        "type": "command",
+        "command": "﻿"
+      },
+      "expected": {
+        "currentHash": "sha256:b0f2be56cbdc752f12571ecf6c277fd6b1f90c13efae926aa8998d836260437d",
+        "matcher": null,
+        "timeoutSec": 600,
+        "enabled": true,
+        "relativeOrder": 8
+      }
+    },
+    {
+      "name": "nul-command",
+      "handler": {
+        "type": "command",
+        "command": "\u0000"
+      },
+      "expected": {
+        "currentHash": "sha256:1251dc0282cbab7f09db305e7ddd710162c72d093f7595b77462d753ea42cb8c",
+        "matcher": null,
+        "timeoutSec": 600,
+        "enabled": true,
+        "relativeOrder": 9
+      }
+    },
+    {
+      "name": "chunked-unicode-status",
+      "handler": {
+        "type": "command",
+        "command": "printf \"native & <hash>\"",
+        "statusMessage": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx🐈\"\\\n\u0000"
+      },
+      "expected": {
+        "currentHash": "sha256:f7a0f7b3a932ff25e30111d4ed178ed97cb06d85e9d9839f307f388cd2b8db1f",
+        "matcher": null,
+        "timeoutSec": 600,
+        "enabled": true,
+        "relativeOrder": 10
+      }
+    }
+  ]
+}

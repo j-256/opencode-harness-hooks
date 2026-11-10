@@ -20,11 +20,11 @@ export async function createStopArtifactFixture(scenario, trace, hook) {
   return feedback.map((_, index) => ({ type: 'command', command: [process.execPath, hook, String(index)].map(quote).join(' '), timeout: 10 }))
 }
 
-export function validateStopArtifacts(scenario, trace, rows, requests, execution, sourcePath) {
-  try { return validate(scenario, trace, rows, requests, execution, sourcePath) } catch (error) { throw nativeCheckError('NATIVE_STOP_ARTIFACT_CHECK_FAILED', scenario.name, error, import.meta.url) }
+export function validateStopArtifacts(scenario, trace, rows, requests, execution, sourcePath, expectedRunIDs) {
+  try { return validate(scenario, trace, rows, requests, execution, sourcePath, expectedRunIDs) } catch (error) { throw nativeCheckError('NATIVE_STOP_ARTIFACT_CHECK_FAILED', scenario.name, error, import.meta.url) }
 }
 
-function validate(scenario, trace, rows, requests, execution, sourcePath) {
+function validate(scenario, trace, rows, requests, execution, sourcePath, expectedRunIDs) {
   const starts = trace.filter(row => row.phase === 'start'), ends = trace.filter(row => row.phase === 'end')
   assert.equal(requests.length, scenario.continuations + 1)
   assert.equal(starts.length, requests.length * scenario.feedback.length)
@@ -42,6 +42,7 @@ function validate(scenario, trace, rows, requests, execution, sourcePath) {
   for (const [pass, row] of events.entries()) {
     const event = row.payload, fragments = event.item.fragments
     assert.deepEqual(fragments.map(value => value.text), scenario.feedback)
+    assert.deepEqual(fragments.map(value => value.hookRunId), expectedRunIDs)
     const ordinals = fragments.map(value => {
       assert.ok(value.hookRunId.endsWith(':' + sourcePath))
       const ordinal = Number(/^stop:(\d+):/.exec(value.hookRunId)?.[1])
@@ -68,5 +69,5 @@ function validate(scenario, trace, rows, requests, execution, sourcePath) {
     assert.ok(rows.indexOf(row) < nextAssistant)
     assert.ok(requests[pass + 1].time >= Math.max(...ends.filter(value => value.ordinal === pass).map(value => value.time)))
   }
-  return { mode: scenario.name, modelRequests: requests.length, stopInvocations: starts.length, stableRegistrationRunIDs: true, configuredFragmentOrder: true, nativeEscaping: true, rolloutHarnessProvenance: true, sourceBytesUnchanged: true }
+  return { mode: scenario.name, modelRequests: requests.length, stopInvocations: starts.length, stableRegistrationRunIDs: true, inventoryRunIDsMatch: true, configuredFragmentOrder: true, nativeEscaping: true, rolloutHarnessProvenance: true, sourceBytesUnchanged: true }
 }

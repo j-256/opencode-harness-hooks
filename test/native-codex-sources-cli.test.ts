@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { execFile, execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
-import { chmod, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -15,11 +15,30 @@ function invoke(args: readonly string[], env: NodeJS.ProcessEnv = process.env, t
 }
 
 test('native Codex source help requires no executable, dependencies or build', async () => {
-  for (const flag of ['-h', '--help']) {
-    const result = await invoke([flag], { PATH: '' })
+  for (const args of [['-h'], ['--help'], ['--adapter', '--help']]) {
+    const result = await invoke(args, { PATH: '' })
     assert.equal(result.status, 0)
-    for (const text of ['--binary', 'CODEX_BINARY', '0.167.0', 'hooks/list', 'Exit status', 'config.toml', 'hooks.json', 'session state', 'feature requirements']) assert.ok(result.stdout.includes(text), text)
+    for (const text of ['--binary', '--adapter', 'CODEX_BINARY', '0.167.0', 'hooks/list', 'Exit status', 'config.toml', 'hooks.json', 'session state', 'feature requirements']) assert.ok(result.stdout.includes(text), text)
     assert.equal(result.stderr, '')
+  }
+})
+
+test('optional native adapter comparison reports a missing build without running the inventory', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'harness-source-adapter-build-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  await mkdir(join(root, 'scripts'))
+  await mkdir(join(root, 'test', 'fixtures'), { recursive: true })
+  await cp(script, join(root, 'scripts', 'verify-codex-sources.mjs'))
+  await cp(new URL('../scripts/lib', import.meta.url), join(root, 'scripts', 'lib'), { recursive: true })
+  await cp(new URL('./fixtures/codex-source-order-oracle.json', import.meta.url), join(root, 'test', 'fixtures', 'codex-source-order-oracle.json'))
+  const binary = join(root, 'version-only.cjs')
+  await writeFile(binary, '#!' + node + '\nif(process.argv[2]!=="--version")process.exit(99);console.log("codex-cli 0.167.0")\n')
+  await chmod(binary, 0o700)
+  for (const args of [['--adapter', '-b', binary], ['-a', '-b', binary], ['-ab' + binary]]) {
+    const result = await new Promise<{ status: number; stdout: string; stderr: string }>(resolve => execFile(node, [join(root, 'scripts', 'verify-codex-sources.mjs'), ...args], { timeout: 5000 }, (error, stdout, stderr) => resolve({ status: error ? typeof error.code === 'number' ? error.code : 1 : 0, stdout, stderr })))
+    assert.equal(result.status, 3)
+    assert.equal(result.stdout, '')
+    assert.equal(result.stderr, 'DEPENDENCY_UNAVAILABLE: built adapter\n')
   }
 })
 

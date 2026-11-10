@@ -11,6 +11,7 @@ import { createStopAggregationFixture, stopAggregationCases, validateStopAggrega
 import { createStopOutputFixture, stopOutputCases, validateStopOutput } from './lib/native-stop-outputs.mjs'
 import { STOP_HISTORY_PROMPTS, createStopHistoryFixture, stopHistoryCases, validateStopHistory } from './lib/native-stop-history.mjs'
 import { createStopArtifactFixture, stopArtifactCases, validateStopArtifacts } from './lib/native-stop-artifacts.mjs'
+import { listNativeCodexHooks } from './lib/native-codex-inventory.mjs'
 import { CANCELLATION_MODES, armStopCancellation, createStopCancellationFixture, stopCancellationCases, validateStopCancellation } from './lib/native-stop-cancellation.mjs'
 
 const VERSIONS = Object.freeze({ 'claude-code': '2.1.318', codex: '0.167.0' })
@@ -252,6 +253,15 @@ async function verify(dialect, binary, fixture) {
         args = ['exec', '--json', '--dangerously-bypass-hook-trust', '--skip-git-repo-check', '--model', 'fixture', '-']
       }
       const sourceSnapshot = await readFile(sourcePath), commandSnapshot = await readFile(hook)
+      let expectedRunIDs
+      if (artifacts) {
+        const inventory = await listNativeCodexHooks(binary, project, env)
+        assert.equal(inventory.data.length, 1)
+        assert.deepEqual(inventory.data[0].errors, [])
+        const selected = inventory.data[0].hooks.filter(row => row.sourcePath === sourcePath && row.eventName === 'stop')
+        assert.equal(selected.length, commands.length)
+        expectedRunIDs = selected.map(row => 'stop:' + row.displayOrder + ':' + row.sourcePath)
+      }
       interruption = new AbortController()
       const disarm = cancellation ? armStopCancellation(scenario, trace, interruption) : () => {}
       let execution
@@ -260,7 +270,7 @@ async function verify(dialect, binary, fixture) {
       assert.deepEqual(await readFile(hook), commandSnapshot)
       const events = await readRecords(trace)
       const nativeRows = await readRecords(events[0].input.transcript_path), nativeRequests = requests.filter(row => row.mode === mode)
-      cases.push(artifacts ? validateStopArtifacts(scenario, events, nativeRows, nativeRequests, execution, sourcePath) : cancellation ? validateStopCancellation(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' ')) : history ? validateStopHistory(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), project) : outputs ? validateStopOutput(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), project) : aggregation ? validateStopAggregation(dialect, scenario, events, nativeRows, nativeRequests, execution, commands.map((_, index) => [process.execPath, hook, String(index)].join(' ')), sourcePath, project) : validate(dialect, mode, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), sourcePath, project))
+      cases.push(artifacts ? validateStopArtifacts(scenario, events, nativeRows, nativeRequests, execution, sourcePath, expectedRunIDs) : cancellation ? validateStopCancellation(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' ')) : history ? validateStopHistory(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), project) : outputs ? validateStopOutput(scenario, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), project) : aggregation ? validateStopAggregation(dialect, scenario, events, nativeRows, nativeRequests, execution, commands.map((_, index) => [process.execPath, hook, String(index)].join(' ')), sourcePath, project) : validate(dialect, mode, events, nativeRows, nativeRequests, execution, [process.execPath, hook].join(' '), sourcePath, project))
     }
     return { dialect, version: VERSIONS[dialect], cases, codexTrustBypassed: dialect === 'codex', fixtureSourceUnchanged: true, nativeContinuationInputAndArtifacts: true, bridgeStopComparison: 'not-implemented', equivalent: false }
   } catch (error) { throw nativeCheckError('NATIVE_STOP_CHECK_FAILED', stage, error, import.meta.url) } finally {
