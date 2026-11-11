@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, realpath, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -8,19 +8,20 @@ import type { TestContext } from 'node:test'
 import { setTimeout as delay } from 'node:timers/promises'
 import definition from '../src/index.js'
 import { createRuntime } from '../src/runtime.js'
+import { loadSources } from '../src/config.js'
 import { createHarnessHooks } from '../src/plugin.js'
 import type { Dialect } from '../src/contracts.js'
 import type { SourceSpec } from '../src/types.js'
 
 async function fixture(t: TestContext) {
-  const directory = await mkdtemp(join(tmpdir(), 'harness-v1-stop-'))
+  const directory = await realpath(await mkdtemp(join(tmpdir(), 'harness-v1-stop-')))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const sources: SourceSpec[] = [], reviewedDigests: Record<string, string> = {}
-  return { directory, options: { sources, reviewedDigests }, async add(id: string, dialect: Dialect, data: unknown, selection?: SourceSpec['selection']) {
+  return { directory, options: { sources, reviewedDigests }, async add(id: string, dialect: Dialect, data: unknown, selection?: SourceSpec['selection'], codexConfig?: SourceSpec['codexConfig']) {
     const path = join(directory, id + ' hooks.json'), bytes = JSON.stringify(data)
     await writeFile(path, bytes)
-    sources.push({ id, dialect, path, ...(selection ? { selection } : {}) })
-    reviewedDigests[id] = createHash('sha256').update(bytes).digest('hex')
+    sources.push({ id, dialect, path, ...(selection ? { selection } : {}), ...(codexConfig ? { codexConfig } : {}) })
+    reviewedDigests[id] = codexConfig ? (await loadSources([sources.at(-1)!]))[0]!.digest : createHash('sha256').update(bytes).digest('hex')
     return path
   } }
 }
@@ -102,10 +103,12 @@ test('a notice waiting for V1 initialization cannot postpone the fatal configura
   await assert.rejects(loading, { code: 'HOST_STOP_UNSUPPORTED' })
 })
 
-test('the V1 root preserves other activation errors instead of creating Stop guards', async t => {
+test('the V1 root preserves other activation errors in fatal admission guards', async t => {
   const f = await fixture(t)
   await f.add('unreviewed', 'codex', { hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: ':' }] }] } })
-  await assert.rejects(definition.server({ directory: f.directory }, { ...f.options, reviewedDigests: {} }), { code: 'SOURCE_REVIEW_REQUIRED' })
+  const guards = await definition.server({ directory: f.directory }, { ...f.options, reviewedDigests: {} })
+  t.after(() => guards.dispose())
+  await assert.rejects(guards.config({}), { code: 'SOURCE_REVIEW_REQUIRED' })
 })
 
 test('V1 reports every incompatible selected source before generic event or digest gates', async t => {
@@ -135,7 +138,7 @@ test('native disablement and explicit selection produce reported exclusions rath
   await f.add('claude-excluded', 'claude-code', { hooks }, { events: ['PreToolUse'] })
   await f.add('codex-excluded', 'codex', { hooks }, { events: ['PreToolUse'] })
   const disabledPath = join(f.directory, 'codex-disabled hooks.json')
-  await f.add('codex-disabled', 'codex', { hooks: { ...hooks, state: { [disabledPath + ':stop:0:0']: { enabled: false } } } })
+  await f.add('codex-disabled', 'codex', { hooks }, undefined, { layers: [{ scope: 'user', settings: { hooks: { state: { [disabledPath + ':stop:0:0']: { enabled: false } } } } }] })
   await f.add('empty-stop', 'codex', { hooks: { Stop: [{ hooks: [] }] } })
   const runtime = await createRuntime('v1', f.directory, f.options, { report: () => {} })
   t.after(() => runtime.dispose())

@@ -27,8 +27,9 @@ const HELP = `Usage: node scripts/verify-v2-stop.mjs [-b PATH] [--default-root [
 Verify the explicit core Stop service against OpenCode ${PINNED_VERSION} using an
 unchanged Claude command, owned synthetic history and exact model text blocks.
 This is a foreground core integration fixture, not default-root Stop equivalence.
-Select --default-root to exercise the package entrypoint instead of injected core
-services. Both modes retain equivalent:false and the remaining acceptance gates.
+The historical --default-root modes require the unfinished completion adapter
+and fail against the rejecting default package. Use verify-plugin.mjs with
+--host v2 --stop-rejection for stock-host acceptance. Reports retain equivalent:false.
 Uses isolated HOME/config/state and a loopback provider; live settings stay intact.
 
 Options:

@@ -9,12 +9,13 @@ const NOTICE_DURATION_MS = 30_000
 type Input = Parameters<typeof createHarnessHooks>[0]
 type Hooks = Awaited<ReturnType<typeof createHarnessHooks>>
 
-export function rejectV1Stop(input: Input, error: HostHookError): Hooks {
+export function rejectV1Activation(input: Input, error: HostHookError): Hooks {
   const lifetime = new AbortController()
   const failureID = randomUUID()
+  const stop = error.code === 'HOST_STOP_UNSUPPORTED'
   let notice: Promise<void> | undefined
   const refuse = async () => { throw error }
-  const report = (code: string, details: Readonly<Record<string, string | number>>) => console.error(JSON.stringify({ component: 'opencode-harness-hooks', code, failureID, host: 'v1', event: 'Stop', ...details }))
+  const report = (code: string, details: Readonly<Record<string, string | number>>) => console.error(JSON.stringify({ component: 'opencode-harness-hooks', code, failureID, host: 'v1', ...(stop ? { event: 'Stop' } : { phase: 'load' }), ...details }))
   report(error.code, { level: 'error', message: error.message })
   // V1 swallows server and config initialization errors, so failed activation must retain admission guards
   return {
@@ -27,8 +28,8 @@ export function rejectV1Stop(input: Input, error: HostHookError): Hooks {
         notice = runService(NOTICE_TIMEOUT_MS, lifetime.signal, signal => tui.showToast({ body: { title: 'Hook configuration incompatible with OpenCode V1', message: error.message, variant: 'error', duration: NOTICE_DURATION_MS }, query: { directory: input.directory }, signal }))
           .then(result => {
             if (result.error || result.data !== true) throw new Error()
-            report('HOST_STOP_NOTICE_SHOWN', { level: 'info', ...duration() })
-          }).catch((failure: unknown) => { report('HOST_STOP_NOTICE_FAILED', { level: 'error', reason: failure instanceof HookServiceError ? failure.code : 'HOST_NOTICE_REJECTED', ...duration() }) })
+            report(stop ? 'HOST_STOP_NOTICE_SHOWN' : 'HOST_ACTIVATION_NOTICE_SHOWN', { level: 'info', ...duration() })
+          }).catch((failure: unknown) => { report(stop ? 'HOST_STOP_NOTICE_FAILED' : 'HOST_ACTIVATION_NOTICE_FAILED', { level: 'error', reason: failure instanceof HookServiceError ? failure.code : 'HOST_NOTICE_REJECTED', ...duration() }) })
       }
       throw error
     },

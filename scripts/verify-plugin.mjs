@@ -17,13 +17,15 @@ const SHUTDOWN_MS = 3000
 const MAX_BYTES = 2 * 1024 * 1024
 const MAX_REQUESTS = 16
 const CONTROLLED_TOOL_CALLS = 2
+const COMPLETED_TOOL_CALLS = 1
 const PROMPT_HANDLERS = 4
 const PROMPT_TIMEOUT_SECONDS = 1
 const SECOND_MS = 1000
+const CLAUDE_PROMPT_CONTEXTS = Object.freeze(['<system-reminder>\nUserPromptSubmit hook additional context: PACKAGE_CLAUDE_PROMPT_CONTEXT\n</system-reminder>', '<system-reminder>\nUserPromptSubmit hook success: PACKAGE_CLAUDE_STDOUT_CONTEXT\n</system-reminder>'])
 const CODEX_PROMPT_CONTEXTS = Object.freeze([{ role: 'developer', content: 'PACKAGE_CODEX_PROMPT_CONTEXT' }, { role: 'developer', content: 'PACKAGE_CODEX_SECOND_CONTEXT' }])
 const PROMPT_SUBMISSIONS = 3
 const run = promisify(execFile)
-const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts] [-s]
+const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts] [-s|-r]
 
 Verify the built package's default entrypoint, native options and tool enforcement
 against a pinned OpenCode host. Requires npm run build, Node.js 22+, Git and the
@@ -37,8 +39,10 @@ Options:
       --dialect NAME Native source: codex (default), claude-code, or mixed (both)
       --preapproval  Exercise Claude allow with host permissions set to ask
       --prompts      Check prompt blocking, context roles and retained history
-  -s, --stop-rejection  Verify V1's expected fatal load rejection for Stop configs
-                       V1 only; cannot combine with --prompts or --preapproval
+  -s, --stop-rejection  Verify stock host fatal load rejection for Stop configs
+                       Cannot combine with --prompts or --preapproval
+  -r, --review-rejection  Verify a stale source review blocks model/hook execution
+                         Cannot combine with Stop rejection, prompts or preapproval
   -h, --help          Show help without requiring a host or dependencies
 
 Success writes JSON to stdout; failures use stderr without provider traffic.
@@ -71,7 +75,8 @@ async function stop(child, done) {
   await bounded(done, SHUTDOWN_MS, 'HOST_CLEANUP_FAILED')
 }
 
-async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRejection) {
+async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRejection, reviewRejection) {
+  const loadRejection = stopRejection || reviewRejection
   const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
   if (version !== VERSIONS[hostVersion]) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + VERSIONS[hostVersion], 2)
   await dependency('git', ['--version'], 'Git')
@@ -106,6 +111,10 @@ async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRe
     await writeFile(script, String.raw`const fs = require('node:fs')
 const input = JSON.parse(fs.readFileSync(0, 'utf8'))
 const codex = typeof input.turn_id === 'string'
+if (input.hook_event_name === 'PostToolUse') {
+  fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
+  process.exit(0)
+}
 if (input.hook_event_name === 'UserPromptSubmit') {
   const exists = !codex && fs.existsSync(input.transcript_path)
   const mode = process.argv[2] ?? 'additional'
@@ -122,6 +131,7 @@ if (input.hook_event_name === 'UserPromptSubmit') {
 }
 let transcriptValidated = false
 let promptArtifactIDs = []
+let promptContextOrder = []
 if (!codex) {
   const rows = fs.readFileSync(input.transcript_path, 'utf8').trim().split('\n').map(JSON.parse)
   const date = rows.find(row => row.attachment?.type === 'date')
@@ -139,13 +149,14 @@ if (!codex) {
     const failed = attachments.find(row => row.attachment.type === 'hook_non_blocking_error')
     const timeout = attachments.find(row => row.attachment.type === 'hook_cancelled')
     if (!stdout || !additional || !failed || stdout.attachment.stdout !== 'PACKAGE_CLAUDE_STDOUT_CONTEXT\n' || stdout.attachment.stderr !== 'PACKAGE_STDOUT_STDERR\n' || stdout.attachment.exitCode !== 0 || additional.attachment.content[0] !== 'PACKAGE_CLAUDE_PROMPT_CONTEXT' || failed.attachment.stdout !== 'PACKAGE_FAILURE_STDOUT\n' || failed.attachment.stderr !== 'Failed with non-blocking status code: PACKAGE_FAILURE_STDERR' || failed.attachment.exitCode !== 1 || Object.hasOwn(failed, 'rendered')) process.exit(9)
-    if (attachments.filter(row => row.attachment.type !== 'hook_non_blocking_error')[0] !== stdout || stdout.attachment.toolUseID !== failed.attachment.toolUseID) process.exit(12)
+    if (stdout.attachment.toolUseID !== failed.attachment.toolUseID) process.exit(12)
     if (!timeout || timeout.attachment.timedOut !== true || timeout.attachment.timeoutMs !== ${PROMPT_TIMEOUT_SECONDS * SECOND_MS} || timeout.attachment.toolUseID !== stdout.attachment.toolUseID || Object.hasOwn(timeout.attachment, 'stdout') || Object.hasOwn(timeout.attachment, 'stderr') || Object.hasOwn(timeout, 'rendered')) process.exit(13)
     promptArtifactIDs = attachments.map(row => row.uuid)
+    promptContextOrder = attachments.filter(row => ['hook_success', 'hook_additional_context'].includes(row.attachment.type)).map(row => row.attachment.type === 'hook_success' ? 1 : 0)
   }
   transcriptValidated = true
 }
-fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, transcriptValidated, promptArtifactIDs, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
+fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, transcriptValidated, promptArtifactIDs, promptContextOrder, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
 const decision = input.tool_input.command.includes('forbidden')
   ? { permissionDecision: 'deny', permissionDecisionReason: 'PACKAGE_FIXTURE_DENIED' }
   : { ...(codex || ${preapproval} ? { permissionDecision: 'allow' } : {}), updatedInput: { command: ${JSON.stringify(replacementCommand)}, description: 'Rewritten fixture' } }
@@ -153,14 +164,16 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 `)
     await run(process.execPath, ['--check', script], { env, timeout: STARTUP_MS, maxBuffer: MAX_BYTES })
     const hook = { type: 'command', command: quote(process.execPath) + ' ' + quote(script) }
-    const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [hook] }], ...(stopRejection ? { Stop: [{ hooks: [hook] }] } : {}), ...(prompts ? { UserPromptSubmit: [{ hooks: [hook, { ...hook, command: hook.command + ' stdout' }, { ...hook, command: hook.command + ' failure' }, { ...hook, command: hook.command + ' timeout', timeout: PROMPT_TIMEOUT_SECONDS }] }] } : {}) } })
+    const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [hook] }], PostToolUse: [{ matcher: 'Bash', hooks: [hook] }], ...(stopRejection ? { Stop: [{ hooks: [hook] }] } : {}), ...(prompts ? { UserPromptSubmit: [{ hooks: [hook, { ...hook, command: hook.command + ' stdout' }, { ...hook, command: hook.command + ' failure' }, { ...hook, command: hook.command + ' timeout', timeout: PROMPT_TIMEOUT_SECONDS }] }] } : {}) } })
     await writeFile(sourcePath, source)
     const selectedDialects = dialect === 'mixed' ? ['claude-code', 'codex'] : [dialect]
     const sources = selectedDialects.map(dialect => ({ id: 'fixture-' + dialect, dialect, path: sourcePath }))
     const digest = createHash('sha256').update(source).digest('hex')
+    const rejectionValues = reviewRejection ? ['SOURCE_REVIEW_MISMATCH', sources[0].id] : ['HOST_STOP_UNSUPPORTED', hostVersion.toUpperCase(), 'Stop', 'awaited-completion-decision', sourcePath, ...sources.map(source => source.id)]
+    const rejectionReport = { host: hostVersion, hostVersion: VERSIONS[hostVersion], dialect, defaultEntrypoint: true, nativeOptions: true, expectedLoadRejection: true, rejectionReason: reviewRejection ? 'review-mismatch' : 'stop', ...(stopRejection ? { expectedStopLoadRejection: true, incompatibleConfigsIdentified: true, unsupportedCapabilityIdentified: true } : {}), noModelOrHookExecution: true, equivalent: false }
     const permissionMode = preapproval ? 'default' : 'bypassPermissions'
     const hostPermission = preapproval ? 'ask' : 'allow'
-    const options = { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, digest])), permissionMode }
+    const options = { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, reviewRejection ? '0'.repeat(64) : digest])), permissionMode }
     const requests = []
     let providerRequests = 0
     let correlationLeaked = false
@@ -200,17 +213,31 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     child = spawn(binary, [...(hostVersion === 'v1' ? ['--print-logs'] : []), 'serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: project, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     done = new Promise(resolve => child.once('close', resolve))
     let hostErrors = ''
+    let diagnosticBuffer = ''
+    const promptDispatches = []
     let failureObserved
     const expectedFailure = new Promise(resolve => { failureObserved = resolve })
     let noticeObserved
     const expectedNotice = new Promise(resolve => { noticeObserved = resolve })
     child.stderr.on('data', chunk => {
+      diagnosticBuffer = (diagnosticBuffer + chunk).slice(-MAX_BYTES)
+      let newline
+      while ((newline = diagnosticBuffer.indexOf('\n')) >= 0) {
+        const line = diagnosticBuffer.slice(0, newline)
+        diagnosticBuffer = diagnosticBuffer.slice(newline + 1)
+        const start = line.indexOf('{"component":"opencode-harness-hooks"')
+        if (start < 0) continue
+        try {
+          const record = JSON.parse(line.slice(start))
+          if (record.code === 'DISPATCH_RESULT' && record.event === 'UserPromptSubmit' && promptDispatches.length < MAX_REQUESTS) promptDispatches.push(record)
+        } catch {}
+      }
       for (const code of String(chunk).match(/\b(?:HOST|SOURCE|SESSION|PLUGIN|HANDLER|RUNTIME)_[A-Z_]+\b/g) ?? []) diagnosticCodes.add(code)
-      if (stopRejection) {
+      if (loadRejection) {
         hostErrors = (hostErrors + chunk).slice(-MAX_BYTES)
-        if (['HOST_STOP_UNSUPPORTED', 'V1', 'Stop', 'awaited-completion-decision', sourcePath, ...sources.map(source => source.id)].every(value => hostErrors.includes(value))) failureObserved()
-        if (hostErrors.includes('HOST_STOP_NOTICE_SHOWN')) noticeObserved(true)
-        else if (hostErrors.includes('HOST_STOP_NOTICE_FAILED')) noticeObserved(false)
+        if (rejectionValues.every(value => hostErrors.includes(value))) failureObserved()
+        if (hostErrors.includes(reviewRejection ? 'HOST_ACTIVATION_NOTICE_SHOWN' : 'HOST_STOP_NOTICE_SHOWN')) noticeObserved(true)
+        else if (hostErrors.includes(reviewRejection ? 'HOST_ACTIVATION_NOTICE_FAILED' : 'HOST_STOP_NOTICE_FAILED')) noticeObserved(false)
       }
     })
     const ready = new Promise((resolve, reject) => {
@@ -233,19 +260,19 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
         if (!response.ok) throw new ProbeError('HOST_API_FAILED: ' + response.status)
         return response.json()
       }
-      if (stopRejection) {
-        stage = 'stop-rejection'
+      if (loadRejection) {
+        stage = reviewRejection ? 'review-rejection' : 'stop-rejection'
         await assert.rejects(async () => {
           const session = await post('/session', {})
           await post('/session/' + session.id + '/message', { model: { providerID: 'fixture', modelID: 'fixture' }, parts: [{ type: 'text', text: 'Reject the incompatible Stop configuration' }] })
         })
         await bounded(expectedFailure, CLIENT_MS, 'STOP_FAILURE_DIAGNOSTIC_MISSING')
         assert.equal(await bounded(expectedNotice, CLIENT_MS, 'STOP_FAILURE_NOTICE_MISSING'), true)
-        assert.equal(hostErrors.includes('HOST_STOP_NOTICE_FAILED'), false)
+        assert.equal(hostErrors.includes(reviewRejection ? 'HOST_ACTIVATION_NOTICE_FAILED' : 'HOST_STOP_NOTICE_FAILED'), false)
         assert.equal(requests.length, 0)
         assert.equal(providerRequests, 0)
         await assert.rejects(access(capture), { code: 'ENOENT' })
-        return { host: hostVersion, hostVersion: VERSIONS[hostVersion], dialect, defaultEntrypoint: true, nativeOptions: true, expectedStopLoadRejection: true, incompatibleConfigsIdentified: true, unsupportedCapabilityIdentified: true, hostErrorNoticeAccepted: true, noModelOrHookExecution: true, equivalent: false }
+        return { ...rejectionReport, hostErrorNoticeAccepted: true }
       }
       const session = await post('/session', {})
       if (prompts) {
@@ -255,6 +282,21 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
       answer = await post('/session/' + session.id + '/message', { model: { providerID: 'fixture', modelID: 'fixture' }, parts: [{ type: 'text', text: 'Run the controlled package fixture' }] })
       if (prompts) answer = await post('/session/' + session.id + '/message', { model: { providerID: 'fixture', modelID: 'fixture' }, parts: [{ type: 'text', text: 'Follow-up controlled package fixture' }] })
     } else {
+      if (loadRejection) {
+        stage = reviewRejection ? 'review-rejection' : 'stop-rejection'
+        const rejected = run(binary, ['--server', address, 'run', '--format', 'json', '--model', 'fixture/fixture', 'Reject the incompatible Stop configuration'], { cwd: project, env, timeout: CLIENT_MS, maxBuffer: MAX_BYTES })
+        rejected.child.stdin.end()
+        rejected.child.stderr.on('data', chunk => {
+          hostErrors = (hostErrors + chunk).slice(-MAX_BYTES)
+          if (rejectionValues.every(value => hostErrors.includes(value))) failureObserved()
+        })
+        await assert.rejects(rejected)
+        await bounded(expectedFailure, CLIENT_MS, 'STOP_FAILURE_DIAGNOSTIC_MISSING')
+        assert.equal(requests.length, 0)
+        assert.equal(providerRequests, 0)
+        await assert.rejects(access(capture), { code: 'ENOENT' })
+        return rejectionReport
+      }
       if (prompts) {
         const blocked = run(binary, ['--server', address, 'run', '--format', 'json', '--model', 'fixture/fixture', 'Block the controlled prompt'], { cwd: project, env, timeout: CLIENT_MS, maxBuffer: MAX_BYTES })
         blocked.child.stdin.end()
@@ -280,6 +322,10 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     stage = 'native-payloads'
     const payloads = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
     const toolPayloads = payloads.filter(payload => payload.hook_event_name === 'PreToolUse')
+    const postPayloads = payloads.filter(payload => payload.hook_event_name === 'PostToolUse')
+    assert.equal(postPayloads.length, COMPLETED_TOOL_CALLS * sources.length)
+    assert.deepEqual(postPayloads.map(payload => payload.nativeDialect).sort(), [...selectedDialects].sort())
+    assert.ok(postPayloads.every(payload => payload.tool_name === 'Bash' && payload.tool_input.command === replacementCommand && Object.hasOwn(payload, 'tool_response')))
     assert.equal(toolPayloads.length, CONTROLLED_TOOL_CALLS * sources.length)
     assert.ok(toolPayloads.every(payload => payload.tool_name === 'Bash' && typeof payload.tool_use_id === 'string' && payload.tool_use_id && payload.permission_mode === permissionMode))
     for (let index = 1; index <= CONTROLLED_TOOL_CALLS; index++) {
@@ -297,31 +343,55 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
       assert.ok(!JSON.stringify(requests).includes('PACKAGE_FAILURE_STDERR'))
       assert.ok(!JSON.stringify(requests).includes('PACKAGE_TIMEOUT_STDOUT'))
       assert.ok(!JSON.stringify(requests).includes('PACKAGE_TIMEOUT_STDERR'))
+      stage = 'prompt-registration-count'
       const submitted = payloads.filter(payload => payload.hook_event_name === 'UserPromptSubmit')
-      assert.equal(submitted.length, PROMPT_SUBMISSIONS * PROMPT_HANDLERS * sources.length)
+      assert.equal(submitted.filter(payload => payload.promptMode !== 'timeout').length, PROMPT_SUBMISSIONS * (PROMPT_HANDLERS - 1) * sources.length)
+      assert.ok(submitted.filter(payload => payload.promptMode === 'timeout').length <= PROMPT_SUBMISSIONS * sources.length)
+      assert.equal(promptDispatches.length, PROMPT_SUBMISSIONS)
+      const expectedRegistrations = sources.flatMap(source => Array.from({ length: PROMPT_HANDLERS }, (_, index) => source.id + ':UserPromptSubmit:0:' + index)).sort()
+      for (const dispatch of promptDispatches) {
+        assert.deepEqual(dispatch.handlers.map(handler => handler.registrationID).sort(), expectedRegistrations)
+        assert.ok(dispatch.handlers.every(handler => Number.isSafeInteger(handler.completionOrder)))
+      }
+      const claudeOrder = dispatch => dispatch.handlers.filter(handler => handler.dialect === 'claude-code' && /:0:[01]$/.test(handler.registrationID)).sort((left, right) => left.completionOrder - right.completionOrder).map(handler => Number(handler.registrationID.split(':').at(-1)))
+      for (const dispatch of promptDispatches.slice(1)) assert.ok(dispatch.handlers.filter(handler => handler.registrationID.endsWith(':0:3')).every(handler => handler.code === 'EXECUTION_TIMEOUT'))
+      stage = 'prompt-payload-metadata'
       assert.ok(submitted.every(payload => payload.permission_mode === permissionMode && (payload.nativeDialect !== 'codex' || payload.model === 'fixture' && typeof payload.turn_id === 'string')))
+      stage = 'prompt-transcript-history'
       for (const payload of submitted.filter(payload => payload.nativeDialect === 'claude-code')) {
         assert.equal(payload.promptTranscriptExists, payload.prompt.includes('Follow-up controlled package fixture'))
         assert.equal(payload.promptHistoryAttachments, payload.promptTranscriptExists)
       }
+      stage = 'prompt-artifact-ownership'
       const artifacts = toolPayloads.filter(payload => payload.nativeDialect === 'claude-code').map(payload => payload.promptArtifactIDs)
-      if (artifacts.length) { assert.equal(artifacts[0].length, PROMPT_HANDLERS); assert.ok(artifacts.every(ids => JSON.stringify(ids) === JSON.stringify(artifacts[0]))) }
+      if (artifacts.length) {
+        assert.equal(artifacts[0].length, PROMPT_HANDLERS)
+        assert.ok(artifacts.every(ids => JSON.stringify(ids) === JSON.stringify(artifacts[0])))
+        for (const payload of toolPayloads.filter(payload => payload.nativeDialect === 'claude-code')) assert.deepEqual(payload.promptContextOrder, claudeOrder(promptDispatches[1]))
+      }
+      stage = 'prompt-request-correlation'
       assert.equal(correlationLeaked, false)
+      stage = 'prompt-native-context-roles'
       for (const request of requests) {
         for (let index = 0; index < request.messages.length; index++) {
           const row = request.messages[index]
           if (row.role !== 'user' || !JSON.stringify(row.content).includes('controlled package fixture')) continue
-          if (selectedDialects.includes('claude-code')) assert.ok(Array.isArray(row.content) && row.content[0].text === '<system-reminder>\nUserPromptSubmit hook success: PACKAGE_CLAUDE_STDOUT_CONTEXT\n</system-reminder>' && row.content[1].text === '<system-reminder>\nUserPromptSubmit hook additional context: PACKAGE_CLAUDE_PROMPT_CONTEXT\n</system-reminder>')
+          if (selectedDialects.includes('claude-code')) {
+            const dispatch = promptDispatches[JSON.stringify(row.content).includes('Follow-up controlled package fixture') ? 2 : 1]
+            assert.ok(Array.isArray(row.content))
+            assert.deepEqual(row.content.slice(0, CLAUDE_PROMPT_CONTEXTS.length).map(part => part.text), claudeOrder(dispatch).map(handler => CLAUDE_PROMPT_CONTEXTS[handler]))
+          }
           if (selectedDialects.includes('codex')) assert.deepEqual(request.messages.slice(index + 1, index + 1 + CODEX_PROMPT_CONTEXTS.length), CODEX_PROMPT_CONTEXTS)
         }
       }
+      stage = 'prompt-retained-turns'
       assert.equal(requests.at(-1).messages.filter(row => row.role === 'user' && JSON.stringify(row.content).includes('controlled package fixture')).length, 2)
-    } else assert.equal(payloads.length, toolPayloads.length)
+    } else assert.equal(payloads.length, toolPayloads.length + postPayloads.length)
     stage = 'model-visible-denial'
     assert.ok(JSON.stringify(requests[1].messages).includes('PACKAGE_FIXTURE_DENIED'))
     stage = 'final-answer'
     assert.ok(JSON.stringify(answer).includes('PACKAGE_FIXTURE_DONE'))
-    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, correlationHeaderPrivate: true, ...(selectedDialects.includes('claude-code') ? { promptAttachmentsReadByHook: true, promptNonblockingErrorReadByHook: true, promptTimeoutReadByHook: true } : {}) } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true, modelDateReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
+    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, postToolEffectiveInputObserved: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, promptHandlerDispatchObserved: true, correlationHeaderPrivate: true, ...(selectedDialects.includes('claude-code') ? { promptAttachmentsReadByHook: true, claudeCompletionOrderObserved: true, promptNonblockingErrorReadByHook: true, promptTimeoutReadByHook: true } : {}) } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true, modelDateReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
   } catch (error) {
     if (error instanceof ProbeError) throw error
     throw new ProbeError('PACKAGE_CHECK_FAILED: ' + stage + ' ' + (error.code ?? error.name ?? 'unknown') + (diagnosticCodes.size ? ' diagnostics=' + [...diagnosticCodes].sort().join(',') : ''))
@@ -334,7 +404,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, prompts: { type: 'boolean' }, 'stop-rejection': { type: 'boolean', short: 's' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, prompts: { type: 'boolean' }, 'stop-rejection': { type: 'boolean', short: 's' }, 'review-rejection': { type: 'boolean', short: 'r' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const host = parsed.values.host
@@ -344,10 +414,12 @@ try {
     const preapproval = parsed.values.preapproval ?? false
     if (preapproval && dialect === 'codex') throw new ProbeError('USAGE_PREAPPROVAL: select claude-code or mixed', 2)
     const stopRejection = parsed.values['stop-rejection'] ?? false
-    if (stopRejection && (host !== 'v1' || preapproval || parsed.values.prompts)) throw new ProbeError('USAGE_STOP_REJECTION: V1 only, without --preapproval or --prompts', 2)
+    const reviewRejection = parsed.values['review-rejection'] ?? false
+    if (reviewRejection && (stopRejection || preapproval || parsed.values.prompts)) throw new ProbeError('USAGE_REVIEW_REJECTION: without Stop rejection, preapproval or prompts', 2)
+    if (stopRejection && (preapproval || parsed.values.prompts)) throw new ProbeError('USAGE_STOP_REJECTION: without --preapproval or --prompts', 2)
     const binary = parsed.values.binary ?? process.env[host === 'v1' ? 'OPENCODE_V1_BINARY' : 'OPENCODE_V2_BINARY'] ?? 'opencode'
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false, stopRejection)) + '\n')
+    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false, stopRejection, reviewRejection)) + '\n')
   }
 } catch (error) {
   process.stderr.write((error instanceof ProbeError ? error.message : 'PACKAGE_PROBE_FAILED') + '\n')

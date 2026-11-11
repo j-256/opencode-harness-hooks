@@ -24,6 +24,12 @@ The V1 acceptance case tests rejection before any hook or model execution throug
 
 The independent [native Stop reference](stop.md) characterizes continuation payloads, feedback, artifacts and ordering for both source dialects. Its success does not enable the unfinished V2 Stop adapter or claim bridge parity.
 
+## Default V2 Stop boundary
+
+The stock V2 host does not expose a completion decision boundary that runs for every completed response: pending user input can bypass the awaited idle hook. The default package rejects selected enabled Stop configurations with `HOST_STOP_UNSUPPORTED`, identifying every offending config and missing `awaited-completion-decision` capability. It reports a load error and retains fatal admission/execution guards because a setup exception alone can leave the host running after disabling the plugin. Disabled and explicitly excluded registrations remain visible exclusions.
+
+An advertised completion capability does not enable the unintegrated adapter; that case identifies `verified-completion-adapter` as unavailable. Core idle and continuation tests establish only their explicit mechanism. V2 rejection is not an accepted exception to the full project requirements. Complete V2 Stop parity and the private migration remain open gates.
+
 ## Source references
 
 - [Claude Code hook reference](https://code.claude.com/docs/en/hooks)

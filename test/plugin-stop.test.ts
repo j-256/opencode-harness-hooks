@@ -5,7 +5,10 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import plugin from '../src/index.js'
+import { setupHarnessHooks } from '../src/plugin.js'
+
+// Explicit idle bridge fixtures preserve mechanism coverage without claiming default-package Stop support
+const plugin = { setup: setupHarnessHooks }
 
 const CREATED = Date.parse('2026-01-01T00:00:00Z')
 const COMMAND_DELAY_MS = 1000
@@ -112,7 +115,7 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }, mo
   return { directory, path, script, context, callbacks, records, queued, connect, prompt, answer, deliver, model, idle, promote, acknowledge, emit, setEventReturnGate: (gate: Promise<void>) => { eventReturnGate = gate }, interrupt, abortFeedback, setEnqueue: (value: typeof enqueue) => { enqueue = value }, calls, waitForHook, unchanged: async () => { assert.equal(await readFile(path, 'utf8'), native); assert.equal(await readFile(script, 'utf8'), scriptSource) }, command: [process.execPath, script].join(' ') }
 }
 
-test('default V2 user interruption cancels a running Stop and retains native interruption history', async t => {
+test('explicit V2 idle bridge user interruption cancels a running Stop and retains native interruption history', async t => {
   const f = await fixture(t, 'during-hook')
   await f.connect(); await f.prompt(); await f.model(); f.answer()
   const idle = f.idle()
@@ -135,7 +138,7 @@ test('default V2 user interruption cancels a running Stop and retains native int
   await f.unchanged()
 })
 
-test('default V2 after-feedback interruption retains native output and retires only its unanswered owned input', async t => {
+test('explicit V2 idle bridge after-feedback interruption retains native output and retires only its unanswered owned input', async t => {
   const f = await fixture(t, 'after-feedback')
   await f.connect(); await f.prompt(); await f.model(); f.answer(); await f.idle(); f.promote()
   const feedback = await f.model()
@@ -270,7 +273,7 @@ test('a delayed native interruption keeps its original Stop owner after another 
   await f.unchanged()
 })
 
-test('default V2 Stop continues the original turn with exact Claude input and readable retained records', async t => {
+test('explicit V2 idle bridge Stop continues the original turn with exact Claude input and readable retained records', async t => {
   const f = await fixture(t)
   const dispose = await f.connect()
   await f.prompt(); await f.model(); f.answer()
@@ -304,7 +307,7 @@ test('default V2 Stop continues the original turn with exact Claude input and re
   assert.equal(f.callbacks.size, 0)
 })
 
-test('default V2 Stop preserves independent repeated registrations', async t => {
+test('explicit V2 idle bridge Stop preserves independent repeated registrations', async t => {
   const f = await fixture(t, 'continue', 2)
   await f.connect(); await f.prompt(); await f.model(); f.answer(); await f.idle()
   assert.equal((await f.calls()).length, 2)
@@ -370,7 +373,7 @@ test('V2 Stop prevention ends completion without enqueuing a corrective prompt',
   assert.deepEqual(body.messages.at(-1).content, [{ type: 'text', text: '<system-reminder>\nStop hook stopped continuation: Stopped\n</system-reminder>' }, { type: 'text', text: 'Next' }])
 })
 
-for (const scenario of historyCases) test(`default V2 retained Stop history agrees with native ${scenario.name}`, async t => {
+for (const scenario of historyCases) test(`explicit V2 idle bridge retained Stop history agrees with native ${scenario.name}`, async t => {
   const f = await fixture(t, scenario.name)
   await f.connect(); await f.prompt('prompt', 'LATER_ORIGINAL_PROMPT'); await f.model(); f.answer('answer', 'NATIVE_STOP_ANSWER_1'); await f.idle()
   assert.equal(f.queued.length, 0)

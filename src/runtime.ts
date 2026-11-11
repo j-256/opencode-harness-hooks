@@ -35,6 +35,7 @@ type NativeData = NonNullable<NativeEvent['dialectData']>
 export interface RuntimeServices {
   readonly sessionStart?: SessionStartServices
   readonly stop?: StopServices
+  readonly stopUnavailableCapability?: 'awaited-completion-decision' | 'verified-completion-adapter'
   readonly host?: Omit<HostServices, 'projectRoot' | 'signal' | 'sessionSignal'>
   readonly tools?: Omit<ToolHostOptions, 'dispatch'>
   readonly nativeData?: (event: HostToolEvent, session: SessionSnapshot, signal: AbortSignal) => Promise<NativeData>
@@ -79,12 +80,12 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
   const environment = { ...(services.host?.environment ?? process.env) }
   const inspected = await inspectSources(host, directory, inputOptions)
   const { options, sources } = inspected
-  const coreEvents = new Set([...(services.sessionStart ? ['SessionStart'] : []), ...(services.stop && host === 'v2' ? ['Stop'] : [])])
+  const coreEvents = new Set([...(services.sessionStart ? ['SessionStart'] : []), ...(services.stop && host === 'v2' && !services.stopUnavailableCapability ? ['Stop'] : [])])
   const report: RuntimeReport = coreEvents.size ? Object.freeze({ ...inspected.report, sources: Object.freeze(inspected.report.sources.map(source => Object.freeze({ ...source, unwiredEvents: Object.freeze(source.unwiredEvents.filter(event => !coreEvents.has(event))) }))) }) : inspected.report
   await (services.report ?? (value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', code: 'RUNTIME_REPORT', ...value })) }))(report)
-  if (host === 'v1') {
+  if (host === 'v1' || services.stopUnavailableCapability) {
     const incompatible = sources.filter(source => source.enabled && source.registrations.some(registration => registration.event === 'Stop'))
-    if (incompatible.length) throw new HostHookError('HOST_STOP_UNSUPPORTED', 'unsupported', `OpenCode V1 cannot load enabled Stop registrations: unsupported host capability "${STOP_HOST_CAPABILITY}"; incompatible configs ${JSON.stringify(incompatible.map(source => ({ id: source.id, dialect: source.dialect, path: source.path })))}`)
+    if (incompatible.length) throw new HostHookError('HOST_STOP_UNSUPPORTED', 'unsupported', `OpenCode ${host.toUpperCase()} cannot load enabled Stop registrations: unsupported host capability "${host === 'v1' ? STOP_HOST_CAPABILITY : services.stopUnavailableCapability}"; incompatible configs ${JSON.stringify(incompatible.map(source => ({ id: source.id, dialect: source.dialect, path: source.path })))}`)
   }
   for (const source of report.sources) {
     if (!Object.hasOwn(options.reviewedDigests, source.id)) throw new HostHookError('SOURCE_REVIEW_REQUIRED', 'unsupported', source.id)
