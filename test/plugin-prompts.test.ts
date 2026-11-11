@@ -23,6 +23,68 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }) {
 }
 const observed = async (path: string) => (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
 
+test('V1 auxiliary requests preserve the primary model context across provider interleaving', async t => {
+  const f = await fixture(t)
+  const forwarded: Request[] = []
+  const fetch = async (input: RequestInfo | URL, init?: RequestInit) => { forwarded.push(new Request(input, init)); return new Response('{}') }
+  const provider = { npm: '@ai-sdk/openai-compatible', options: { fetch } }
+  const auxiliary = { npm: '@ai-sdk/openai-compatible', options: { fetch } }
+  const diagnostics: PromptDiagnostic[] = []
+  const hooks = await createHarnessHooks({ directory: f.directory, client: { session: { get: async () => ({ data: { id: 'session' } }), messages: async () => ({ data: [] }) } } }, f.options, { report: () => {}, dispatchDiagnostic: () => {}, promptDiagnostic: value => { diagnostics.push(value) } })
+  t.after(() => hooks.dispose())
+  await hooks.config({ provider: { fixture: provider, auxiliary }, model: 'fixture/model' })
+  const message = { id: 'turn', agent: 'build', model: { modelID: 'model', providerID: 'fixture' } }
+  const prompt = { sessionID: 'session', agent: 'build', model: message.model }
+  await hooks['chat.message'](prompt, { message, parts: [{ type: 'text', text: 'Original' }] })
+  await hooks['experimental.chat.messages.transform']({}, { messages: [{ info: { ...message, role: 'user', sessionID: 'session' }, parts: [{ type: 'text', text: 'Original' }] }] })
+  await hooks['chat.params']({ ...prompt, message, model: { ...prompt.model, api: { npm: provider.npm } }, provider: { id: 'fixture', options: provider.options } })
+  const title = { sessionID: 'session', agent: 'title', message, model: { modelID: 'small', providerID: 'auxiliary', api: { npm: auxiliary.npm } }, provider: { id: 'auxiliary', options: auxiliary.options } }
+  await hooks['chat.params'](title)
+  const auxiliaryHeaders: Record<string, string> = {}
+  await hooks['chat.headers'](title, { headers: auxiliaryHeaders })
+  const titleMessages = [{ role: 'user', content: 'Generate a title' }, { role: 'user', content: 'Original' }]
+  await auxiliary.options.fetch('https://provider.invalid/v1/chat/completions', { method: 'POST', headers: auxiliaryHeaders, body: JSON.stringify({ messages: titleMessages }) })
+  assert.deepEqual(await forwarded[0]!.json(), { messages: titleMessages })
+  assert.equal([...forwarded[0]!.headers.keys()].some(key => key.startsWith('x-opencode-harness-')), false)
+  const headers: Record<string, string> = {}
+  await hooks['chat.headers']({ ...prompt, message }, { headers })
+  await provider.options.fetch('https://provider.invalid/v1/chat/completions', { method: 'POST', headers, body: JSON.stringify({ messages: [{ role: 'user', content: 'Original' }] }) })
+  const body = await forwarded[1]!.json()
+  assert.match(body.messages[0].content[0].text, /CLAUDE_CONTEXT/)
+  assert.deepEqual(body.messages[1], { role: 'developer', content: 'CODEX_CONTEXT' })
+  assert.deepEqual(diagnostics, [])
+})
+
+test('V1 a primary agent named title still receives context and rejects malformed requests', async t => {
+  const f = await fixture(t)
+  const forwarded: Request[] = []
+  const provider = { options: { fetch: async (input: RequestInfo | URL, init?: RequestInit) => { forwarded.push(new Request(input, init)); return new Response('{}') } } }
+  const hooks = await createHarnessHooks({ directory: f.directory, client: { session: { get: async () => ({ data: { id: 'session' } }), messages: async () => ({ data: [] }) } } }, f.options, { report: () => {}, dispatchDiagnostic: () => {}, promptDiagnostic: () => {} })
+  t.after(() => hooks.dispose())
+  await hooks.config({ provider: { fixture: provider }, model: 'fixture/model' })
+  const message = { id: 'turn', agent: 'title', model: { modelID: 'model', providerID: 'fixture' } }
+  const prompt = { sessionID: 'session', agent: 'title', model: message.model }
+  await hooks['chat.message'](prompt, { message, parts: [{ type: 'text', text: 'Original' }] })
+  await hooks['experimental.chat.messages.transform']({}, { messages: [{ info: { ...message, role: 'user', sessionID: 'session' }, parts: [{ type: 'text', text: 'Original' }] }] })
+  await hooks['chat.params']({ ...prompt, message, model: { ...prompt.model, api: { npm: '@ai-sdk/openai-compatible' } }, provider: { id: 'fixture', options: provider.options } })
+  const headers: Record<string, string> = {}
+  await hooks['chat.headers']({ ...prompt, message }, { headers })
+  await provider.options.fetch('https://provider.invalid/v1/chat/completions', { method: 'POST', headers, body: JSON.stringify({ messages: [{ role: 'user', content: 'Original' }] }) })
+  assert.match(JSON.stringify(await forwarded[0]!.json()), /CLAUDE_CONTEXT/)
+  await assert.rejects(provider.options.fetch('https://provider.invalid/v1/chat/completions', { method: 'POST', headers, body: JSON.stringify({ messages: [{ role: 'user', content: 'Different' }] }) }), { code: 'HOST_PROMPT_REQUEST_UNAVAILABLE' })
+  assert.equal(forwarded.length, 1)
+  for (const incomplete of [
+    { sessionID: prompt.sessionID, model: prompt.model, message },
+    { ...prompt, message: { id: message.id, model: message.model } },
+    { ...prompt, agent: '', message },
+  ]) {
+    const headers: Record<string, string> = {}
+    await hooks['chat.headers'](incomplete, { headers })
+    await assert.rejects(provider.options.fetch('https://provider.invalid/v1/chat/completions', { method: 'POST', headers, body: JSON.stringify({ messages: [{ role: 'user', content: 'Different' }] }) }), { code: 'HOST_PROMPT_REQUEST_UNAVAILABLE' })
+  }
+  assert.equal(forwarded.length, 1)
+})
+
 test('V1 root runs unchanged mixed prompt sources and projects their distinct native contexts', async t => {
   const f = await fixture(t)
   let forwarded: Request | undefined

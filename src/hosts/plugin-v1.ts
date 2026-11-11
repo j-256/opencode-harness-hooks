@@ -24,9 +24,15 @@ export interface V1Input {
 }
 interface Prompt {
   readonly sessionID: string
+  readonly agent?: string
   readonly model?: { readonly modelID?: string; readonly providerID?: string; readonly api?: { readonly npm?: string } }
 }
-interface UserMessage { readonly id: string; readonly model?: { readonly modelID: string; readonly providerID?: string } }
+interface UserMessage { readonly id: string; readonly agent?: string; readonly model?: { readonly modelID: string; readonly providerID?: string } }
+
+function auxiliary(prompt: Prompt & { readonly message: UserMessage }): boolean {
+  // V1 internal model calls reuse the user's message with a different executing agent
+  return typeof prompt.agent === 'string' && prompt.agent.length > 0 && typeof prompt.message.agent === 'string' && prompt.message.agent.length > 0 && prompt.agent !== prompt.message.agent
+}
 
 export async function createHarnessHooks(input: V1Input, options: unknown, services: RuntimeServices = {}) {
   if (services.sessionStart) throw new HostHookError('HOST_SESSION_START_HOST_UNAVAILABLE', 'unsupported')
@@ -76,6 +82,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       await submit(runtime, contexts, { host: 'v1', event: 'UserPromptSubmit', sessionID: prompt.sessionID, messageID: output.message.id, prompt: text.join('\n'), signal: session.turnSignal }, text, services)
     },
     'chat.params': async (prompt: Prompt & { readonly message: UserMessage; readonly provider?: { readonly id?: string; readonly info?: { readonly id: string }; readonly options: Record<string, unknown> } }) => {
+      if (auxiliary(prompt)) return
       const model = prompt.message.model?.modelID ?? prompt.model?.modelID
       if (model) runtime.sessions.model(prompt.sessionID, model, prompt.message.id)
       if (!runtime.hasPromptHooks) return
@@ -92,6 +99,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       contexts.layout(runtime.sessions.get(last.info.sessionID), layout('v1', output.messages))
     },
     'chat.headers': async (prompt: Prompt & { readonly message: UserMessage }, output: { readonly headers: Record<string, string> }) => {
+      if (auxiliary(prompt)) return
       if (!runtime.hasPromptHooks && !runtime.needsModelArtifacts) return
       const session = runtime.sessions.get(prompt.sessionID)
       if (session.turnID !== prompt.message.id) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')

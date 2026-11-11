@@ -16,6 +16,8 @@ The default package targets OpenCode V1 1.19.5 and V2 2.2.5 without host patches
 
 The actual-host fixtures use controlled shell commands and a declared permission mode. Their results do not certify arbitrary source scripts or all host tools. File-operation translation between patch and Edit/Write algorithms requires its own evidence. POSIX/macOS execution does not establish Windows support.
 
+V1 internal model requests are isolated from primary prompt projection by comparing the executing agent with the originating message's agent. The prompt probe verifies automatic title completion and absent private correlation headers on provider requests. Matching identities remain primary even when the selected agent is named `title`; missing identity does not bypass primary validation.
+
 Post-tool context differs from prompt-submission context. The default package delivers the exercised prompt-submission context; post-tool context requires an explicit core effect service and is not part of this default-package subset. Unsupported post-tool effects produce diagnostics after execution rather than retroactively denying the tool.
 
 ## Select native sources explicitly

@@ -24,6 +24,8 @@ const SECOND_MS = 1000
 const CLAUDE_PROMPT_CONTEXTS = Object.freeze(['<system-reminder>\nUserPromptSubmit hook additional context: PACKAGE_CLAUDE_PROMPT_CONTEXT\n</system-reminder>', '<system-reminder>\nUserPromptSubmit hook success: PACKAGE_CLAUDE_STDOUT_CONTEXT\n</system-reminder>'])
 const CODEX_PROMPT_CONTEXTS = Object.freeze([{ role: 'developer', content: 'PACKAGE_CODEX_PROMPT_CONTEXT' }, { role: 'developer', content: 'PACKAGE_CODEX_SECOND_CONTEXT' }])
 const PROMPT_SUBMISSIONS = 3
+const TITLE_TEXT = 'PACKAGE_FIXTURE_TITLE'
+const TITLE_WAIT_MS = 5000
 const run = promisify(execFile)
 const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts] [-s|-r]
 
@@ -175,6 +177,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     const hostPermission = preapproval ? 'ask' : 'allow'
     const options = { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, reviewRejection ? '0'.repeat(64) : digest])), permissionMode }
     const requests = []
+    const auxiliaryRequests = []
     let providerRequests = 0
     let correlationLeaked = false
     const tool = hostVersion === 'v1' ? 'bash' : 'shell'
@@ -190,15 +193,15 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
         }
         const body = JSON.parse(Buffer.concat(chunks).toString())
         const primary = body.tools?.some(entry => entry.function?.name === tool)
+        correlationLeaked ||= Object.keys(request.headers).some(key => key.startsWith('x-opencode-harness-'))
         if (primary) {
           if (requests.length >= MAX_REQUESTS) { response.writeHead(429); response.end(); return }
           requests.push(body)
-          correlationLeaked ||= Object.keys(request.headers).some(key => key.startsWith('x-opencode-harness-'))
-        }
+        } else auxiliaryRequests.push(body)
         const index = requests.length
         const useTool = primary && index <= CONTROLLED_TOOL_CALLS
         const args = index === 1 ? { command: 'printf forbidden > ' + quote(denied), description: 'Denied fixture' } : { command: originalCommand, description: 'Original fixture' }
-        const delta = useTool ? { role: 'assistant', tool_calls: [{ index: 0, id: 'call_' + index, type: 'function', function: { name: tool, arguments: JSON.stringify(args) } }] } : { role: 'assistant', content: 'PACKAGE_FIXTURE_DONE' }
+        const delta = useTool ? { role: 'assistant', tool_calls: [{ index: 0, id: 'call_' + index, type: 'function', function: { name: tool, arguments: JSON.stringify(args) } }] } : { role: 'assistant', content: primary ? 'PACKAGE_FIXTURE_DONE' : TITLE_TEXT }
         const chunk = (value, finish_reason) => ({ id: 'fixture', object: 'chat.completion.chunk', created: 1, model: 'fixture', choices: [{ index: 0, delta: value, finish_reason }] })
         response.writeHead(200, { 'content-type': 'text/event-stream' })
         response.end('data: ' + JSON.stringify(chunk(delta, null)) + '\n\ndata: ' + JSON.stringify({ ...chunk({}, useTool ? 'tool_calls' : 'stop'), usage: { prompt_tokens: 10, completion_tokens: 10, total_tokens: 20 } }) + '\n\ndata: [DONE]\n\n')
@@ -253,6 +256,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     const address = await bounded(ready, STARTUP_MS, 'HOST_STARTUP_TIMEOUT')
     stage = 'prompt'
     let answer
+    let v1TitleVerified = false
     if (hostVersion === 'v1') {
       const headers = { 'content-type': 'application/json', authorization: 'Basic ' + Buffer.from('opencode:' + env.OPENCODE_PASSWORD).toString('base64') }
       const post = async (path, body) => {
@@ -281,6 +285,21 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
       }
       answer = await post('/session/' + session.id + '/message', { model: { providerID: 'fixture', modelID: 'fixture' }, parts: [{ type: 'text', text: 'Run the controlled package fixture' }] })
       if (prompts) answer = await post('/session/' + session.id + '/message', { model: { providerID: 'fixture', modelID: 'fixture' }, parts: [{ type: 'text', text: 'Follow-up controlled package fixture' }] })
+      if (prompts) {
+        stage = 'auxiliary-title'
+        await bounded((async () => {
+          const deadline = performance.now() + TITLE_WAIT_MS
+          while (performance.now() < deadline) {
+            const response = await fetch(address + '/session/' + session.id + '?directory=' + encodeURIComponent(project), { headers, signal: AbortSignal.timeout(TITLE_WAIT_MS) })
+            if (response.ok && (await response.json()).title === TITLE_TEXT) return
+            await new Promise(resolve => setTimeout(resolve, 100))
+          }
+          throw new ProbeError('HOST_TITLE_UNAVAILABLE')
+        })(), TITLE_WAIT_MS, 'HOST_TITLE_UNAVAILABLE')
+        assert.ok(auxiliaryRequests.length > 0)
+        assert.ok(auxiliaryRequests.every(request => !/PACKAGE_(?:CLAUDE|CODEX)_(?:PROMPT|SECOND|STDOUT)_CONTEXT/.test(JSON.stringify(request.messages))))
+        v1TitleVerified = true
+      }
     } else {
       if (loadRejection) {
         stage = reviewRejection ? 'review-rejection' : 'stop-rejection'
@@ -391,7 +410,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     assert.ok(JSON.stringify(requests[1].messages).includes('PACKAGE_FIXTURE_DENIED'))
     stage = 'final-answer'
     assert.ok(JSON.stringify(answer).includes('PACKAGE_FIXTURE_DONE'))
-    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, postToolEffectiveInputObserved: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, promptHandlerDispatchObserved: true, correlationHeaderPrivate: true, ...(selectedDialects.includes('claude-code') ? { promptAttachmentsReadByHook: true, claudeCompletionOrderObserved: true, promptNonblockingErrorReadByHook: true, promptTimeoutReadByHook: true } : {}) } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true, modelDateReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
+    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, postToolEffectiveInputObserved: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, promptHandlerDispatchObserved: true, correlationHeaderPrivate: true, ...(v1TitleVerified ? { auxiliaryTitleCompleted: true, auxiliaryContextIsolated: true } : {}), ...(selectedDialects.includes('claude-code') ? { promptAttachmentsReadByHook: true, claudeCompletionOrderObserved: true, promptNonblockingErrorReadByHook: true, promptTimeoutReadByHook: true } : {}) } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true, modelDateReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
   } catch (error) {
     if (error instanceof ProbeError) throw error
     throw new ProbeError('PACKAGE_CHECK_FAILED: ' + stage + ' ' + (error.code ?? error.name ?? 'unknown') + (diagnosticCodes.size ? ' diagnostics=' + [...diagnosticCodes].sort().join(',') : ''))
