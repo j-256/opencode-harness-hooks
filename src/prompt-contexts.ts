@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import type { AttributedAction } from './engine.js'
 import type { HookAction } from './effect-types.js'
-import { HostHookError } from './hosts/tools.js'
+import { HostHookError } from './host-errors.js'
 import { runService } from './service-execution.js'
 import type { SessionSnapshot } from './sessions.js'
 import type { StopModelBlocks } from './stop-records.js'

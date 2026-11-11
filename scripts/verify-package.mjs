@@ -82,7 +82,27 @@ async function verify(npm) {
     await writeFile(join(consumer, 'package.json'), JSON.stringify({ private: true, type: 'module' }))
     await execute(npm, ['install', '--ignore-scripts', '--no-audit', '--no-fund', join(root, packed.filename)], consumer, INSTALL_MS)
     stage = 'imports'
-    const imported = await execute(process.execPath, ['--input-type=module', '-e', 'import assert from "node:assert/strict"; import * as root from "opencode-harness-hooks"; import {inspectSources, CallApprovals} from "opencode-harness-hooks/core"; assert.deepEqual(Object.keys(root),["default"]); assert.equal(typeof root.default.server,"function"); assert.equal(typeof root.default.setup,"function"); assert.equal(typeof inspectSources,"function"); assert.equal(typeof CallApprovals,"function");'], consumer)
+    const consumerChecks = `
+import assert from 'node:assert/strict'
+import * as root from 'opencode-harness-hooks'
+import * as core from 'opencode-harness-hooks/core'
+import * as engine from 'opencode-harness-hooks/engine'
+import * as bindings from 'opencode-harness-hooks/opencode'
+import v1 from 'opencode-harness-hooks/v1'
+import v2 from 'opencode-harness-hooks/v2'
+assert.deepEqual(Object.keys(root), ['default'])
+assert.equal(root.default.server, v1.server)
+assert.equal(typeof root.default.setup, 'function')
+assert.equal(typeof v2.setup, 'function')
+assert.equal(typeof engine.inspectSources, 'function')
+assert.equal(typeof bindings.CallApprovals, 'function')
+assert.equal(typeof bindings.createHarnessHooks, 'function')
+assert.equal(typeof bindings.setupHarnessHooks, 'function')
+assert.equal(core.createRuntime, engine.createRuntime)
+assert.equal(bindings.HostHookError, engine.HostHookError)
+await assert.rejects(v2.setup({}), engine.HostHookError)
+`
+    const imported = await execute(process.execPath, ['--input-type=module', '-e', consumerChecks], consumer)
     assert.equal(imported.stderr, '')
     stage = 'installed-cli'
     const bin = join(consumer, 'node_modules/.bin/opencode-harness-hooks')
@@ -96,7 +116,7 @@ async function verify(npm) {
       assert.equal(error.stderr, '')
       assert.equal(JSON.parse(error.stdout).equivalent, false)
     })
-    return { artifact: true, portableContents: true, cliIncluded: true, helpWithoutPackageDependencies: true, missingDependenciesStatus: 3, cleanConsumerInstall: true, defaultAndCoreImports: true, installedBinExecutable: true, nativeSourceInspection: true, requiredEquivalenceStatus: 4, equivalent: false }
+    return { artifact: true, portableContents: true, cliIncluded: true, helpWithoutPackageDependencies: true, missingDependenciesStatus: 3, cleanConsumerInstall: true, defaultAndCoreImports: true, independentEntrypointImports: true, sharedErrorIdentity: true, installedBinExecutable: true, nativeSourceInspection: true, requiredEquivalenceStatus: 4, equivalent: false }
   } catch { throw new ProbeError('PACKAGE_CHECK_FAILED: ' + stage) }
   finally { await rm(root, { recursive: true, force: true }) }
 }

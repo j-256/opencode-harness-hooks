@@ -1,4 +1,4 @@
-import type { createHarnessHooks } from '../plugin.js'
+import type { createHarnessHooks } from './plugin-v1.js'
 import { randomUUID } from 'node:crypto'
 import { performance } from 'node:perf_hooks'
 import { HookServiceError, runService } from '../service-execution.js'

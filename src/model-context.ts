@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { HostHookError } from './hosts/tools.js'
+import { HostHookError } from './host-errors.js'
 import type { SessionSnapshot } from './sessions.js'
 
 const MAX_SESSIONS = 1024

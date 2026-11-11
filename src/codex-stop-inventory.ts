@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto'
 import { isAbsolute } from 'node:path'
 import { CONTRACT_VERSIONS } from './contracts.js'
 import type { CodexStopRegistrationIdentity } from './codex-stop-prompts.js'
-import { HostHookError } from './hosts/tools.js'
+import { HostHookError } from './host-errors.js'
 import type { LoadedSource, Registration } from './types.js'
 
 const MAX_ROWS = 10000

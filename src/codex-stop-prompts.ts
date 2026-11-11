@@ -1,7 +1,7 @@
 import { isAbsolute } from 'node:path'
 import type { DispatchEntry, DispatchOrigin, DispatchResult } from './engine.js'
 import { resolveEffects } from './effects.js'
-import { HostHookError } from './hosts/tools.js'
+import { HostHookError } from './host-errors.js'
 import type { LoadedSource, Registration } from './types.js'
 
 const MAX_BYTES = 32 * 1024 * 1024

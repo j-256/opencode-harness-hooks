@@ -2,7 +2,7 @@ import { resolve } from 'node:path'
 import { loadSources, snapshotSourceSpec } from './config.js'
 import { HOST_VERSIONS } from './contracts.js'
 import type { Dialect, HostVersion } from './contracts.js'
-import { HostHookError } from './hosts/tools.js'
+import { HostHookError } from './host-errors.js'
 import type { LoadedCodexConfig, SourceSpec } from './types.js'
 
 const WIRED_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit'])

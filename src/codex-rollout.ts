@@ -8,7 +8,7 @@ import { dirname, isAbsolute, join } from 'node:path'
 import { snapshotJsonObject } from './bounded-json.js'
 import type { CodexStopPromptArtifacts } from './codex-stop-prompts.js'
 import { renderCodexHookPrompt } from './codex-stop-prompts.js'
-import { HostHookError } from './hosts/tools.js'
+import { HostHookError } from './host-errors.js'
 import type { JsonValue } from './types.js'
 
 const MEBIBYTE = 1024 * 1024

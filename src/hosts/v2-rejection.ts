@@ -1,4 +1,4 @@
-import type { V2Context } from '../plugin.js'
+import type { V2Context } from './plugin-v2.js'
 import { HostHookError } from './tools.js'
 
 const SESSION_GUARDS = Object.freeze(['prompt', 'context', 'model.request', 'http.request'] as const)

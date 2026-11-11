@@ -1,6 +1,9 @@
+import { HostHookError } from '../host-errors.js'
+import type { ToolCall, HostToolEvent, HostToolDiagnostic, ToolHostOptions } from '../tool-types.js'
+export { HostHookError } from '../host-errors.js'
+export type { ToolCall, HostToolEvent, HostToolDiagnostic, ToolHostOptions } from '../tool-types.js'
 import { resolveEffects } from '../effects.js'
 import type { EffectResolution } from '../effects.js'
-import type { DispatchResult } from '../engine.js'
 import type { JsonValue } from '../types.js'
 import { runService } from '../service-execution.js'
 import { hostToolInput } from '../tool-schema.js'
@@ -10,49 +13,12 @@ const MAX_CALLS = 1024
 const HISTORY_LIMIT = 128
 const INPUT_BYTES = 8 * 1024 * 1024
 
-export interface ToolCall {
-  readonly tool: string
-  readonly sessionID: string
-  readonly callID: string
-  readonly messageID?: string
-  readonly agent?: string
-}
-export interface HostToolEvent extends ToolCall {
-  readonly host: HostVersion
-  readonly event: 'PreToolUse' | 'PostToolUse' | 'PostToolUseFailure'
-  readonly toolInput: Readonly<Record<string, JsonValue>>
-  readonly effectiveInput: Readonly<Record<string, JsonValue>>
-  readonly signal: AbortSignal
-  readonly result?: unknown
-}
-export interface HostToolDiagnostic {
-  readonly code: string
-  readonly outcome: 'unsupported' | 'failed' | 'cancelled'
-  readonly sessionID: string
-  readonly callID: string
-  readonly event: HostToolEvent['event']
-}
-export interface ToolHostOptions {
-  readonly dispatch: (event: HostToolEvent) => Promise<DispatchResult>
-  readonly applyEffects?: (event: HostToolEvent, effects: EffectResolution) => Promise<void>
-  readonly requestApproval?: (event: HostToolEvent, reason: string) => Promise<boolean>
-  readonly preapprove?: (event: HostToolEvent) => Promise<void>
-  readonly deferTool?: (event: HostToolEvent, reason: string) => Promise<void>
-  readonly stopTurn?: (event: HostToolEvent, reason: string) => Promise<void>
-  readonly diagnostic?: (record: HostToolDiagnostic) => Promise<void> | void
-}
 interface State {
   readonly call: ToolCall
   readonly original: Readonly<Record<string, JsonValue>>
   readonly controller: AbortController
 }
 
-export class HostHookError extends Error {
-  constructor(readonly code: string, readonly outcome: 'unsupported' | 'denied' | 'cancelled' | 'stopped' | 'deferred' | 'failed', reason = '') {
-    super(reason ? `${code}: ${reason}` : code)
-    this.name = 'HostHookError'
-  }
-}
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }

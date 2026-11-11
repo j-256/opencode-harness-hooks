@@ -1,6 +1,6 @@
 # Runtime configuration
 
-The package root exports one default definition: `id`, `server()` for OpenCode V1 and `setup()` for V2. Both entrypoints use the same source loader, session coordinator and dispatcher. Library helpers and service interfaces are exported separately from `opencode-harness-hooks/core`, so V1 does not interpret helper exports as additional plugins.
+The package root exports one default definition: `id`, `server()` for OpenCode V1 and `setup()` for V2. Both entrypoints use the same source loader, session coordinator and dispatcher. Host-neutral library helpers and service interfaces are exported from `opencode-harness-hooks/engine` and its `/core` alias; binding factories and permission helpers are exported from `/opencode`. These separate entrypoints keep V1 from interpreting helpers as additional plugins. The [architecture guide](architecture.md) describes explicit `/v1` and `/v2` plugins and independent builds.
 
 The host contract pins are V1 1.19.5 and V2 2.2.5. The runtime report names the selected contract version; it does not detect or certify an arbitrary installed host version. The executable probes check the actual version before running.
 

@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { CONTRACT_VERSIONS, HOST_VERSIONS } from './contracts.js'
 import type { HostVersion } from './contracts.js'
-import { HostHookError } from './hosts/tools.js'
+import { HostHookError } from './host-errors.js'
 
 const MAX_CONFIG_BYTES = 1024 * 1024
 const READ_CHUNK_BYTES = 64 * 1024

@@ -17,6 +17,22 @@
     "./core": {
       "types": "./dist/core.d.ts",
       "import": "./dist/core.js"
+    },
+    "./engine": {
+      "types": "./dist/core.d.ts",
+      "import": "./dist/core.js"
+    },
+    "./opencode": {
+      "types": "./dist/opencode.d.ts",
+      "import": "./dist/opencode.js"
+    },
+    "./v1": {
+      "types": "./dist/v1.d.ts",
+      "import": "./dist/v1.js"
+    },
+    "./v2": {
+      "types": "./dist/v2.d.ts",
+      "import": "./dist/v2.js"
     }
   },
   "bin": {
@@ -30,8 +46,11 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
+    "build:engine": "tsc -p tsconfig.engine.json",
+    "build:v1": "tsc -p tsconfig.v1.json",
+    "build:v2": "tsc -p tsconfig.v2.json",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test",
+    "test": "node --import tsx --test --test-concurrency=4",
     "test:host:v2": "node scripts/verify-v2.mjs",
     "test:host:v2:stop": "node scripts/verify-v2-stop.mjs",
     "test:host:plugin": "node scripts/verify-plugin.mjs",
@@ -39,7 +58,7 @@
     "test:native:claude:lifecycle": "node scripts/verify-claude-lifecycle.mjs",
     "test:native:stop": "node scripts/verify-native-stop.mjs",
     "test:package": "node scripts/verify-package.mjs",
-    "verify": "npm run typecheck && npm run build && node --import tsx --test test/*.test.ts"
+    "verify": "npm run typecheck && npm run build && npm test"
   },
   "dependencies": {
     "rregex": "1.12.1",

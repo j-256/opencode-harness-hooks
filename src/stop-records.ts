@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { HostHookError } from './hosts/tools.js'
+import { HostHookError } from './host-errors.js'
 import type { SessionSnapshot } from './sessions.js'
 import type { StopDelivery, StopEvent } from './stop.js'
 import type { JsonValue } from './types.js'

@@ -8,6 +8,8 @@ The package has a shared runtime and separate V1/V2 entrypoints. Tool enforcemen
 
 The [stock-host guide](docs/stock-hosts.md) defines the supported command/prompt/tool subset, explicit source selection, incompatible configurations and executable checks.
 
+The [architecture guide](docs/architecture.md) describes the host-neutral engine, separate V1/V2 bindings, public entrypoints, independent builds, and extraction checks. Binding-specific factories and permission helpers are exported from `/opencode`; `/engine` and `/core` expose the shared engine.
+
 Use the [read-only inspector](docs/inspection.md) to review native source digests, selected registrations, exclusions and compatibility gaps before activation.
 
 Configurations containing selected enabled `Stop` registrations are incompatible with both default host entrypoints. Loading fails with `HOST_STOP_UNSUPPORTED`, naming the offending configurations, event and missing awaited completion-decision capability. V1 rejection is an accepted limitation. V2 rejection is a supported-subset boundary while its completion adapter remains unintegrated; full V2 Stop parity remains required. See [the compatibility exception](docs/compatibility.md#v1-stop-exception).
