@@ -6,7 +6,7 @@ Each source retains its native protocol and registration identity. Multiple sour
 
 The package has a shared runtime and separate V1/V2 entrypoints. Tool enforcement and [prompt submission](docs/prompts.md) have controlled runtime evidence on both pinned hosts. The default entrypoints reject selected Stop registrations; the explicit core [Stop mechanisms](docs/stop.md) do not establish default-host support. Complete V2 Stop parity and default host [startup integration](docs/lifecycle.md) remain required. Complete native artifacts, trust, remaining events, complete effects and migration parity remain acceptance gates. The package is not ready to replace an existing hook integration. See [compatibility](docs/compatibility.md) and [runtime configuration](docs/runtime.md).
 
-The [stock-host guide](docs/stock-hosts.md) defines the supported command/prompt/tool subset, explicit source selection, incompatible configurations and executable checks.
+V1 prompt context is incompatible with providers with custom authentication fetch loaders; tool-only use avoids that transport limitation. The [stock-host guide](docs/stock-hosts.md) defines the supported command/prompt/tool subset, explicit source selection, incompatible configurations and executable checks.
 
 The [architecture guide](docs/architecture.md) describes the host-neutral engine, separate V1/V2 bindings, public entrypoints, independent builds, and extraction checks. Binding-specific factories and permission helpers are exported from `/opencode`; `/engine` and `/core` expose the shared engine.
 
