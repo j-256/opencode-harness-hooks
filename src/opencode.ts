@@ -1,5 +1,6 @@
 export { createHarnessHooks } from './hosts/plugin-v1.js'
-export type { V1Input } from './hosts/plugin-v1.js'
+export type { V1Input, V1Services } from './hosts/plugin-v1.js'
+export { composeV1Provider } from './hosts/v1-provider.js'
 export { setupHarnessHooks } from './hosts/plugin-v2.js'
 export type { V2Context } from './hosts/plugin-v2.js'
 export { CallApprovals } from './hosts/permissions.js'

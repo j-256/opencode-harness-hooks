@@ -1,16 +1,8 @@
-import { createHarnessHooks } from './hosts/plugin-v1.js'
-import { rejectV1Activation } from './hosts/v1-rejection.js'
-import { activationFailure } from './hosts/activation.js'
+import { server } from './hosts/v1-server.js'
 import { legacyV1 } from './hosts/v1-context.js'
 import { HostHookError } from './host-errors.js'
 
-async function server(...args: Parameters<typeof createHarnessHooks>): Promise<Awaited<ReturnType<typeof createHarnessHooks>>> {
-  try { return await createHarnessHooks(...args) } catch (error) {
-    const failure = activationFailure(error)
-    if (!failure) throw error
-    return rejectV1Activation(args[0], failure)
-  }
-}
+export { composeV1Provider } from './hosts/v1-provider.js'
 
 async function setup(context: unknown): Promise<void> {
   // The V1 server entrypoint owns execution while its experimental catalog setup stays passive

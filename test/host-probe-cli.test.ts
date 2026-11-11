@@ -97,6 +97,7 @@ test('package probe help and invalid host/options require no executable and pres
     assert.match(result.stdout, /mixed/)
     assert.match(result.stdout, /--preapproval/)
     assert.match(result.stdout, /--prompts/)
+    assert.match(result.stdout, /--auth-composition/)
     assert.match(result.stdout, /--stop-rejection/)
     assert.match(result.stdout, /--review-rejection/)
     assert.equal(result.stderr, '')
@@ -107,6 +108,9 @@ test('package probe help and invalid host/options require no executable and pres
     assert.equal(result.stdout, '')
     assert.match(result.stderr, /USAGE_/)
   }
+  const unsupported = await invoke(['--host=v2', '--auth-composition'], { PATH: '' }, packageProbe)
+  assert.equal(unsupported.status, 2)
+  assert.match(unsupported.stderr, /USAGE_AUTH_COMPOSITION/)
 })
 
 test('package probe honors literal binary forms and the selected host environment', async () => {

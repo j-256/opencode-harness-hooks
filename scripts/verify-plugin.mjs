@@ -27,7 +27,7 @@ const PROMPT_SUBMISSIONS = 3
 const TITLE_TEXT = 'PACKAGE_FIXTURE_TITLE'
 const TITLE_WAIT_MS = 5000
 const run = promisify(execFile)
-const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts] [-s|-r]
+const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts] [--auth-composition] [-s|-r]
 
 Verify the built package's default entrypoint, native options and tool enforcement
 against a pinned OpenCode host. Requires npm run build, Node.js 22+, Git and the
@@ -41,6 +41,8 @@ Options:
       --dialect NAME Native source: codex (default), claude-code, or mixed (both)
       --preapproval  Exercise Claude allow with host permissions set to ask
       --prompts      Check prompt blocking, context roles and retained history
+      --auth-composition  V1: compose an authentication-fetch provider and require
+                          credential transformation on every provider request
   -s, --stop-rejection  Verify stock host fatal load rejection for Stop configs
                        Cannot combine with --prompts or --preapproval
   -r, --review-rejection  Verify a stale source review blocks model/hook execution
@@ -77,7 +79,7 @@ async function stop(child, done) {
   await bounded(done, SHUTDOWN_MS, 'HOST_CLEANUP_FAILED')
 }
 
-async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRejection, reviewRejection) {
+async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRejection, reviewRejection, authComposition) {
   const loadRejection = stopRejection || reviewRejection
   const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
   if (version !== VERSIONS[hostVersion]) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + VERSIONS[hostVersion], 2)
@@ -172,7 +174,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     const sources = selectedDialects.map(dialect => ({ id: 'fixture-' + dialect, dialect, path: sourcePath }))
     const digest = createHash('sha256').update(source).digest('hex')
     const rejectionValues = reviewRejection ? ['SOURCE_REVIEW_MISMATCH', sources[0].id] : ['HOST_STOP_UNSUPPORTED', hostVersion.toUpperCase(), 'Stop', 'awaited-completion-decision', sourcePath, ...sources.map(source => source.id)]
-    const rejectionReport = { host: hostVersion, hostVersion: VERSIONS[hostVersion], dialect, defaultEntrypoint: true, nativeOptions: true, expectedLoadRejection: true, rejectionReason: reviewRejection ? 'review-mismatch' : 'stop', ...(stopRejection ? { expectedStopLoadRejection: true, incompatibleConfigsIdentified: true, unsupportedCapabilityIdentified: true } : {}), noModelOrHookExecution: true, equivalent: false }
+    const rejectionReport = { host: hostVersion, hostVersion: VERSIONS[hostVersion], dialect, defaultEntrypoint: !authComposition, ...(authComposition ? { explicitV1ProviderComposition: true } : {}), nativeOptions: true, expectedLoadRejection: true, rejectionReason: reviewRejection ? 'review-mismatch' : 'stop', ...(stopRejection ? { expectedStopLoadRejection: true, incompatibleConfigsIdentified: true, unsupportedCapabilityIdentified: true } : {}), noModelOrHookExecution: true, equivalent: false }
     const permissionMode = preapproval ? 'default' : 'bypassPermissions'
     const hostPermission = preapproval ? 'ask' : 'allow'
     const options = { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, reviewRejection ? '0'.repeat(64) : digest])), permissionMode }
@@ -180,6 +182,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     const auxiliaryRequests = []
     let providerRequests = 0
     let correlationLeaked = false
+    let authenticationPreserved = true
     const tool = hostVersion === 'v1' ? 'bash' : 'shell'
     gateway = createServer(async (request, response) => {
       try {
@@ -194,6 +197,7 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
         const body = JSON.parse(Buffer.concat(chunks).toString())
         const primary = body.tools?.some(entry => entry.function?.name === tool)
         correlationLeaked ||= Object.keys(request.headers).some(key => key.startsWith('x-opencode-harness-'))
+        if (authComposition) authenticationPreserved &&= /^Bearer fixture-refreshed-key-\d+$/.test(request.headers.authorization ?? '')
         if (primary) {
           if (requests.length >= MAX_REQUESTS) { response.writeHead(429); response.end(); return }
           requests.push(body)
@@ -209,8 +213,24 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     })
     await new Promise((resolve, reject) => { gateway.once('error', reject); gateway.listen(0, '127.0.0.1', resolve) })
     const baseURL = 'http://127.0.0.1:' + gateway.address().port + '/v1'
+    const providerBridge = join(root, 'fixture-auth.mjs')
+    if (authComposition) await writeFile(providerBridge, `import { composeV1Provider } from ${JSON.stringify(pathToFileURL(join(packageDirectory, 'dist/opencode.js')).href)};
+export default async function fixture(input, options) {
+  await input.client.auth.set({ path: { id: 'fixture' }, body: { type: 'api', key: 'fixture-bootstrap-marker' } });
+  let sequence = 0;
+  const provider = { auth: { provider: 'fixture', methods: [], loader: async (getAuth, metadata) => {
+    if ((await getAuth())?.type !== 'api' || metadata.id !== 'fixture') throw new Error('Fixture loader arguments changed');
+    return { apiKey: 'fixture-placeholder', fetch: async (input, init) => {
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined));
+      if ([...headers.keys()].some(key => key.startsWith('x-opencode-harness-'))) throw new Error('Fixture private header leaked');
+      headers.set('authorization', 'Bearer fixture-refreshed-key-' + ++sequence);
+      return globalThis.fetch(input, { ...init, headers });
+    } };
+  } } };
+  return composeV1Provider(input, options, provider);
+}`)
     const configData = hostVersion === 'v1'
-      ? { model: 'fixture/fixture', small_model: 'fixture/fixture', enabled_providers: ['fixture'], snapshot: false, share: 'disabled', autoupdate: false, permission: hostPermission, plugin: [[pathToFileURL(entrypoint).href, options]], provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { apiKey: 'synthetic', baseURL }, models: { fixture: { name: 'Fixture', tool_call: true, limit: { context: 50000, output: 2000 } } } } } }
+      ? { model: 'fixture/fixture', small_model: 'fixture/fixture', enabled_providers: ['fixture'], snapshot: false, share: 'disabled', autoupdate: false, permission: hostPermission, plugin: [[pathToFileURL(authComposition ? providerBridge : entrypoint).href, options]], provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { apiKey: 'synthetic', baseURL }, models: { fixture: { name: 'Fixture', tool_call: true, limit: { context: 50000, output: 2000 } } } } } }
       : { model: 'fixture/fixture', update: 'disable', snapshots: false, share: 'disabled', warming: false, permissions: [{ action: '*', resource: '*', effect: hostPermission }], plugins: [{ package: packageDirectory, options }], providers: { fixture: { package: '@opencode/ai/providers/openai-compatible', settings: { apiKey: 'synthetic', baseURL }, models: { fixture: { name: 'Fixture', capabilities: { tools: true }, limit: { context: 50000, output: 2000 } } } } } }
     await writeFile(join(config, 'opencode.json'), JSON.stringify(configData))
     child = spawn(binary, [...(hostVersion === 'v1' ? ['--print-logs'] : []), 'serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: project, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -409,8 +429,9 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     stage = 'model-visible-denial'
     assert.ok(JSON.stringify(requests[1].messages).includes('PACKAGE_FIXTURE_DENIED'))
     stage = 'final-answer'
+    assert.equal(authenticationPreserved, true)
     assert.ok(JSON.stringify(answer).includes('PACKAGE_FIXTURE_DONE'))
-    return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, postToolEffectiveInputObserved: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, promptHandlerDispatchObserved: true, correlationHeaderPrivate: true, ...(v1TitleVerified ? { auxiliaryTitleCompleted: true, auxiliaryContextIsolated: true } : {}), ...(selectedDialects.includes('claude-code') ? { promptAttachmentsReadByHook: true, claudeCompletionOrderObserved: true, promptNonblockingErrorReadByHook: true, promptTimeoutReadByHook: true } : {}) } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true, modelDateReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
+    return { host: version, dialect, defaultPackageEntrypoint: !authComposition, ...(authComposition ? { explicitV1ProviderComposition: true, authenticationFetchPreserved: true } : {}), nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, postToolEffectiveInputObserved: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, promptHandlerDispatchObserved: true, correlationHeaderPrivate: true, ...(v1TitleVerified ? { auxiliaryTitleCompleted: true, auxiliaryContextIsolated: true } : {}), ...(selectedDialects.includes('claude-code') ? { promptAttachmentsReadByHook: true, claudeCompletionOrderObserved: true, promptNonblockingErrorReadByHook: true, promptTimeoutReadByHook: true } : {}) } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true, modelDateReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
   } catch (error) {
     if (error instanceof ProbeError) throw error
     throw new ProbeError('PACKAGE_CHECK_FAILED: ' + stage + ' ' + (error.code ?? error.name ?? 'unknown') + (diagnosticCodes.size ? ' diagnostics=' + [...diagnosticCodes].sort().join(',') : ''))
@@ -423,11 +444,12 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, prompts: { type: 'boolean' }, 'stop-rejection': { type: 'boolean', short: 's' }, 'review-rejection': { type: 'boolean', short: 'r' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, prompts: { type: 'boolean' }, 'auth-composition': { type: 'boolean' }, 'stop-rejection': { type: 'boolean', short: 's' }, 'review-rejection': { type: 'boolean', short: 'r' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const host = parsed.values.host
     if (!Object.hasOwn(VERSIONS, host ?? '')) throw new ProbeError('USAGE_HOST: expected v1 or v2', 2)
+    if (parsed.values['auth-composition'] && host !== 'v1') throw new ProbeError('USAGE_AUTH_COMPOSITION: V1 only', 2)
     const dialect = parsed.values.dialect ?? 'codex'
     if (!DIALECTS.has(dialect)) throw new ProbeError('USAGE_DIALECT: expected codex, claude-code or mixed', 2)
     const preapproval = parsed.values.preapproval ?? false
@@ -438,7 +460,7 @@ try {
     if (stopRejection && (preapproval || parsed.values.prompts)) throw new ProbeError('USAGE_STOP_REJECTION: without --preapproval or --prompts', 2)
     const binary = parsed.values.binary ?? process.env[host === 'v1' ? 'OPENCODE_V1_BINARY' : 'OPENCODE_V2_BINARY'] ?? 'opencode'
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false, stopRejection, reviewRejection)) + '\n')
+    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false, stopRejection, reviewRejection, parsed.values['auth-composition'] ?? false)) + '\n')
   }
 } catch (error) {
   process.stderr.write((error instanceof ProbeError ? error.message : 'PACKAGE_PROBE_FAILED') + '\n')

@@ -56,6 +56,7 @@ for (const target of ['v1', 'v2'] as const) {
     const v2Context = { location: { directory }, session: { hook: unexpected }, tool: { hook: unexpected } }
     if (target === 'v1') {
       assert.equal(typeof module.default.server, 'function')
+      assert.equal(typeof module.composeV1Provider, 'function')
       assert.equal(await module.default.setup(v1Context), undefined)
     }
     await assert.rejects(module.default.setup(target === 'v1' ? v2Context : v1Context), { code: 'HOST_CONTEXT_UNSUPPORTED' })
