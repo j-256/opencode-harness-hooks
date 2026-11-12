@@ -27,6 +27,7 @@ const PROMPT_SUBMISSIONS = 3
 const TITLE_TEXT = 'PACKAGE_FIXTURE_TITLE'
 const TITLE_WAIT_MS = 5000
 const run = promisify(execFile)
+const INHERIT_PROCESS_GROUP = process.env.HARNESS_PROBE_INHERIT_PROCESS_GROUP === '1'
 const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts] [--auth-composition] [-s|-r]
 
 Verify the built package's default entrypoint, native options and tool enforcement
@@ -70,13 +71,14 @@ async function dependency(program, args, name) {
 }
 async function stop(child, done) {
   if (!child || !done) return
-  if (child.exitCode === null && child.signalCode === null && child.pid) {
-    try { process.kill(-child.pid, 'SIGTERM') } catch (error) { if (error.code !== 'ESRCH') throw error }
+  const signal = name => { try { if (child.pid) process.kill(INHERIT_PROCESS_GROUP ? child.pid : -child.pid, name) } catch (error) { if (error.code !== 'ESRCH') throw error } }
+  try {
+    signal('SIGTERM')
     try { await bounded(done, SHUTDOWN_MS, 'HOST_SHUTDOWN_TIMEOUT') } catch {
-      try { process.kill(-child.pid, 'SIGKILL') } catch (error) { if (error.code !== 'ESRCH') throw error }
+      signal('SIGKILL')
     }
-  }
-  await bounded(done, SHUTDOWN_MS, 'HOST_CLEANUP_FAILED')
+    await bounded(done, SHUTDOWN_MS, 'HOST_CLEANUP_FAILED')
+  } finally { signal('SIGKILL') }
 }
 
 async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRejection, reviewRejection, authComposition) {
@@ -233,7 +235,7 @@ export default async function fixture(input, options) {
       ? { model: 'fixture/fixture', small_model: 'fixture/fixture', enabled_providers: ['fixture'], snapshot: false, share: 'disabled', autoupdate: false, permission: hostPermission, plugin: [[pathToFileURL(authComposition ? providerBridge : entrypoint).href, options]], provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { apiKey: 'synthetic', baseURL }, models: { fixture: { name: 'Fixture', tool_call: true, limit: { context: 50000, output: 2000 } } } } } }
       : { model: 'fixture/fixture', update: 'disable', snapshots: false, share: 'disabled', warming: false, permissions: [{ action: '*', resource: '*', effect: hostPermission }], plugins: [{ package: packageDirectory, options }], providers: { fixture: { package: '@opencode/ai/providers/openai-compatible', settings: { apiKey: 'synthetic', baseURL }, models: { fixture: { name: 'Fixture', capabilities: { tools: true }, limit: { context: 50000, output: 2000 } } } } } }
     await writeFile(join(config, 'opencode.json'), JSON.stringify(configData))
-    child = spawn(binary, [...(hostVersion === 'v1' ? ['--print-logs'] : []), 'serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: project, env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
+    child = spawn(binary, [...(hostVersion === 'v1' ? ['--print-logs'] : []), 'serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: project, env, detached: !INHERIT_PROCESS_GROUP, stdio: ['ignore', 'pipe', 'pipe'] })
     done = new Promise(resolve => child.once('close', resolve))
     let hostErrors = ''
     let diagnosticBuffer = ''

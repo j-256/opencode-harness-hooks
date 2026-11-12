@@ -53,12 +53,12 @@ async function bounded(promise, milliseconds, code) {
   let timer
   try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new ConformanceError(code)), milliseconds) })]) } finally { clearTimeout(timer) }
 }
-async function version(binary, name, expected) {
+export async function verifyPinnedVersion(binary, name, expected) {
   let execution
   try { execution = await runNativeProcess(binary, ['--version'], '', process.cwd(), { PATH: process.env.PATH, LANG: 'C' }, VERSION_LIMITS) }
   catch (error) { throw new ConformanceError(['ENOENT', 'EACCES'].includes(error.systemCode) ? 'DEPENDENCY_UNAVAILABLE: ' + name : 'VERSION_QUERY_FAILED: ' + name, ['ENOENT', 'EACCES'].includes(error.systemCode) ? 3 : 1) }
-  const actual = execution.stdout.trim().replace(/ \(Claude Code\)$/, '').replace(/^opencode v/, '')
-  if (actual !== expected) throw new ConformanceError(name === 'claude' ? 'NATIVE_VERSION_MISMATCH' : 'HOST_VERSION_MISMATCH', 2)
+  const actual = execution.stdout.trim().replace(/ \(Claude Code\)$/, '').replace(/^(?:opencode v|codex-cli )/, '')
+  if (actual !== expected) throw new ConformanceError(name === 'opencode' ? 'HOST_VERSION_MISMATCH' : 'NATIVE_VERSION_MISMATCH', 2)
   return actual
 }
 function emitAnthropic(response, body, args, id, invoke) {
@@ -93,8 +93,8 @@ export async function stopHost(child, done) {
 
 export async function runClaudePretoolControl({ catalog, packageRoot, claudeBinary, opencodeBinary }) {
   if (process.platform === 'win32') throw new ConformanceError('PLATFORM_UNAVAILABLE: POSIX process groups', 2)
-  const nativeVersion = await version(claudeBinary, 'claude', catalog.versions.native['claude-code'])
-  const hostVersion = await version(opencodeBinary, 'opencode', catalog.versions.hosts.v1)
+  const nativeVersion = await verifyPinnedVersion(claudeBinary, 'claude', catalog.versions.native['claude-code'])
+  const hostVersion = await verifyPinnedVersion(opencodeBinary, 'opencode', catalog.versions.hosts.v1)
   const entrypoint = join(packageRoot, 'dist/index.js')
   try { await access(entrypoint) } catch { throw new ConformanceError('DEPENDENCY_UNAVAILABLE: built adapter', 3) }
   const adapterBuildSha256 = await fingerprintAdapter(packageRoot)

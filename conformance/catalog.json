@@ -909,6 +909,40 @@
         "owned filesystem side effect",
         "primary model request count"
       ]
+    },
+    {
+      "id": "claude-code.v1.stop-load-rejection",
+      "kind": "exception",
+      "exception": "v1-stop-load-rejection",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [],
+      "description": "Actual default V1 fatal load rejection for an enabled Stop registration in this dialect",
+      "observables": [
+        "config and source identity",
+        "Stop event and missing awaited completion capability",
+        "prominent host error notice",
+        "no hook or provider execution"
+      ]
+    },
+    {
+      "id": "codex.v1.stop-load-rejection",
+      "kind": "exception",
+      "exception": "v1-stop-load-rejection",
+      "dialect": "codex",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [],
+      "description": "Actual default V1 fatal load rejection for an enabled Stop registration in this dialect",
+      "observables": [
+        "config and source identity",
+        "Stop event and missing awaited completion capability",
+        "prominent host error notice",
+        "no hook or provider execution"
+      ]
     }
   ],
   "exceptions": [
@@ -920,8 +954,11 @@
         "claude-code",
         "codex"
       ],
-      "evidenceCase": "v1.stop-load-rejection",
-      "reason": "Accepted fatal load rejection of enabled Stop before hook/model execution; identify configs, event and missing capability"
+      "reason": "Accepted fatal load rejection of enabled Stop before hook/model execution; identify configs, event and missing capability",
+      "evidenceCases": {
+        "claude-code": "claude-code.v1.stop-load-rejection",
+        "codex": "codex.v1.stop-load-rejection"
+      }
     }
   ]
 }

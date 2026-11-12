@@ -35,10 +35,21 @@ export function validateCatalog(catalog) {
     valid(record(row) && text(row.id) && EVIDENCE_LEVELS.has(row.level) && array(row.artifacts) && row.artifacts.length > 0 && row.artifacts.every(safePath) && array(row.dialects) && row.dialects.every(value => DIALECTS.includes(value)) && array(row.events) && array(row.areas) && text(row.scope) && row.status === undefined)
   }
   valid(unique(catalog.evidence.map(row => row.id)))
-  for (const row of catalog.cases) valid(record(row) && text(row.id) && DIALECTS.includes(row.dialect) && array(row.hosts) && row.hosts.length > 0 && row.hosts.every(value => HOSTS.includes(value)) && array(row.requirements) && row.requirements.length > 0 && unique(row.requirements) && row.requirements.every(id => ids.includes(id) && rows.find(row => row.id === id).dialect === row.dialect) && text(row.description) && array(row.observables))
+  for (const row of catalog.cases) {
+    valid(record(row) && text(row.id) && DIALECTS.includes(row.dialect) && array(row.hosts) && row.hosts.length > 0 && row.hosts.every(value => HOSTS.includes(value)) && array(row.requirements) && unique(row.requirements) && text(row.description) && array(row.observables))
+    if (row.kind === 'exception') valid(row.requirements.length === 0 && text(row.exception))
+    else valid((row.kind === undefined || row.kind === 'comparison') && row.exception === undefined && row.requirements.length > 0 && row.requirements.every(id => ids.includes(id) && rows.find(row => row.id === id).dialect === row.dialect))
+  }
   valid(unique(catalog.cases.map(row => row.id)))
-  for (const row of catalog.exceptions) valid(record(row) && row.id === 'v1-stop-load-rejection' && row.host === 'v1' && row.event === 'Stop' && array(row.dialects) && row.dialects.every(value => DIALECTS.includes(value)) && text(row.evidenceCase) && text(row.reason))
+  for (const row of catalog.exceptions) {
+    valid(record(row) && row.id === 'v1-stop-load-rejection' && row.host === 'v1' && row.event === 'Stop' && array(row.dialects) && row.dialects.length > 0 && unique(row.dialects) && row.dialects.every(value => DIALECTS.includes(value)) && record(row.evidenceCases) && Object.keys(row.evidenceCases).length === row.dialects.length && text(row.reason))
+    for (const dialect of row.dialects) {
+      const scenario = catalog.cases.find(item => item.id === row.evidenceCases[dialect])
+      valid(scenario?.kind === 'exception' && scenario.exception === row.id && scenario.dialect === dialect && scenario.hosts.length === 1 && scenario.hosts[0] === row.host)
+    }
+  }
   valid(unique(catalog.exceptions.map(row => row.id)))
+  for (const row of catalog.cases.filter(item => item.kind === 'exception')) valid(catalog.exceptions.some(item => item.id === row.exception && item.evidenceCases[row.dialect] === row.id))
   return catalog
 }
 
@@ -78,14 +89,15 @@ export function coverageReport(catalog, inventory, runs = []) {
     evidenceAvailable: inventory.filter(evidence => evidence.available && evidence.dialects.includes(row.dialect) && (evidence.events.includes(row.event) || evidence.areas.includes(row.area))).map(evidence => evidence.id),
     targets: Object.fromEntries(HOSTS.map(host => {
       const exception = catalog.exceptions.find(item => item.host === host && item.event === row.event && item.dialects.includes(row.dialect))
-      const relevant = runs.filter(run => run.host === host && catalog.cases.find(item => item.id === run.caseID).requirements.includes(row.id))
-      const status = relevant.some(run => run.status === 'failed') ? 'failed' : relevant.some(run => run.status === 'passed') ? 'verified' : exception ? 'exception-unverified' : 'unverified'
+      const relevant = runs.filter(run => run.host === host && (exception ? run.caseID === exception.evidenceCases[row.dialect] : catalog.cases.find(item => item.id === run.caseID).requirements.includes(row.id)))
+      const outcome = relevant.some(run => run.status === 'failed') ? 'failed' : relevant.some(run => run.status === 'passed') ? 'verified' : 'unverified'
+      const status = exception ? 'exception-' + outcome : outcome
       return [host, { status, runs: relevant.map(run => run.caseID), ...(exception ? { exception: exception.id } : {}) }]
     })),
   }))
   const profiles = Object.fromEntries(HOSTS.map(host => {
-    const blockers = rows.filter(row => row.targets[host].status !== 'verified').map(row => row.id)
-    const missingExceptionEvidence = catalog.exceptions.filter(row => row.host === host).map(row => row.id)
+    const blockers = rows.filter(row => !['verified', 'exception-verified'].includes(row.targets[host].status)).map(row => row.id)
+    const missingExceptionEvidence = catalog.exceptions.filter(row => row.host === host && !row.dialects.every(dialect => runs.some(run => run.host === host && run.caseID === row.evidenceCases[dialect] && run.status === 'passed'))).map(row => row.id)
     return [host, { version: catalog.versions.hosts[host], complete: blockers.length === 0 && missingExceptionEvidence.length === 0, blockers, missingExceptionEvidence }]
   }))
   return { schemaVersion: catalog.schemaVersion, versions: catalog.versions, scope: 'Pinned requirements and specified observables; evidence availability is not runtime verification', nativeConformant: HOSTS.every(host => profiles[host].complete) && catalog.exceptions.length === 0, profiles, requirements: rows, evidence: inventory, runs }
