@@ -133,6 +133,10 @@ export class ToolBridge {
   }
   inspect() { return Object.freeze({ calls: this.calls.size, diagnostics: Object.freeze([...this.history]), observerFailures: this.observerFailures }) }
 
+  effectFailure(call: ToolCall, event: HostToolEvent['event'], error: unknown): void {
+    this.report({ ...call, event }, error instanceof HostHookError ? error.code : 'HOST_TOOL_EFFECT_FAILED', error instanceof HostHookError && error.outcome === 'unsupported' ? 'unsupported' : 'failed')
+  }
+
   private async apply(event: HostToolEvent, effects: EffectResolution): Promise<void> {
     if (effects.unresolved.length) throw new HostHookError(effects.unresolved[0]!.code, 'unsupported')
     const other = effects.context.length || effects.feedback.length || effects.warnings.length || effects.extensions.length || effects.continuations.length || effects.resultReplacements.length || (event.event !== 'PreToolUse' && (effects.stop || effects.block))
