@@ -36,7 +36,7 @@ export interface CodexRolloutOptions {
   readonly maxSessions?: number
 }
 interface Frame { readonly timestamp: string; readonly type: string; readonly payload: ObjectValue }
-interface Projection { readonly ids: Set<string>; readonly turns: Set<string>; activeTurn: string | undefined }
+interface Projection { readonly ids: Set<string>; readonly turns: Set<string>; readonly calls: Map<string, string>; readonly outputs: Set<string>; activeTurn: string | undefined }
 interface State extends Projection {
   readonly path: string
   readonly dev: number
@@ -89,20 +89,40 @@ function metadata(value: unknown): asserts value is ObjectValue {
 }
 function history(value: unknown, before: Projection): { frames: Frame[]; projection: Projection } {
   if (!Array.isArray(value) || value.length > MAX_RECORDS) fail('CODEX_ROLLOUT_INPUT_INVALID')
-  const projection: Projection = { ids: new Set(before.ids), turns: new Set(before.turns), activeTurn: before.activeTurn }
+  const projection: Projection = { ids: new Set(before.ids), turns: new Set(before.turns), calls: new Map(before.calls), outputs: new Set(before.outputs), activeTurn: before.activeTurn }
   const frames: Frame[] = []
   for (const item of value) {
     if (!object(item) || !iso(item.timestamp) || !object(item.payload)) fail('CODEX_ROLLOUT_INPUT_INVALID')
     keys(item, ['timestamp', 'type', 'payload'])
     const payload = item.payload
     if (item.type === 'response_item') {
-      keys(payload, ['type', 'id', 'role', 'content', 'phase'])
-      if (!projection.activeTurn || payload.type !== 'message' || typeof payload.role !== 'string' || !['user', 'assistant'].includes(payload.role) || !Array.isArray(payload.content) || payload.phase !== undefined && payload.phase !== 'commentary' && payload.phase !== 'final_answer') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+      if (!projection.activeTurn) fail('CODEX_ROLLOUT_TURN_UNAVAILABLE')
+      if (payload.internal_chat_message_metadata_passthrough !== undefined) {
+        const attribution = payload.internal_chat_message_metadata_passthrough
+        if (!object(attribution)) fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+        keys(attribution, ['turn_id'])
+        if (attribution.turn_id !== projection.activeTurn) fail('CODEX_ROLLOUT_IDENTITY_MISMATCH')
+      }
       if (payload.id !== undefined) {
         if (!id(payload.id) || projection.ids.has(payload.id)) fail('CODEX_ROLLOUT_IDENTITY_MISMATCH')
         projection.ids.add(payload.id)
       }
-      for (const part of payload.content) if (!object(part) || Object.keys(part).some(key => !['type', 'text'].includes(key)) || part.type !== (payload.role === 'user' ? 'input_text' : 'output_text') || typeof part.text !== 'string') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+      if (payload.type === 'message') {
+        keys(payload, ['type', 'id', 'role', 'content', 'phase', 'internal_chat_message_metadata_passthrough'])
+        if (typeof payload.role !== 'string' || !['user', 'assistant'].includes(payload.role) || !Array.isArray(payload.content) || payload.phase !== undefined && payload.phase !== 'commentary' && payload.phase !== 'final_answer') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+        for (const part of payload.content) if (!object(part) || Object.keys(part).some(key => !['type', 'text'].includes(key)) || part.type !== (payload.role === 'user' ? 'input_text' : 'output_text') || typeof part.text !== 'string') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+      } else if (payload.type === 'function_call') {
+        keys(payload, ['type', 'id', 'name', 'arguments', 'call_id', 'internal_chat_message_metadata_passthrough'])
+        if (!id(payload.name) || !id(payload.call_id) || typeof payload.arguments !== 'string') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+        try { if (!object(JSON.parse(payload.arguments))) fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED') } catch { fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED') }
+        if (projection.calls.has(payload.call_id)) fail('CODEX_ROLLOUT_IDENTITY_MISMATCH')
+        projection.calls.set(payload.call_id, projection.activeTurn)
+      } else if (payload.type === 'function_call_output') {
+        keys(payload, ['type', 'id', 'call_id', 'output', 'internal_chat_message_metadata_passthrough'])
+        if (!id(payload.call_id) || typeof payload.output !== 'string') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+        if (projection.calls.get(payload.call_id) !== projection.activeTurn || projection.outputs.has(payload.call_id)) fail('CODEX_ROLLOUT_IDENTITY_MISMATCH')
+        projection.outputs.add(payload.call_id)
+      } else fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
     } else if (item.type === 'event_msg') {
       if (payload.type === 'task_started') {
         keys(payload, ['type', 'turn_id', 'model_context_window'])
@@ -174,7 +194,7 @@ export class CodexRollout {
         if (this.creationFailed) fail('CODEX_ROLLOUT_RECOVERY_REQUIRED')
         if (this.states.has(threadID)) fail('CODEX_ROLLOUT_SESSION_CONFLICT')
         if (this.states.size + this.reservedSessions >= this.sessionCountLimit) fail('CODEX_ROLLOUT_LIMIT')
-        const projected = history(snapshot.history, { ids: new Set(), turns: new Set(), activeTurn: undefined })
+        const projected = history(snapshot.history, { ids: new Set(), turns: new Set(), calls: new Map(), outputs: new Set(), activeTurn: undefined })
         const frames: Frame[] = [{ timestamp: meta.timestamp as string, type: 'session_meta', payload: meta }, ...projected.frames]
         if (frames.length > MAX_RECORDS) fail('CODEX_ROLLOUT_LIMIT')
         const data = encode(frames, 0, this.sessionLimit)
@@ -232,6 +252,8 @@ export class CodexRollout {
       await this.append(state, projected.frames, signal)
       state.ids.clear(); projected.projection.ids.forEach(value => state.ids.add(value))
       state.turns.clear(); projected.projection.turns.forEach(value => state.turns.add(value))
+      state.calls.clear(); projected.projection.calls.forEach((value, key) => state.calls.set(key, value))
+      state.outputs.clear(); projected.projection.outputs.forEach(value => state.outputs.add(value))
       state.activeTurn = projected.projection.activeTurn
       return state.path
     }))

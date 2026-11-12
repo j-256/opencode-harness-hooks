@@ -12,6 +12,8 @@ The default definition connects both tool backends through a shared runtime and 
 
 The root also supplies a bounded [Claude transcript projection](transcripts.md) for its verified text/tool history subset. Native reader acceptance and actual host hook consumption have separate controlled evidence. Unsupported content and missing original inputs remain errors; full transcript, environment persistence and lifecycle equivalence remain required gates.
 
+The default V1 adapter also supplies a [Codex tool-hook transcript projection](codex-transcripts.md). Hook payloads and native-format journal records share projected session/turn identities while internal ownership retains host identities. The independent Codex control checks actual hook-side contents and native-reader prompt recovery. The legacy journal projection covers selected records; full native artifact and V2 projection parity remain separate requirements.
+
 ## Evidence and completion
 
 Each required capability is classified as verified, unsupported, or unresolved, with supporting evidence. A required unsupported or unresolved capability prevents an equivalence claim. Missing evidence also prevents that claim. Tests proving an unsupported diagnostic are diagnostic coverage, not successful protocol equivalence.

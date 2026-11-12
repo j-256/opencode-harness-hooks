@@ -56,7 +56,7 @@ Stop cases invoke the existing installed-package probe with `--stop-rejection` a
 
 Repeat `--case` to assemble independent fresh results in one report; duplicate selections or unsupported host targets are usage errors. No saved external receipt can promote coverage. Each run keeps its own fixture and source digests, and case execution is sequential. The complete-profile gate still exits 4 after successful selected cases when other obligations remain.
 
-The pinned macOS Codex/V1 comparison exposes a transcript-availability gap: native hooks observe an existing transcript, while the default V1 adapter provides none in these controls. Denial reason delivery and the denied/allowed side effects agree, but the case remains failed because transcript availability is required. The report preserves the native and host observations and exits 1. A future adapter change must supply readable Codex rollout records before tool hooks and verify their contents.
+The Codex control checks more than file existence: the hook must read journal records for its actual prompt and original owned call, with matching native session/turn identities and no current function-call output. The pinned native Codex reader must also recover that prompt without modifying the journal. The default V1 adapter's [Codex transcript projection](../docs/codex-transcripts.md) supplies this bounded record subset. A missing or malformed transcript remains a failed comparison. Passing the selected content checks does not verify every native transcript field or lifecycle.
 
 ## Extending the suite
 

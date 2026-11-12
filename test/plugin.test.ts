@@ -7,6 +7,16 @@ import { test } from 'node:test'
 import definition from '../src/index.js'
 import { setupHarnessHooks } from '../src/plugin.js'
 
+function historyClient(sessionID: string, turnID: string) {
+  return { session: {
+    get: async () => ({ data: { id: sessionID } }),
+    messages: async () => ({ data: [
+      { info: { id: turnID, role: 'user', sessionID, time: { created: 1 } }, parts: [{ type: 'text', text: 'Prompt' }] },
+      { info: { id: 'assistant', role: 'assistant', parentID: turnID, sessionID, time: { created: 2 } }, parts: [{ type: 'tool', callID: 'call', tool: 'bash', state: { status: 'running', input: { command: 'original' } } }] },
+    ] }),
+  } }
+}
+
 test('the root exports one definition accepted by both host APIs', async () => {
   const root = await import('../src/index.js')
   assert.deepEqual(Object.keys(root), ['default'])
@@ -35,7 +45,7 @@ test('V1 experimental setup stays passive while server hooks execute once', asyn
   for (const partial of [{ app: { name: 'fixture' } }, { location: { directory } }, { session: {} }, { tool: {} }, { event: {} }]) {
     await assert.rejects(setup({ ...context, ...partial }), { code: 'HOST_CONTEXT_UNSUPPORTED' })
   }
-  const hooks = await definition.server({ directory }, options)
+  const hooks = await definition.server({ directory, client: historyClient('legacy', 'turn') }, options)
   t.after(() => hooks.dispose())
   await hooks['chat.message']({ sessionID: 'legacy', model: { modelID: 'fixture' } }, { message: { id: 'turn' } })
   await hooks['tool.execute.before']({ sessionID: 'legacy', callID: 'call', tool: 'bash' }, { args: { command: 'original' } })
@@ -49,6 +59,19 @@ test('a partial or mixed setup context fails explicitly rather than becoming a p
   }
 })
 
+test('V1 Codex tool hooks require history capability before any native command executes', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'harness-codex-history-required-'))
+  t.after(() => rm(directory, { recursive: true, force: true }))
+  const path = join(directory, 'hooks.json')
+  const source = JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{ type: 'command', command: 'printf executed > should-not-run' }] }] } })
+  await writeFile(path, source)
+  const hooks = await definition.server({ directory }, { sources: [{ id: 'codex', dialect: 'codex', path }], reviewedDigests: { codex: createHash('sha256').update(source).digest('hex') }, permissionMode: 'default' })
+  t.after(() => hooks.dispose())
+  await hooks['chat.message']({ sessionID: 'session' }, { message: { id: 'turn' } })
+  await assert.rejects(hooks['tool.execute.before']({ sessionID: 'session', callID: 'call', tool: 'bash' }, { args: { command: 'original' } }), { code: 'HOST_TRANSCRIPT_HISTORY_UNAVAILABLE' })
+  await assert.rejects(readFile(join(directory, 'should-not-run')), { code: 'ENOENT' })
+})
+
 test('both entrypoints use native options, host metadata and their tool schema', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'harness-plugin-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
@@ -57,7 +80,7 @@ test('both entrypoints use native options, host metadata and their tool schema',
   const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command }] }] } })
   await writeFile(path, source)
   const options = { sources: [{ id: 'codex', dialect: 'codex', path }], reviewedDigests: { codex: createHash('sha256').update(source).digest('hex') }, permissionMode: 'default' }
-  const hooks = await definition.server({ directory }, options)
+  const hooks = await definition.server({ directory, client: historyClient('one', 'turn') }, options)
   t.after(() => hooks.dispose())
   await hooks['chat.message']({ sessionID: 'one', model: { modelID: 'model' } }, { message: { id: 'turn' } })
   const args = { command: 'original', description: 'removed' }

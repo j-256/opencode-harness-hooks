@@ -16,6 +16,31 @@ async function fixture(t: { after: (cleanup: () => Promise<void>) => void }, hoo
   return { directory, path, options: { sources: [{ id: 'native', dialect: 'codex' as const, path: 'hooks.json' }], reviewedDigests: { native: createHash('sha256').update(text).digest('hex') }, permissionMode: 'default' as const } }
 }
 
+test('runtime publishes Codex artifact identities to payload and environment while retaining host ownership', async t => {
+  const f = await fixture(t, { PreToolUse: [{ hooks: [{ type: 'command', command: 'node capture.cjs' }] }] })
+  await writeFile(join(f.directory, 'capture.cjs'), 'const fs=require("node:fs");const payload=JSON.parse(fs.readFileSync(0,"utf8"));fs.writeFileSync("captured.json",JSON.stringify({payload,thread:process.env.CODEX_THREAD_ID}))')
+  let observed = false, prepared = false, disposed = false
+  const view = { sessionID: '11111111-1111-5111-8111-111111111111', turnID: '22222222-2222-5222-8222-222222222222', transcriptPath: '/owned/journal.jsonl' }
+  const runtime = await createRuntime('v1', f.directory, f.options, { report: () => {}, dispatchDiagnostic: () => {}, codexTranscripts: {
+    observe(event) { assert.equal(event.sessionID, 'session'); observed = true },
+    async prepare(event) { assert.equal(event.sessionID, 'session'); prepared = true; return view },
+    async dispose() { disposed = true },
+  } })
+  t.after(() => runtime.dispose())
+  runtime.sessions.prompt('session', 'turn', 'model')
+  const result = await runtime.tools.dispatch({ host: 'v1', event: 'PreToolUse', sessionID: 'session', callID: 'call', tool: 'bash', toolInput: { command: 'original' }, effectiveInput: { command: 'original' }, signal: new AbortController().signal })
+  assert.equal(result.entries[0]?.result.status, 'success')
+  const captured = JSON.parse(await readFile(join(f.directory, 'captured.json'), 'utf8'))
+  assert.equal(observed, true); assert.equal(prepared, true)
+  assert.equal(captured.payload.session_id, view.sessionID)
+  assert.equal(captured.payload.turn_id, view.turnID)
+  assert.equal(captured.payload.transcript_path, view.transcriptPath)
+  assert.equal(captured.thread, view.sessionID)
+  assert.equal(runtime.sessions.get('session').turnID, 'turn')
+  await runtime.dispose()
+  assert.equal(disposed, true)
+})
+
 test('sessions isolate metadata, reject stale updates and cancel closed sessions without resurrection', () => {
   const sessions = new Sessions(2)
   sessions.prompt('one', 'turn-one', 'model-one')

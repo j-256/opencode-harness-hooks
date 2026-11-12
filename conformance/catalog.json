@@ -448,6 +448,13 @@
       "event": "PreToolUse",
       "area": "effects",
       "summary": "The same source permits the control shell call, executes its side effect and does not deliver a denial reason"
+    },
+    {
+      "id": "codex.pretooluse.transcript-content",
+      "dialect": "codex",
+      "event": "PreToolUse",
+      "area": "artifacts",
+      "summary": "The hook reads a journal with matching native identities, the actual user prompt and original owned function call, omits the current result, and the pinned native reader recovers its user message"
     }
   ],
   "evidence": [
@@ -933,7 +940,8 @@
       ],
       "requirements": [
         "codex.pretooluse.deny",
-        "codex.pretooluse.allow-control"
+        "codex.pretooluse.allow-control",
+        "codex.pretooluse.transcript-content"
       ],
       "description": "Native Codex and default V1 denial with an allowed side-effect control, using identical source and hook bytes",
       "observables": [
@@ -946,7 +954,9 @@
         "owned filesystem side effect",
         "primary model request count",
         "Codex turn identity and selected model",
-        "model-visible result belongs to the emitted tool call"
+        "model-visible result belongs to the emitted tool call",
+        "hook-side journal content and current-result exclusion",
+        "pinned native reader recovers the user prompt under matching session/turn identities"
       ]
     },
     {

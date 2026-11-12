@@ -4,6 +4,8 @@ import { HostHookError } from '../host-errors.js'
 import { createRuntime } from '../runtime.js'
 import type { RuntimeServices } from '../runtime.js'
 import { ClaudeTranscript } from '../transcript.js'
+import { CodexTranscript } from '../codex-transcript.js'
+import { codexHistoryV1 } from './codex-history-v1.js'
 import { CallApprovals } from './permissions.js'
 import type { HostToolEvent } from '../tool-types.js'
 import { PromptContexts, PROMPT_REQUEST_HEADER } from '../prompt-contexts.js'
@@ -43,13 +45,21 @@ function auxiliary(prompt: Prompt & { readonly message: UserMessage }): boolean 
 export async function createHarnessHooks(input: V1Input, options: unknown, services: V1Services = {}) {
   if (services.sessionStart) throw new HostHookError('HOST_SESSION_START_HOST_UNAVAILABLE', 'unsupported')
   services = { ...services }
-  const transcripts = services.transcripts ?? new ClaudeTranscript({ host: 'v1', directory: input.directory, history: async (event, signal) => {
+  const readHistory = async (event: { readonly sessionID: string }, signal: AbortSignal) => {
     if (!input.client) throw new HostHookError('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE', 'unsupported')
     const [info, messages] = await Promise.all([input.client.session.get({ path: { id: event.sessionID }, signal }), input.client.session.messages({ path: { id: event.sessionID }, signal })])
     if (info.error || messages.error) throw new HostHookError('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE', 'unsupported')
-    return history(info.data, messages.data)
+    return { info: info.data, messages: messages.data }
+  }
+  const transcripts = services.transcripts ?? new ClaudeTranscript({ host: 'v1', directory: input.directory, history: async (event, signal) => {
+    const snapshot = await readHistory(event, signal)
+    return history(snapshot.info, snapshot.messages)
   } })
-  const runtime = await createRuntime('v1', input.directory, options, { ...services, transcripts })
+  const codexTranscripts = services.codexTranscripts ?? new CodexTranscript({ host: 'v1', directory: input.directory, history: async (event, signal) => {
+    const snapshot = await readHistory(event, signal)
+    return codexHistoryV1(snapshot.info, snapshot.messages)
+  } })
+  const runtime = await createRuntime('v1', input.directory, options, { ...services, transcripts, codexTranscripts })
   const approvals = new CallApprovals({ diagnostic: runtime.tools.diagnostic })
   const contexts = new PromptContexts()
   const wrappers = new Map<string, typeof fetch>()

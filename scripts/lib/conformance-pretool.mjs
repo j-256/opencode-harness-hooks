@@ -7,6 +7,7 @@ import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { ConformanceError, evaluateControlObservations } from './conformance.mjs'
 import { runNativeProcess } from './native-process.mjs'
+import { inspectCodexTranscript, verifyCodexTranscriptReader } from './conformance-transcript.mjs'
 
 const MODEL = 'claude-sonnet-4-6'
 const REASON = 'CONFORMANCE_OWNED_DENIAL_REASON'
@@ -128,8 +129,8 @@ export async function runPretoolControl({ catalog, packageRoot, dialect, nativeB
     const trace = join(root, 'owned-hook.jsonl'), hook = join(root, 'hook.cjs'), source = join(nativeHome, 'native/hooks.json'), mcp = join(root, 'mcp.json')
     await Promise.all([project, nativeHome, hostHome].map(path => mkdir(path)))
     const nativeConfig = join(nativeHome, 'native'), hostConfig = join(hostHome, 'config/opencode')
-    await Promise.all([mkdir(nativeConfig), mkdir(hostConfig, { recursive: true }), writeFile(mcp, '{"mcpServers":{}}')])
-    const hookText = `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({input:p,transcriptExists:typeof p.transcript_path==='string'&&fs.existsSync(p.transcript_path)})+'\\n');if(p.tool_input.command.includes('CONFORMANCE_DENY'))console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:${JSON.stringify(REASON)}}}));`
+    await Promise.all([mkdir(nativeConfig), mkdir(hostConfig, { recursive: true }), mkdir(join(nativeHome, 'tmp')), mkdir(join(hostHome, 'tmp')), writeFile(mcp, '{"mcpServers":{}}')])
+    const hookText = `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const transcriptExists=typeof p.transcript_path==='string'&&fs.existsSync(p.transcript_path);let transcriptContentValid;if(${codex}){transcriptContentValid=false;try{if(transcriptExists&&fs.statSync(p.transcript_path).size<=${MAX_BYTES}){const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(line=>JSON.parse(line));const inspect=${inspectCodexTranscript.toString()};transcriptContentValid=inspect(rows,p,'CONFORMANCE_CASE:'+(p.tool_input.command.includes('CONFORMANCE_DENY')?'deny':'allow'))}}catch{}}fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({input:p,transcriptExists,transcriptContentValid})+'\\n');if(p.tool_input.command.includes('CONFORMANCE_DENY'))console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:${JSON.stringify(REASON)}}}));`
     await writeFile(hook, hookText)
     const sourceText = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: [process.execPath, hook].map(quote).join(' '), timeout: HOOK_TIMEOUT_SECONDS }] }] } })
     await writeFile(source, sourceText)
@@ -172,7 +173,7 @@ export async function runPretoolControl({ catalog, packageRoot, dialect, nativeB
     })
     await new Promise((resolve, reject) => { gateway.once('error', reject); gateway.listen(0, '127.0.0.1', resolve) })
     const address = 'http://127.0.0.1:' + gateway.address().port
-    const environment = home => ({ PATH: process.env.PATH, HOME: home, PWD: project, SHELL: '/bin/sh', LANG: 'C', XDG_CONFIG_HOME: join(home, 'config'), XDG_STATE_HOME: join(home, 'state'), XDG_DATA_HOME: join(home, 'data'), XDG_CACHE_HOME: join(home, 'cache'), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_NON_ESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' })
+    const environment = home => ({ PATH: process.env.PATH, HOME: home, PWD: project, SHELL: '/bin/sh', LANG: 'C', TMPDIR: join(home, 'tmp'), XDG_CONFIG_HOME: join(home, 'config'), XDG_STATE_HOME: join(home, 'state'), XDG_DATA_HOME: join(home, 'data'), XDG_CACHE_HOME: join(home, 'cache'), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_NON_ESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' })
     const nativeEnv = codex ? { ...environment(nativeHome), CODEX_HOME: nativeConfig } : { ...environment(nativeHome), CLAUDE_CONFIG_DIR: nativeConfig, ANTHROPIC_API_KEY: 'synthetic', ANTHROPIC_BASE_URL: address + '/native' }
     const nativeArgs = codex ? ['exec', '--json', '--dangerously-bypass-hook-trust', '--skip-git-repo-check', '--model', 'fixture', '-'] : ['-p', '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config', '--mcp-config', mcp, '--settings', source, '--tools', 'Bash', '--dangerously-skip-permissions', '--max-turns', '3', '--model', MODEL]
     if (codex) await writeFile(join(nativeConfig, 'config.toml'), 'model="fixture"\nmodel_provider="fixture"\napproval_policy="never"\nsandbox_mode="danger-full-access"\n[features]\nhooks=true\n[model_providers.fixture]\nname="Fixture"\nbase_url="' + address + '/native/v1"\nwire_api="responses"\nrequires_openai_auth=false\nsupports_websockets=false\n')
@@ -182,7 +183,8 @@ export async function runPretoolControl({ catalog, packageRoot, dialect, nativeB
       let content = null
       try { content = await readFile(marker(id), 'utf8') } catch (error) { if (error.code !== 'ENOENT') throw error }
       if (content !== null) ensure(content === (id === 'deny' ? 'CONFORMANCE_DENY' : 'CONFORMANCE_ALLOW'), 'CONFORMANCE_SIDE_EFFECT_CONTENT')
-      return { id, hookInvocations: lines.length, event: input?.hook_event_name ?? null, tool: input?.tool_name ?? null, cwdMatches: input?.cwd === project, commandMatches: input?.tool_input?.command === command(id), identityValid: controlIdentityValid(input, dialect, toolID(backend, id)), transcriptExists: row?.transcriptExists === true, resultOwned: requests?.resultOwned === true, reasonDelivered: requests?.reasonDelivered === true, sideEffect: content !== null, primaryModelCalls: requests?.count ?? 0 }
+      const artifact = codex ? { transcriptContentValid: row?.transcriptContentValid === true, nativeReaderAccepted: row?.transcriptExists === true && await verifyCodexTranscriptReader({ binary: nativeBinary, root, project, input, prompt: 'CONFORMANCE_CASE:' + id, fixtureID: backend + '-' + id, ...(backend === 'native' ? { nativeHome: nativeConfig } : {}) }) } : {}
+      return { id, hookInvocations: lines.length, event: input?.hook_event_name ?? null, tool: input?.tool_name ?? null, cwdMatches: input?.cwd === project, commandMatches: input?.tool_input?.command === command(id), identityValid: controlIdentityValid(input, dialect, toolID(backend, id)), transcriptExists: row?.transcriptExists === true, resultOwned: requests?.resultOwned === true, reasonDelivered: requests?.reasonDelivered === true, sideEffect: content !== null, primaryModelCalls: requests?.count ?? 0, ...artifact }
     }
     const prepare = async id => { await writeFile(trace, ''); await rm(marker(id), { force: true }) }
     const nativeControls = []
@@ -232,7 +234,7 @@ export async function runPretoolControl({ catalog, packageRoot, dialect, nativeB
     ensure(hostCodes.size === 0, 'HOST_DIAGNOSTIC_FAILURE')
     ensure(sha(await readFile(source)) === sourceDigest && sha(await readFile(hook)) === hookDigest, 'CONFORMANCE_SOURCE_CHANGED')
     ensure(await fingerprintAdapter(packageRoot) === adapterBuildSha256, 'CONFORMANCE_BUILD_CHANGED')
-    const outcome = evaluateControlObservations({ sourceDigest, hookDigest, controls: nativeControls }, { sourceDigest, hookDigest, controls: hostControls })
+    const outcome = evaluateControlObservations({ sourceDigest, hookDigest, controls: nativeControls }, { sourceDigest, hookDigest, controls: hostControls }, { codexTranscript: codex })
     return { caseID: codex ? 'codex.pretooluse.control' : 'claude.pretooluse.control', host: 'v1', nativeVersion, hostVersion, ...outcome, platform: process.platform, architecture: process.arch, adapterBuildSha256, auxiliaryRequests, nativeHelloRequests, isolation: { temporaryHomeAndConfig: true, loopbackProvider: true, sourceBytesUnchanged: true, nativePermissionBypass: true, nativeTrustVerified: false, machineManagedSettingsMayRemain: true, ...(codex ? { nativeHookTrustBypassed: true } : {}) }, limits: ['Specified observables only; full event payload and rendering remain unverified', 'No real-model or native trust conformance claim', ...(codex ? ['Native exec_command is observed independently as Bash hook input; other tool families remain unverified'] : ['Native api/hello receives 404 and is counted outside model requests']), 'V1 only; V2 is not exercised by this case'] }
   } catch (error) {
     if (error instanceof ConformanceError) throw error

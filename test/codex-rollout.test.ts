@@ -34,6 +34,22 @@ async function fixture(t: TestContext, limits: { readonly maxSessionBytes?: numb
   return { rollout, parent, metadata, history, artifacts, threadID: scenario.identity.threadID }
 }
 
+test('tool journals preserve call identity and reject orphan, duplicate or foreign-turn results', async t => {
+  const f = await fixture(t)
+  const path = await f.rollout.create({ metadata: f.metadata, history: f.history.slice(0, 3) })
+  const attribution = { turn_id: scenario.identity.turnID }
+  const call: CodexRolloutHistoryRecord = { timestamp, type: 'response_item', payload: { type: 'function_call', id: 'fc_call', call_id: 'call', name: 'exec_command', arguments: '{"cmd":"original"}', internal_chat_message_metadata_passthrough: attribution } }
+  const output: CodexRolloutHistoryRecord = { timestamp, type: 'response_item', payload: { type: 'function_call_output', call_id: 'call', output: 'Result', internal_chat_message_metadata_passthrough: attribution } }
+  await assert.rejects(f.rollout.appendHistory(f.threadID, [output]), /CODEX_ROLLOUT_IDENTITY_MISMATCH/)
+  await f.rollout.appendHistory(f.threadID, [call])
+  await assert.rejects(f.rollout.appendHistory(f.threadID, [call]), /CODEX_ROLLOUT_IDENTITY_MISMATCH/)
+  await assert.rejects(f.rollout.appendHistory(f.threadID, [{ ...output, payload: { ...output.payload, internal_chat_message_metadata_passthrough: { turn_id: 'other' } } }]), /CODEX_ROLLOUT_IDENTITY_MISMATCH/)
+  await f.rollout.appendHistory(f.threadID, [output])
+  await assert.rejects(f.rollout.appendHistory(f.threadID, [output]), /CODEX_ROLLOUT_IDENTITY_MISMATCH/)
+  const rows = (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+  assert.deepEqual(rows.slice(-2).map(row => row.payload), [call.payload, output.payload])
+})
+
 test('persists native rollout metadata and Stop envelopes with stable inode and exact payloads', async t => {
   const f = await fixture(t), path = await f.rollout.create({ metadata: f.metadata, history: f.history })
   const before = await stat(path)

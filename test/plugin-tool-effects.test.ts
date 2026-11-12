@@ -19,13 +19,16 @@ test('default V1 delivers mixed native pre-context, rewriting and post-feedback 
   const sources = [{ id: 'codex', dialect: 'codex', path, selection: { events: ['PreToolUse'] } }, { id: 'claude', dialect: 'claude-code', path, selection: { events: ['PostToolUse'] } }]
   const digest = createHash('sha256').update(text).digest('hex')
   let callID = 'first', turnID = 'turn', command = 'original'
+  let created = 1
+  const previous: unknown[] = []
+  const snapshot = () => [
+    { info: { id: turnID, sessionID: 'session', role: 'user', time: { created } }, parts: [{ type: 'text', text: 'Tool context fixture' }] },
+    { info: { id: 'answer-' + turnID, sessionID: 'session', parentID: turnID, role: 'assistant', modelID: 'fixture', time: { created: created + 1 } }, parts: [{ type: 'tool', callID, tool: 'bash', state: { status: 'running', input: { command } } }] },
+  ]
   const diagnostics: { failed: number; unsupported: number }[] = []
   const hooks = await createHarnessHooks({ directory, client: { session: {
     get: async () => ({ data: { id: 'session' } }),
-    messages: async () => ({ data: [
-      { info: { id: turnID, sessionID: 'session', role: 'user', time: { created: 1 } }, parts: [{ type: 'text', text: 'Tool context fixture' }] },
-      { info: { id: 'answer-' + turnID, sessionID: 'session', parentID: turnID, role: 'assistant', modelID: 'fixture', time: { created: 2 } }, parts: [{ type: 'tool', callID, tool: 'bash', state: { status: 'running', input: { command } } }] },
-    ] }),
+    messages: async () => ({ data: [...previous, ...snapshot()] }),
   } } }, { sources, reviewedDigests: { codex: digest, claude: digest }, permissionMode: 'default' }, { report: () => {}, dispatchDiagnostic: value => { diagnostics.push(value) }, tools: { diagnostic: () => {} } })
   t.after(() => hooks.dispose())
   const exercise = async () => {
@@ -43,7 +46,8 @@ test('default V1 delivers mixed native pre-context, rewriting and post-feedback 
   assert.deepEqual(first.args, { command: 'effective' })
   for (const marker of ['ACTUAL_TOOL_RESULT', 'CODEX_PRE_CONTEXT', 'CLAUDE_POST_FEEDBACK', 'CLAUDE_POST_CONTEXT']) assert.equal(first.output.output.split(marker).length - 1, 1)
   assert.equal(JSON.parse((await readFile(capture, 'utf8')).trim()).tool_input.command, 'effective')
-  callID = 'second'; turnID = 'next-turn'; command = 'clean'
+  previous.push(...snapshot())
+  callID = 'second'; turnID = 'next-turn'; command = 'clean'; created = 10
   const second = await exercise()
   assert.equal(second.output.output, 'ACTUAL_TOOL_RESULT')
   assert.deepEqual(hooks.inspect().diagnostics, [])

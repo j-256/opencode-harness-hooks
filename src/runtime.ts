@@ -23,6 +23,7 @@ import type { SessionStartEvent, SessionStartServices } from './session-start.js
 import { Stops } from './stop.js'
 import type { StopEvent, StopServices } from './stop.js'
 import type { TranscriptService } from './transcript.js'
+import type { CodexTranscriptService } from './codex-transcript.js'
 import type { JsonValue, LoadedSource, NativeEvent, Registration } from './types.js'
 
 export type { RuntimeOptions, RuntimeReport } from './inspection.js'
@@ -46,6 +47,7 @@ export interface RuntimeServices {
   readonly report?: (report: RuntimeReport) => Promise<void> | void
   readonly dispatchDiagnostic?: (diagnostic: DispatchResult['diagnostic']) => Promise<void> | void
   readonly transcripts?: TranscriptService
+  readonly codexTranscripts?: CodexTranscriptService
 }
 
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
@@ -93,6 +95,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     if (source.unwiredEvents.length) throw new HostHookError('HOST_EVENT_UNAVAILABLE', 'unsupported', source.id)
   }
   const sessions = new Sessions()
+  const hasCodexToolHooks = sources.some(source => source.enabled && source.dialect === 'codex' && source.registrations.some(registration => ['PreToolUse', 'PostToolUse'].includes(registration.event)))
   const active = new Set<Promise<DispatchResult>>()
   let observerFailures = 0
   const diagnostic = services.dispatchDiagnostic ?? ((value: DispatchResult['diagnostic']) => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', code: 'DISPATCH_RESULT', ...value })) })
@@ -158,16 +161,23 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
         if (signal.aborted) throw new HostHookError('HOST_TOOL_CANCELLED', 'cancelled')
         if (starts) await runService(null, signal, () => starts.wait(event.sessionID))
         if (sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.length)) services.transcripts?.observe(event, session)
+        if (hasCodexToolHooks) services.codexTranscripts?.observe(event, session)
         const base: NativeEvent = { host, event: event.event, sessionID: event.sessionID, cwd: directory, tool: event.tool, toolInput: event.event === 'PreToolUse' ? event.toolInput : event.effectiveInput }
         const selected = matched(sources, base).filter(registration => !nativeSkip(registration, base))
         if (event.event === 'PostToolUseFailure' && matched(sources, { ...base, event: 'PostToolUse' }).some(registration => registration.dialect === 'codex' && !nativeSkip(registration, { ...base, event: 'PostToolUse' }))) throw new HostHookError('HOST_POST_FAILURE_UNVERIFIED', 'unsupported')
         let nativeData = selected.length && services.nativeData ? await runService(null, signal, current => services.nativeData!(event, session, current)) : undefined
+        let nativeSessionIDs: NativeEvent['nativeSessionIDs']
         if (selected.some(registration => registration.dialect === 'claude-code') && nativeData?.['claude-code']?.transcript_path === undefined && services.transcripts) {
           const path = await services.transcripts.prepare(event, session, signal)
           nativeData = { ...nativeData, 'claude-code': { ...nativeData?.['claude-code'], transcript_path: path } }
         }
+        if (selected.some(registration => registration.dialect === 'codex') && nativeData?.codex?.transcript_path === undefined && services.codexTranscripts) {
+          const view = await runService(null, signal, current => services.codexTranscripts!.prepare(event, session, current))
+          nativeData = { ...nativeData, codex: { ...nativeData?.codex, transcript_path: view.transcriptPath, turn_id: view.turnID } }
+          nativeSessionIDs = { codex: view.sessionID }
+        }
         const data = { ...(selected.length ? resultData(event) : {}), transcript_path: null, tool_use_id: event.callID, ...(session.turnID ? { turn_id: session.turnID } : {}), ...(session.model ? { model: session.model } : {}), ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}) }
-        const nativeEvent: NativeEvent = { ...base, data, ...(nativeData ? { dialectData: nativeData } : {}) }
+        const nativeEvent: NativeEvent = { ...base, data, ...(nativeData ? { dialectData: nativeData } : {}), ...(nativeSessionIDs ? { nativeSessionIDs } : {}) }
         for (const registration of selected) {
           try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
         }
@@ -229,7 +239,8 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     async dispose() {
       sessions.dispose()
       const [, started, stopped] = await Promise.allSettled([Promise.allSettled([...active]), starts?.dispose(), stops?.dispose()])
-      await services.transcripts?.dispose()
+      const artifacts = await Promise.allSettled([services.transcripts?.dispose(), services.codexTranscripts?.dispose()])
+      for (const result of artifacts) if (result.status === 'rejected') throw result.reason
       if (started.status === 'rejected') throw started.reason
       if (stopped.status === 'rejected') throw stopped.reason
     },
