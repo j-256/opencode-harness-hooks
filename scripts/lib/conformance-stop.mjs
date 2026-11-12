@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
-import { access, readFile } from 'node:fs/promises'
+import { access, readFile, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { ConformanceError } from './conformance.mjs'
 import { fingerprintAdapter, verifyPinnedVersion } from './conformance-pretool.mjs'
@@ -21,12 +22,15 @@ export async function runStopRejection({ catalog, packageRoot, dialect, opencode
   const adapterBuildSha256 = await fingerprintAdapter(packageRoot)
   const probe = join(packageRoot, 'scripts/verify-plugin.mjs')
   const probeSha256 = createHash('sha256').update(await readFile(probe)).digest('hex')
-  let execution
-  try { execution = await runNativeProcess(process.execPath, [probe, '--host', 'v1', '--dialect', dialect, '--binary', opencodeBinary, '--stop-rejection'], '', packageRoot, environment, limits) }
-  catch { throw new ConformanceError('CONFORMANCE_STOP_PROBE_FAILED') }
-  let comparison
-  try { comparison = validateStopRejection(JSON.parse(execution.stdout), dialect, hostVersion) }
-  catch { throw new ConformanceError('CONFORMANCE_STOP_OBSERVATION_INVALID') }
-  if (await fingerprintAdapter(packageRoot) !== adapterBuildSha256 || createHash('sha256').update(await readFile(probe)).digest('hex') !== probeSha256) throw new ConformanceError('CONFORMANCE_BUILD_CHANGED')
-  return { caseID: `${dialect}.v1.stop-load-rejection`, host: 'v1', nativeVersion: catalog.versions.native[dialect], hostVersion, status: 'passed', kind: 'exception', nativeExecution: false, platform: process.platform, architecture: process.arch, adapterBuildSha256, probeSha256, comparison, limits: ['Expected V1 incompatibility, not native Stop parity', 'Native version identifies the pinned contract; no native binary is required or executed'] }
+  const root = await mkdtemp(join(tmpdir(), 'hook-stop-conformance-'))
+  try {
+    let execution
+    try { execution = await runNativeProcess(process.execPath, [probe, '--host', 'v1', '--dialect', dialect, '--binary', opencodeBinary, '--stop-rejection'], '', packageRoot, { ...environment, TMPDIR: root }, limits) }
+    catch { throw new ConformanceError('CONFORMANCE_STOP_PROBE_FAILED') }
+    let comparison
+    try { comparison = validateStopRejection(JSON.parse(execution.stdout), dialect, hostVersion) }
+    catch { throw new ConformanceError('CONFORMANCE_STOP_OBSERVATION_INVALID') }
+    if (await fingerprintAdapter(packageRoot) !== adapterBuildSha256 || createHash('sha256').update(await readFile(probe)).digest('hex') !== probeSha256) throw new ConformanceError('CONFORMANCE_BUILD_CHANGED')
+    return { caseID: `${dialect}.v1.stop-load-rejection`, host: 'v1', nativeVersion: catalog.versions.native[dialect], hostVersion, status: 'passed', kind: 'exception', nativeExecution: false, platform: process.platform, architecture: process.arch, adapterBuildSha256, probeSha256, comparison, limits: ['Expected V1 incompatibility, not native Stop parity', 'Native version identifies the pinned contract; no native binary is required or executed'] }
+  } finally { await rm(root, { recursive: true, force: true }) }
 }

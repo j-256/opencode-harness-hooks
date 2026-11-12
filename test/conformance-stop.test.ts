@@ -65,29 +65,33 @@ test('an exception case cannot masquerade as ordinary native coverage or another
 })
 
 test('a timed-out rejection probe cleans up its host process group', { skip: process.platform === 'win32', timeout: 10000 }, async t => {
-  const { mkdtemp, mkdir, writeFile, chmod, rm } = await import('node:fs/promises')
+  const { mkdtemp, mkdir, writeFile, chmod, rm, access } = await import('node:fs/promises')
   const { tmpdir } = await import('node:os')
-  const { join } = await import('node:path')
+  const { join, dirname, basename } = await import('node:path')
   const { setTimeout: delay } = await import('node:timers/promises')
   const { runStopRejection } = await import(new URL('../scripts/lib/conformance-stop.mjs', import.meta.url).href)
   const root = await mkdtemp(join(tmpdir(), 'conformance-stop-timeout-'))
   const pidFile = join(root, 'host.pid'), binary = join(root, 'opencode.cjs')
   t.after(async () => {
-    try { const pid = Number(await readFile(pidFile, 'utf8')); process.kill(-pid, 'SIGKILL') } catch (error: any) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error }
+    let state
+    try { state = JSON.parse(await readFile(pidFile, 'utf8')); process.kill(-state.pid, 'SIGKILL') } catch (error: any) { if (!['ENOENT', 'ESRCH'].includes(error.code)) throw error }
+    if (state?.fixtureTemp && basename(dirname(state.fixtureTemp)).startsWith('harness-package-')) await rm(dirname(state.fixtureTemp), { recursive: true, force: true })
     await rm(root, { recursive: true, force: true })
   })
   await Promise.all([mkdir(join(root, 'dist')), mkdir(join(root, 'scripts'))])
   for (const file of ['package.json', 'package-lock.json']) await writeFile(join(root, file), '{}')
   await writeFile(join(root, 'dist/index.js'), 'export {}')
   await writeFile(join(root, 'scripts/verify-plugin.mjs'), await readFile(new URL('../scripts/verify-plugin.mjs', import.meta.url)))
-  await writeFile(binary, '#!' + process.execPath + '\nif(process.argv.includes("--version")){console.log("1.19.5")}else{require("node:fs").writeFileSync(' + JSON.stringify(pidFile) + ',String(process.pid));process.on("SIGTERM",()=>{});setInterval(()=>{},1000)}\n')
+  await writeFile(binary, '#!' + process.execPath + '\nif(process.argv.includes("--version")){console.log("1.19.5")}else{const fs=require("node:fs");fs.writeFileSync(' + JSON.stringify(pidFile) + ',JSON.stringify({pid:process.pid,fixtureTemp:process.env.TMPDIR,fixtureCreated:fs.existsSync(process.env.TMPDIR)}));process.on("SIGTERM",()=>{});setInterval(()=>{},1000)}\n')
   await chmod(binary, 0o700)
   await assert.rejects(runStopRejection({ catalog: await catalog(), packageRoot: root, dialect: 'codex', opencodeBinary: binary, limits: { durationMs: 1500, graceMs: 50, maxBytes: 65536 } }), /CONFORMANCE_STOP_PROBE_FAILED/)
-  const pid = Number(await readFile(pidFile, 'utf8'))
+  const { pid, fixtureTemp, fixtureCreated } = JSON.parse(await readFile(pidFile, 'utf8'))
+  assert.equal(fixtureCreated, true)
   let alive = true
   for (let attempt = 0; attempt < 20; attempt++) {
     try { process.kill(pid, 0) } catch (error: any) { if (error.code !== 'ESRCH') throw error; alive = false; break }
     await delay(20)
   }
   assert.equal(alive, false, 'Timed-out probe left its detached host running')
+  await assert.rejects(access(fixtureTemp), { code: 'ENOENT' })
 })
