@@ -58,6 +58,20 @@ Repeat `--case` to assemble independent fresh results in one report; duplicate s
 
 The Codex control checks more than file existence: the hook must read journal records for its actual prompt and original owned call, with matching native session/turn identities and no current function-call output. The pinned native Codex reader must also recover that prompt without modifying the journal. The default V1 adapter's [Codex transcript projection](../docs/codex-transcripts.md) supplies this bounded record subset. A missing or malformed transcript remains a failed comparison. Passing the selected content checks does not verify every native transcript field or lifecycle.
 
+## Input replacement
+
+Run the independent shell input-rewrite comparisons for both dialects:
+
+```sh
+node scripts/verify-conformance.mjs --case claude.pretooluse.input-rewrite --case codex.pretooluse.input-rewrite --require-complete
+```
+
+Each case runs a replacement and an unchanged-command control through the pinned native harness and default V1. The same script observes `PreToolUse` and `PostToolUse` and returns `permissionDecision: "allow"` with `updatedInput` only for the owned replacement command. The pre-tool observation must contain the original command; the post-tool observation must contain the effective command under the same session and call identities. Invocation order, expected metadata and transcript existence are checked independently from the adapter's payload builder.
+
+Distinct marker files prove that the replacement executes and the original does not. The unchanged control must execute its own command. The next model request must contain exactly one tool result, owned by the emitted call, with the expected stdout token and without the other commands' output tokens. An additional result for a different call, or a token in metadata, cannot pass. Both native and host observations must satisfy literal expectations; matching but incorrect effects remain a failed comparison. Failed receipts contain only whitelisted boolean/count metadata and preserve the incomplete-profile distinction.
+
+These cases verify only their narrow input-replacement and effective post-tool input requirements. They do not certify whole-object replacement, competing rewrites, denial precedence, other tool families, full post-tool payload/output behavior, trust or permission-policy override, exact output wrapping, transcript contents, parallel scheduling, or V2. The fixture's native permission bypass and host allowance do not establish that an explicit allow can override an interactive permission policy. Existing deny/allow and transcript-content comparisons retain their own requirements.
+
 ## Extending the suite
 
 Add a stable requirement for each independently testable native behavior and register a case with explicit source dialect, supported host targets, and observables. Broad event obligations need native branch coverage before they can be declared verified; a single example is insufficient. Reconcile version-sensitive behavior with the pinned native release, using public documentation as a starting reference rather than runtime proof.

@@ -18,6 +18,8 @@ The default V1 adapter also supplies a [Codex tool-hook transcript projection](c
 
 Each required capability is classified as verified, unsupported, or unresolved, with supporting evidence. A required unsupported or unresolved capability prevents an equivalence claim. Missing evidence also prevents that claim. Tests proving an unsupported diagnostic are diagnostic coverage, not successful protocol equivalence.
 
+The [native input-rewrite comparisons](../conformance/README.md#input-replacement) exercise original pre-tool input, executed shell replacement, effective post-tool input, and owned model-visible output through unchanged hooks and an unchanged-command control. Passing those cases verifies their narrow requirements for V1; broad input, permission, post-tool, and V2 obligations remain separate.
+
 ## V1 Stop exception
 
 OpenCode V1 cannot load configurations containing enabled `Stop` registrations. This is an accepted exception to identical behavior: the expected V1 result is a prominent fatal load error, not Stop execution parity. `HOST_STOP_UNSUPPORTED` identifies every offending source configuration, the `Stop` event and the unavailable `awaited-completion-decision` host capability. The bridge does not skip Stop registrations or approximate them with an idle observer. Native disablement or explicit selection can exclude registrations, and those exclusions remain reported.

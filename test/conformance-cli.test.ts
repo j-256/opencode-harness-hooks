@@ -107,3 +107,18 @@ test('Codex binary option forms enforce the pinned native version', { skip: proc
     assert.match(result.stderr, /NATIVE_VERSION_MISMATCH/)
   }
 })
+
+test('input-rewrite cases appear in help and check only their own conditional native binary', { skip: process.platform === 'win32' }, async () => {
+  const help = await invoke(['--help'], { PATH: '' })
+  for (const prefix of ['claude', 'codex']) {
+    const name = prefix + '.pretooluse.input-rewrite'
+    assert.ok(help.stdout.includes(name), name)
+    const result = await invoke(['-c', name, '-C', '/missing/claude', '-X', '/missing/codex'])
+    assert.equal(result.status, 3)
+    assert.equal(result.stdout, '')
+    assert.match(result.stderr, new RegExp('DEPENDENCY_UNAVAILABLE: ' + prefix))
+    const wrongHost = await invoke(['-c', name, '-H', 'v2'], { PATH: '' })
+    assert.equal(wrongHost.status, 2)
+    assert.match(wrongHost.stderr, /CONFORMANCE_USAGE_CASE/)
+  }
+})
