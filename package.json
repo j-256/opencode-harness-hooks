@@ -42,7 +42,9 @@
     "dist",
     "README.md",
     "LICENSE",
-    "docs"
+    "docs",
+    "conformance/catalog.json",
+    "conformance/README.md"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
@@ -51,6 +53,7 @@
     "build:v2": "tsc -p tsconfig.v2.json",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test --test-concurrency=4",
+    "conformance": "node scripts/verify-conformance.mjs",
     "test:host:v2": "node scripts/verify-v2.mjs",
     "test:host:v2:stop": "node scripts/verify-v2-stop.mjs",
     "test:host:plugin": "node scripts/verify-plugin.mjs",

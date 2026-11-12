@@ -51,8 +51,9 @@ async function verify(npm) {
     const env = { PATH: process.env.PATH, HOME: root, npm_config_userconfig: userConfig, npm_config_globalconfig: globalConfig, npm_config_cache: join(root, 'cache'), npm_config_registry: 'https://registry.npmjs.org', npm_config_update_notifier: 'false' }
     const execute = (program, args, cwd = root, timeout = COMMAND_MS) => run(program, args, { cwd, env, timeout, maxBuffer: MAX_BYTES })
     const [packed] = JSON.parse((await execute(npm, ['pack', '--ignore-scripts', '--json', '--pack-destination', root], project)).stdout)
-    assert.ok(packed.files.every(file => /^(?:dist\/|docs\/|README\.md$|LICENSE$|package\.json$)/.test(file.path) && !file.path.split('/').includes('..')))
+    assert.ok(packed.files.every(file => /^(?:dist\/|docs\/|conformance\/(?:catalog\.json|README\.md)$|README\.md$|LICENSE$|package\.json$)/.test(file.path) && !file.path.split('/').includes('..')))
     assert.ok(packed.files.some(file => file.path === 'dist/cli.js'))
+    for (const path of ['conformance/catalog.json', 'conformance/README.md']) assert.ok(packed.files.some(file => file.path === path))
     assert.ok(typeof packed.filename === 'string' && !packed.filename.includes('/') && !packed.filename.includes('\\'))
     await execute('tar', ['-xzf', join(root, packed.filename), '-C', root])
     stage = 'contents'

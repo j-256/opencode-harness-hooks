@@ -1,0 +1,927 @@
+{
+  "schemaVersion": 1,
+  "versions": {
+    "native": {
+      "claude-code": "2.1.318",
+      "codex": "0.167.0"
+    },
+    "hosts": {
+      "v1": "1.19.5",
+      "v2": "2.2.5"
+    }
+  },
+  "references": {
+    "claude-code": "https://code.claude.com/docs/en/hooks",
+    "codex": "https://learn.chatgpt.com/docs/hooks"
+  },
+  "events": {
+    "claude-code": [
+      "SessionStart",
+      "Setup",
+      "InstructionsLoaded",
+      "UserPromptSubmit",
+      "UserPromptExpansion",
+      "MessageDisplay",
+      "PreToolUse",
+      "PermissionRequest",
+      "PostToolUse",
+      "PostToolUseFailure",
+      "PostToolBatch",
+      "PermissionDenied",
+      "Notification",
+      "SubagentStart",
+      "SubagentStop",
+      "TaskCreated",
+      "TaskCompleted",
+      "Stop",
+      "StopFailure",
+      "TeammateIdle",
+      "ConfigChange",
+      "CwdChanged",
+      "DirectoryAdded",
+      "FileChanged",
+      "WorktreeCreate",
+      "WorktreeRemove",
+      "PreCompact",
+      "PostCompact",
+      "PreModelSwitch",
+      "PostModelSwitch",
+      "SessionEnd",
+      "Elicitation",
+      "ElicitationResult"
+    ],
+    "codex": [
+      "SessionStart",
+      "SessionEnd",
+      "SubagentStart",
+      "PreToolUse",
+      "PermissionRequest",
+      "PostToolUse",
+      "PreModelRequest",
+      "PostModelRequest",
+      "PreCompact",
+      "PostCompact",
+      "UserPromptSubmit",
+      "SubagentStop",
+      "Stop",
+      "Interrupt"
+    ]
+  },
+  "eventFacets": {
+    "trigger": "Observe the event at its native lifecycle boundary with correct invocation count and ordering",
+    "payload": "Preserve the complete event-specific required/optional input shape, types and identity relationships",
+    "outputs": "Exercise each event-specific supported, ignored, unsupported and malformed output/control branch"
+  },
+  "requirements": [
+    {
+      "id": "claude-code.sources.locations",
+      "dialect": "claude-code",
+      "area": "sources",
+      "summary": "Select each supported configuration location and preserve source identity"
+    },
+    {
+      "id": "claude-code.sources.layers",
+      "dialect": "claude-code",
+      "area": "sources",
+      "summary": "Apply native enablement, precedence, merging and explicit source exclusions"
+    },
+    {
+      "id": "claude-code.sources.trust",
+      "dialect": "claude-code",
+      "area": "sources",
+      "summary": "Enforce source review, modified definitions, managed policy and project trust"
+    },
+    {
+      "id": "claude-code.sources.reload",
+      "dialect": "claude-code",
+      "area": "sources",
+      "summary": "Observe changes and disablement without executing stale reviewed definitions"
+    },
+    {
+      "id": "claude-code.matching.tools",
+      "dialect": "claude-code",
+      "area": "matching",
+      "summary": "Match native tool names, aliases, MCP names and unmatched calls"
+    },
+    {
+      "id": "claude-code.matching.filters",
+      "dialect": "claude-code",
+      "area": "matching",
+      "summary": "Preserve event-specific matcher and handler-filter behavior"
+    },
+    {
+      "id": "claude-code.handlers.command",
+      "dialect": "claude-code",
+      "area": "handlers",
+      "summary": "Execute the command contract with shell and argument boundaries intact"
+    },
+    {
+      "id": "claude-code.handlers.types",
+      "dialect": "claude-code",
+      "area": "handlers",
+      "summary": "Preserve supported, parsed-but-skipped and unsupported handler types"
+    },
+    {
+      "id": "claude-code.execution.cwd",
+      "dialect": "claude-code",
+      "area": "execution",
+      "summary": "Preserve invocation cwd, relative paths, spaces and Unicode paths"
+    },
+    {
+      "id": "claude-code.execution.environment",
+      "dialect": "claude-code",
+      "area": "execution",
+      "summary": "Preserve permitted environment and source-native variable behavior"
+    },
+    {
+      "id": "claude-code.execution.failures",
+      "dialect": "claude-code",
+      "area": "execution",
+      "summary": "Distinguish spawn errors, exit 0, exit 2 and other failures"
+    },
+    {
+      "id": "claude-code.execution.timeouts",
+      "dialect": "claude-code",
+      "area": "execution",
+      "summary": "Preserve timeout deadlines, terminating signals and process cleanup"
+    },
+    {
+      "id": "claude-code.execution.background",
+      "dialect": "claude-code",
+      "area": "execution",
+      "summary": "Preserve asynchronous delivery, safe points, limits and teardown"
+    },
+    {
+      "id": "claude-code.output.validation",
+      "dialect": "claude-code",
+      "area": "output",
+      "summary": "Preserve malformed JSON, empty output, invalid fields and exit-code precedence"
+    },
+    {
+      "id": "claude-code.output.channels",
+      "dialect": "claude-code",
+      "area": "output",
+      "summary": "Keep stdout, stderr, model context and user-interface warnings distinct"
+    },
+    {
+      "id": "claude-code.output.large",
+      "dialect": "claude-code",
+      "area": "output",
+      "summary": "Preserve output limits, previews, spilling and configured thresholds"
+    },
+    {
+      "id": "claude-code.effects.permissions",
+      "dialect": "claude-code",
+      "area": "effects",
+      "summary": "Preserve allow, deny, ask, defer and configured permission boundaries"
+    },
+    {
+      "id": "claude-code.effects.input",
+      "dialect": "claude-code",
+      "area": "effects",
+      "summary": "Apply whole-input rewrites and preserve the actually executed arguments"
+    },
+    {
+      "id": "claude-code.effects.result",
+      "dialect": "claude-code",
+      "area": "effects",
+      "summary": "Distinguish feedback from result replacement after completed side effects"
+    },
+    {
+      "id": "claude-code.effects.stop",
+      "dialect": "claude-code",
+      "area": "effects",
+      "summary": "Preserve continuation, prevention, active-stop identity and ordering"
+    },
+    {
+      "id": "claude-code.state.sessions",
+      "dialect": "claude-code",
+      "area": "state",
+      "summary": "Isolate interleaved sessions, calls, turns and subagents"
+    },
+    {
+      "id": "claude-code.state.resume",
+      "dialect": "claude-code",
+      "area": "state",
+      "summary": "Preserve required state and identity on restart, resume and compaction"
+    },
+    {
+      "id": "claude-code.state.interrupt",
+      "dialect": "claude-code",
+      "area": "state",
+      "summary": "Preserve cancellation, pending input and late-hook behavior"
+    },
+    {
+      "id": "claude-code.state.cleanup",
+      "dialect": "claude-code",
+      "area": "state",
+      "summary": "Release calls, subprocesses, pending delivery and temporary artifacts"
+    },
+    {
+      "id": "claude-code.composition.decisions",
+      "dialect": "claude-code",
+      "area": "composition",
+      "summary": "Resolve conflicting outputs without inventing source-native decisions"
+    },
+    {
+      "id": "claude-code.composition.order",
+      "dialect": "claude-code",
+      "area": "composition",
+      "summary": "Preserve native configured/completion ordering and duplicate invocation rules"
+    },
+    {
+      "id": "claude-code.composition.mixed",
+      "dialect": "claude-code",
+      "area": "composition",
+      "summary": "Run explicitly selected mixed dialect sources without cross-harness deduplication"
+    },
+    {
+      "id": "claude-code.artifacts.transcript",
+      "dialect": "claude-code",
+      "area": "artifacts",
+      "summary": "Provide hook-readable native artifacts with correct identities and content"
+    },
+    {
+      "id": "claude-code.artifacts.model",
+      "dialect": "claude-code",
+      "area": "artifacts",
+      "summary": "Preserve model-visible role, exact text, ordering and retained context"
+    },
+    {
+      "id": "codex.sources.locations",
+      "dialect": "codex",
+      "area": "sources",
+      "summary": "Select each supported configuration location and preserve source identity"
+    },
+    {
+      "id": "codex.sources.layers",
+      "dialect": "codex",
+      "area": "sources",
+      "summary": "Apply native enablement, precedence, merging and explicit source exclusions"
+    },
+    {
+      "id": "codex.sources.trust",
+      "dialect": "codex",
+      "area": "sources",
+      "summary": "Enforce source review, modified definitions, managed policy and project trust"
+    },
+    {
+      "id": "codex.sources.reload",
+      "dialect": "codex",
+      "area": "sources",
+      "summary": "Observe changes and disablement without executing stale reviewed definitions"
+    },
+    {
+      "id": "codex.matching.tools",
+      "dialect": "codex",
+      "area": "matching",
+      "summary": "Match native tool names, aliases, MCP names and unmatched calls"
+    },
+    {
+      "id": "codex.matching.filters",
+      "dialect": "codex",
+      "area": "matching",
+      "summary": "Preserve event-specific matcher and handler-filter behavior"
+    },
+    {
+      "id": "codex.handlers.command",
+      "dialect": "codex",
+      "area": "handlers",
+      "summary": "Execute the command contract with shell and argument boundaries intact"
+    },
+    {
+      "id": "codex.handlers.types",
+      "dialect": "codex",
+      "area": "handlers",
+      "summary": "Preserve supported, parsed-but-skipped and unsupported handler types"
+    },
+    {
+      "id": "codex.execution.cwd",
+      "dialect": "codex",
+      "area": "execution",
+      "summary": "Preserve invocation cwd, relative paths, spaces and Unicode paths"
+    },
+    {
+      "id": "codex.execution.environment",
+      "dialect": "codex",
+      "area": "execution",
+      "summary": "Preserve permitted environment and source-native variable behavior"
+    },
+    {
+      "id": "codex.execution.failures",
+      "dialect": "codex",
+      "area": "execution",
+      "summary": "Distinguish spawn errors, exit 0, exit 2 and other failures"
+    },
+    {
+      "id": "codex.execution.timeouts",
+      "dialect": "codex",
+      "area": "execution",
+      "summary": "Preserve timeout deadlines, terminating signals and process cleanup"
+    },
+    {
+      "id": "codex.execution.background",
+      "dialect": "codex",
+      "area": "execution",
+      "summary": "Preserve asynchronous delivery, safe points, limits and teardown"
+    },
+    {
+      "id": "codex.output.validation",
+      "dialect": "codex",
+      "area": "output",
+      "summary": "Preserve malformed JSON, empty output, invalid fields and exit-code precedence"
+    },
+    {
+      "id": "codex.output.channels",
+      "dialect": "codex",
+      "area": "output",
+      "summary": "Keep stdout, stderr, model context and user-interface warnings distinct"
+    },
+    {
+      "id": "codex.output.large",
+      "dialect": "codex",
+      "area": "output",
+      "summary": "Preserve output limits, previews, spilling and configured thresholds"
+    },
+    {
+      "id": "codex.effects.permissions",
+      "dialect": "codex",
+      "area": "effects",
+      "summary": "Preserve allow, deny, ask, defer and configured permission boundaries"
+    },
+    {
+      "id": "codex.effects.input",
+      "dialect": "codex",
+      "area": "effects",
+      "summary": "Apply whole-input rewrites and preserve the actually executed arguments"
+    },
+    {
+      "id": "codex.effects.result",
+      "dialect": "codex",
+      "area": "effects",
+      "summary": "Distinguish feedback from result replacement after completed side effects"
+    },
+    {
+      "id": "codex.effects.stop",
+      "dialect": "codex",
+      "area": "effects",
+      "summary": "Preserve continuation, prevention, active-stop identity and ordering"
+    },
+    {
+      "id": "codex.state.sessions",
+      "dialect": "codex",
+      "area": "state",
+      "summary": "Isolate interleaved sessions, calls, turns and subagents"
+    },
+    {
+      "id": "codex.state.resume",
+      "dialect": "codex",
+      "area": "state",
+      "summary": "Preserve required state and identity on restart, resume and compaction"
+    },
+    {
+      "id": "codex.state.interrupt",
+      "dialect": "codex",
+      "area": "state",
+      "summary": "Preserve cancellation, pending input and late-hook behavior"
+    },
+    {
+      "id": "codex.state.cleanup",
+      "dialect": "codex",
+      "area": "state",
+      "summary": "Release calls, subprocesses, pending delivery and temporary artifacts"
+    },
+    {
+      "id": "codex.composition.decisions",
+      "dialect": "codex",
+      "area": "composition",
+      "summary": "Resolve conflicting outputs without inventing source-native decisions"
+    },
+    {
+      "id": "codex.composition.order",
+      "dialect": "codex",
+      "area": "composition",
+      "summary": "Preserve native configured/completion ordering and duplicate invocation rules"
+    },
+    {
+      "id": "codex.composition.mixed",
+      "dialect": "codex",
+      "area": "composition",
+      "summary": "Run explicitly selected mixed dialect sources without cross-harness deduplication"
+    },
+    {
+      "id": "codex.artifacts.transcript",
+      "dialect": "codex",
+      "area": "artifacts",
+      "summary": "Provide hook-readable native artifacts with correct identities and content"
+    },
+    {
+      "id": "codex.artifacts.model",
+      "dialect": "codex",
+      "area": "artifacts",
+      "summary": "Preserve model-visible role, exact text, ordering and retained context"
+    },
+    {
+      "id": "claude-code.pretooluse.deny",
+      "dialect": "claude-code",
+      "event": "PreToolUse",
+      "area": "effects",
+      "summary": "A matching PreToolUse denial prevents the owned shell side effect and delivers the exact configured reason to the next model request"
+    },
+    {
+      "id": "claude-code.pretooluse.allow-control",
+      "dialect": "claude-code",
+      "event": "PreToolUse",
+      "area": "effects",
+      "summary": "The same source permits the control shell call, executes its side effect and does not deliver a denial reason"
+    }
+  ],
+  "evidence": [
+    {
+      "id": "codex-output-source-oracle",
+      "level": "source-oracle",
+      "artifacts": [
+        "test/fixtures/codex-output-oracle.json",
+        "test/protocol.test.ts"
+      ],
+      "dialects": [
+        "codex"
+      ],
+      "events": [],
+      "areas": [
+        "output",
+        "effects"
+      ],
+      "scope": "Recorded results derived from the pinned native Rust output parser; not installed-host delivery evidence"
+    },
+    {
+      "id": "claude-transcript-reference",
+      "level": "native-reference",
+      "artifacts": [
+        "scripts/verify-claude-transcript.mjs",
+        "test/native-claude.test.ts"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [
+        "UserPromptSubmit",
+        "PreToolUse"
+      ],
+      "areas": [
+        "artifacts",
+        "output"
+      ],
+      "scope": "Independent native capture and generated transcript resumption; supported record subset only"
+    },
+    {
+      "id": "native-stop-reference",
+      "level": "native-reference",
+      "artifacts": [
+        "scripts/verify-native-stop.mjs",
+        "test/native-stop-cli.test.ts"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [
+        "Stop"
+      ],
+      "areas": [
+        "effects",
+        "composition",
+        "state",
+        "artifacts"
+      ],
+      "scope": "Native command Stop probes with separately selected aggregation, cancellation, history and artifact modes"
+    },
+    {
+      "id": "codex-source-reference",
+      "level": "native-reference",
+      "artifacts": [
+        "scripts/verify-codex-sources.mjs",
+        "test/native-codex-sources-cli.test.ts"
+      ],
+      "dialects": [
+        "codex"
+      ],
+      "events": [],
+      "areas": [
+        "sources",
+        "matching"
+      ],
+      "scope": "Read-only native declaration inventory and optional selected Stop declaration projection"
+    },
+    {
+      "id": "codex-rollout-reader",
+      "level": "native-reader",
+      "artifacts": [
+        "scripts/verify-codex-rollout.mjs"
+      ],
+      "dialects": [
+        "codex"
+      ],
+      "events": [
+        "Stop"
+      ],
+      "areas": [
+        "artifacts"
+      ],
+      "scope": "Native reader acceptance of a generated supported rollout; not live host lifecycle parity"
+    },
+    {
+      "id": "claude-lifecycle-reference",
+      "level": "native-reference",
+      "artifacts": [
+        "scripts/verify-claude-lifecycle.mjs"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [
+        "SessionStart",
+        "SessionEnd",
+        "PreToolUse"
+      ],
+      "areas": [
+        "state",
+        "execution"
+      ],
+      "scope": "Existing selected lifecycle probe; inspect its documented scope before reuse"
+    },
+    {
+      "id": "package-host-probe",
+      "level": "host-probe",
+      "artifacts": [
+        "scripts/verify-plugin.mjs",
+        "test/host-probe-cli.test.ts"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [
+        "PreToolUse",
+        "PostToolUse",
+        "UserPromptSubmit",
+        "Stop"
+      ],
+      "areas": [
+        "effects",
+        "artifacts"
+      ],
+      "scope": "Installed package probes with selected dialect and prompt/preapproval/rejection modes; no automatic differential claim"
+    },
+    {
+      "id": "v2-tool-probe",
+      "level": "host-probe",
+      "artifacts": [
+        "scripts/verify-v2.mjs"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [
+        "PreToolUse",
+        "PostToolUse"
+      ],
+      "areas": [
+        "effects"
+      ],
+      "scope": "Explicit V2 mechanism probe; not default-package conformance"
+    },
+    {
+      "id": "v2-stop-probe",
+      "level": "host-probe",
+      "artifacts": [
+        "scripts/verify-v2-stop.mjs"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [
+        "Stop"
+      ],
+      "areas": [
+        "state",
+        "effects"
+      ],
+      "scope": "Explicit V2 idle/completion prototype; not default V2 Stop parity"
+    },
+    {
+      "id": "protocol-tests",
+      "level": "unit-test",
+      "artifacts": [
+        "test/protocol.test.ts",
+        "test/background-protocol.test.ts"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [],
+      "areas": [
+        "output",
+        "execution",
+        "effects"
+      ],
+      "scope": "Interpreter tests and recorded vectors, not installed runtime proof"
+    },
+    {
+      "id": "effect-tests",
+      "level": "unit-test",
+      "artifacts": [
+        "test/effects.test.ts"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [],
+      "areas": [
+        "effects",
+        "composition"
+      ],
+      "scope": "Pure effect resolution and recorded native ordering vectors"
+    },
+    {
+      "id": "default-v1-tool-tests",
+      "level": "unit-test",
+      "artifacts": [
+        "test/v1-tool-effects.test.ts",
+        "test/plugin-tool-effects.test.ts"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [
+        "PreToolUse",
+        "PostToolUse"
+      ],
+      "areas": [
+        "state",
+        "effects"
+      ],
+      "scope": "Default V1 callbacks and synthetic native commands; host delivery verified separately"
+    },
+    {
+      "id": "claude-aggregation-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/claude-aggregation-oracle.json"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [],
+      "areas": [
+        "output",
+        "composition",
+        "effects"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "claude-background-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/claude-background-oracle.json"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [],
+      "areas": [
+        "execution",
+        "state"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "claude-http-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/claude-http-oracle.json"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [],
+      "areas": [
+        "handlers"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "claude-mcp-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/claude-mcp-oracle.json"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [],
+      "areas": [
+        "handlers"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "claude-prompt-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/claude-prompt-oracle.json"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [
+        "UserPromptSubmit"
+      ],
+      "areas": [
+        "artifacts"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "claude-rewake-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/claude-rewake-oracle.json"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [],
+      "areas": [
+        "execution",
+        "state"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "claude-stop-aggregation-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/claude-stop-aggregation-oracle.json"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [
+        "Stop"
+      ],
+      "areas": [
+        "output",
+        "composition",
+        "effects"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "claude-stop-cancellation-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/claude-stop-cancellation-oracle.json"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [
+        "Stop"
+      ],
+      "areas": [
+        "execution",
+        "state"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "claude-stop-history-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/claude-stop-history-oracle.json"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [
+        "Stop"
+      ],
+      "areas": [
+        "artifacts"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "claude-stop-output-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/claude-stop-output-oracle.json"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [
+        "Stop"
+      ],
+      "areas": [
+        "output",
+        "composition",
+        "effects"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "codex-source-order-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/codex-source-order-oracle.json"
+      ],
+      "dialects": [
+        "codex"
+      ],
+      "events": [],
+      "areas": [
+        "sources"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "codex-stop-artifact-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/codex-stop-artifact-oracle.json"
+      ],
+      "dialects": [
+        "codex"
+      ],
+      "events": [
+        "Stop"
+      ],
+      "areas": [
+        "artifacts"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    },
+    {
+      "id": "codex-stop-inventory-oracle",
+      "level": "recorded-oracle",
+      "artifacts": [
+        "test/fixtures/codex-stop-inventory-oracle.json"
+      ],
+      "dialects": [
+        "codex"
+      ],
+      "events": [
+        "Stop"
+      ],
+      "areas": [
+        "sources"
+      ],
+      "scope": "Recorded fixture with its own provenance and scope; not freshly regenerated by inventory"
+    }
+  ],
+  "cases": [
+    {
+      "id": "claude.pretooluse.control",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.pretooluse.deny",
+        "claude-code.pretooluse.allow-control"
+      ],
+      "description": "Native Claude and default V1 denial with an allowed side-effect control, using identical source and hook bytes",
+      "observables": [
+        "owned invocation count",
+        "event and tool identity",
+        "cwd and command",
+        "nonempty session/call identity and existing transcript",
+        "source/hook digests",
+        "configured denial reason reaches the next model request",
+        "owned filesystem side effect",
+        "primary model request count"
+      ]
+    }
+  ],
+  "exceptions": [
+    {
+      "id": "v1-stop-load-rejection",
+      "host": "v1",
+      "event": "Stop",
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "evidenceCase": "v1.stop-load-rejection",
+      "reason": "Accepted fatal load rejection of enabled Stop before hook/model execution; identify configs, event and missing capability"
+    }
+  ]
+}
