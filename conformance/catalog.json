@@ -434,6 +434,20 @@
       "event": "PreToolUse",
       "area": "effects",
       "summary": "The same source permits the control shell call, executes its side effect and does not deliver a denial reason"
+    },
+    {
+      "id": "codex.pretooluse.deny",
+      "dialect": "codex",
+      "event": "PreToolUse",
+      "area": "effects",
+      "summary": "A matching PreToolUse denial prevents the owned shell side effect and delivers the exact configured reason to the next model request"
+    },
+    {
+      "id": "codex.pretooluse.allow-control",
+      "dialect": "codex",
+      "event": "PreToolUse",
+      "area": "effects",
+      "summary": "The same source permits the control shell call, executes its side effect and does not deliver a denial reason"
     }
   ],
   "evidence": [
@@ -907,7 +921,32 @@
         "source/hook digests",
         "configured denial reason reaches the next model request",
         "owned filesystem side effect",
-        "primary model request count"
+        "primary model request count",
+        "model-visible result belongs to the emitted tool call"
+      ]
+    },
+    {
+      "id": "codex.pretooluse.control",
+      "dialect": "codex",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "codex.pretooluse.deny",
+        "codex.pretooluse.allow-control"
+      ],
+      "description": "Native Codex and default V1 denial with an allowed side-effect control, using identical source and hook bytes",
+      "observables": [
+        "owned invocation count",
+        "event and tool identity",
+        "cwd and command",
+        "nonempty session/call identity and existing transcript",
+        "source/hook digests",
+        "configured denial reason reaches the next model request",
+        "owned filesystem side effect",
+        "primary model request count",
+        "Codex turn identity and selected model",
+        "model-visible result belongs to the emitted tool call"
       ]
     },
     {

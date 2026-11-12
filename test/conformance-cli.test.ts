@@ -70,3 +70,40 @@ test('equivalent native binary option forms enforce the pinned version', { skip:
     assert.match(result.stderr, /NATIVE_VERSION_MISMATCH/)
   }
 })
+
+test('repeatable cases reject duplicates and wrong targets before running either case', async () => {
+  for (const args of [
+    ['-c', 'claude.pretooluse.control', '-c', 'claude.pretooluse.control'],
+    ['-c', 'codex.pretooluse.control', '-c', 'unknown'],
+    ['-c', 'codex.v1.stop-load-rejection', '-H', 'v2'],
+  ]) {
+    const result = await invoke(args, { PATH: '' })
+    assert.equal(result.status, 2)
+    assert.match(result.stderr, /CONFORMANCE_USAGE_/)
+  }
+})
+
+test('Codex and Stop cases check only their conditional binaries', { skip: process.platform === 'win32' }, async () => {
+  const codex = await invoke(['-c', 'codex.pretooluse.control', '-X', '/missing/codex', '-C', '/missing/claude'])
+  assert.equal(codex.status, 3)
+  assert.equal(codex.stdout, '')
+  assert.match(codex.stderr, /DEPENDENCY_UNAVAILABLE: codex/)
+  const stop = await invoke(['-c', 'codex.v1.stop-load-rejection', '-o', '/missing/opencode', '-X', '/missing/codex', '-C', '/missing/claude'])
+  assert.equal(stop.status, 3)
+  assert.equal(stop.stdout, '')
+  assert.match(stop.stderr, /DEPENDENCY_UNAVAILABLE: opencode/)
+})
+
+test('Codex binary option forms enforce the pinned native version', { skip: process.platform === 'win32' }, async t => {
+  const root = await mkdtemp(join(tmpdir(), 'conformance-codex-version-'))
+  t.after(() => rm(root, { recursive: true, force: true }))
+  const binary = join(root, 'wrong-version.cjs')
+  await writeFile(binary, '#!' + process.execPath + '\nif(process.argv[2]!=="--version")process.exit(99);console.log("codex-cli 9.9.9")\n')
+  await chmod(binary, 0o700)
+  for (const args of [['-X', binary], ['-X' + binary], ['--codex-binary', binary], ['--codex-binary=' + binary], ['-rX' + binary]]) {
+    const result = await invoke(['-c', 'codex.pretooluse.control', ...args])
+    assert.equal(result.status, 2)
+    assert.equal(result.stdout, '')
+    assert.match(result.stderr, /NATIVE_VERSION_MISMATCH/)
+  }
+})

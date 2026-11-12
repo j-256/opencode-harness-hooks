@@ -104,13 +104,15 @@ export function coverageReport(catalog, inventory, runs = []) {
 }
 
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/
-const CONTROL_FIELDS = Object.freeze(['hookInvocations', 'event', 'tool', 'cwdMatches', 'commandMatches', 'identityValid', 'transcriptExists', 'reasonDelivered', 'sideEffect', 'primaryModelCalls'])
+const CONTROL_FIELDS = Object.freeze(['hookInvocations', 'event', 'tool', 'cwdMatches', 'commandMatches', 'identityValid', 'transcriptExists', 'resultOwned', 'reasonDelivered', 'sideEffect', 'primaryModelCalls'])
 export function compareControlObservations(native, host) {
-  for (const trace of [native, host]) {
+  for (const [backend, trace] of [['native', native], ['host', host]]) {
     if (!record(trace) || !DIGEST_PATTERN.test(trace.sourceDigest ?? '') || !DIGEST_PATTERN.test(trace.hookDigest ?? '') || !Array.isArray(trace.controls) || trace.controls.length !== 2) throw new ConformanceError('CONFORMANCE_OBSERVATION_INVALID')
     for (const [index, control] of trace.controls.entries()) {
-      const expected = { id: index === 0 ? 'deny' : 'allow', hookInvocations: 1, event: 'PreToolUse', tool: 'Bash', cwdMatches: true, commandMatches: true, identityValid: true, transcriptExists: true, reasonDelivered: index === 0, sideEffect: index === 1, primaryModelCalls: 2 }
-      if (!record(control) || Object.entries(expected).some(([field, value]) => control[field] !== value)) throw new ConformanceError('CONFORMANCE_CONTROL_FAILED')
+      const expected = { id: index === 0 ? 'deny' : 'allow', hookInvocations: 1, event: 'PreToolUse', tool: 'Bash', cwdMatches: true, commandMatches: true, identityValid: true, transcriptExists: true, resultOwned: true, reasonDelivered: index === 0, sideEffect: index === 1, primaryModelCalls: 2 }
+      if (!record(control)) throw new ConformanceError('CONFORMANCE_OBSERVATION_INVALID')
+      const mismatch = Object.entries(expected).find(([field, value]) => control[field] !== value)
+      if (mismatch) throw new ConformanceError(`CONFORMANCE_CONTROL_FAILED: ${backend}.${expected.id}.${mismatch[0]}`)
     }
   }
   if (native.sourceDigest !== host.sourceDigest || native.hookDigest !== host.hookDigest) throw new ConformanceError('CONFORMANCE_SOURCE_MISMATCH')
@@ -119,4 +121,23 @@ export function compareControlObservations(native, host) {
     return Object.fromEntries(['id', ...CONTROL_FIELDS].map(field => [field, control[field]]))
   })
   return { match: true, compared: [...CONTROL_FIELDS], sourceDigest: native.sourceDigest, hookDigest: native.hookDigest, controls }
+}
+
+export function evaluateControlObservations(native, host) {
+  try { return { status: 'passed', comparison: compareControlObservations(native, host) } }
+  catch (error) {
+    if (!(error instanceof ConformanceError) || !(error.message.startsWith('CONFORMANCE_CONTROL_FAILED:') || error.message === 'CONFORMANCE_DIFFERENTIAL_FAILED')) throw error
+    const observe = trace => trace.controls.map(control => ({
+      id: ['deny', 'allow'].includes(control.id) ? control.id : 'unexpected',
+      event: control.event === 'PreToolUse' ? 'PreToolUse' : 'unexpected',
+      tool: control.tool === 'Bash' ? 'Bash' : 'unexpected',
+      ...Object.fromEntries(['hookInvocations', 'primaryModelCalls'].map(key => [key, Number.isSafeInteger(control[key]) && control[key] >= 0 ? control[key] : null])),
+      ...Object.fromEntries(['cwdMatches', 'commandMatches', 'identityValid', 'transcriptExists', 'resultOwned', 'reasonDelivered', 'sideEffect'].map(key => [key, typeof control[key] === 'boolean' ? control[key] : null])),
+    }))
+    return { status: 'failed', comparison: { match: false, sourceDigest: native.sourceDigest, hookDigest: native.hookDigest, failure: error.message, observations: { native: observe(native), host: observe(host) } } }
+  }
+}
+
+export function conformanceExitStatus(report, host, requireComplete) {
+  return report.runs.some(run => run.status === 'failed') ? 1 : requireComplete && !report.profiles[host].complete ? 4 : 0
 }

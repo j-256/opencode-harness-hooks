@@ -5,7 +5,7 @@ import { access, lstat, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFi
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import { ConformanceError, compareControlObservations } from './conformance.mjs'
+import { ConformanceError, evaluateControlObservations } from './conformance.mjs'
 import { runNativeProcess } from './native-process.mjs'
 
 const MODEL = 'claude-sonnet-4-6'
@@ -20,7 +20,7 @@ const MAX_BUILD_BYTES = 16 * 1024 * 1024
 const MAX_REQUESTS = 32
 const HOOK_TIMEOUT_SECONDS = 5
 const VERSION_LIMITS = Object.freeze({ durationMs: 5000, graceMs: 1000, maxBytes: 4096 })
-const PROVIDER_ROUTES = Object.freeze({ '/native/api/hello': 'native-hello', '/native/v1/messages': 'native-model', '/native/v1/messages/count_tokens': 'native-count-tokens', '/host/v1/chat/completions': 'host-model' })
+const PROVIDER_ROUTES = Object.freeze({ '/native/api/hello': 'native-hello', '/native/v1/messages': 'native-model', '/native/v1/responses': 'codex-model', '/native/v1/messages/count_tokens': 'native-count-tokens', '/host/v1/chat/completions': 'host-model' })
 export function providerRoute(path) { return PROVIDER_ROUTES[new URL(path, 'http://loopback').pathname] }
 const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'"
 const sha = value => createHash('sha256').update(value).digest('hex')
@@ -81,6 +81,24 @@ function emitOpenAI(response, args, id, invoke) {
   response.writeHead(200, { 'content-type': 'text/event-stream' })
   response.end('data: ' + JSON.stringify(chunk(delta, null)) + '\n\ndata: ' + JSON.stringify({ ...chunk({}, invoke ? 'tool_calls' : 'stop'), usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 } }) + '\n\ndata: [DONE]\n\n')
 }
+function emitResponses(response, args, id, invoke) {
+  const item = invoke ? { id: 'fc_' + id, type: 'function_call', call_id: id, name: 'exec_command', arguments: JSON.stringify({ cmd: args.command }) } : { id: 'msg_' + id, type: 'message', role: 'assistant', content: [{ type: 'output_text', text: DONE }] }
+  const events = [{ type: 'response.created', response: { id: 'response_' + id } }, { type: 'response.output_item.done', output_index: 0, item }, { type: 'response.completed', response: { id: 'response_' + id, usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } }]
+  response.writeHead(200, { 'content-type': 'text/event-stream' })
+  response.end(events.map(event => 'event: ' + event.type + '\ndata: ' + JSON.stringify(event) + '\n\n').join(''))
+}
+export function controlIdentityValid(input, dialect, toolUseID) {
+  return typeof input?.session_id === 'string' && input.session_id.length > 0 && input.tool_use_id === toolUseID && input.permission_mode === 'bypassPermissions' && (dialect !== 'codex' || typeof input.turn_id === 'string' && input.turn_id.length > 0 && input.model === 'fixture')
+}
+export function controlToolResult(messages, transport, toolUseID) {
+  const candidates = transport === 'responses' ? messages.filter(message => message.type === 'function_call_output') : transport === 'anthropic' ? messages.flatMap(message => Array.isArray(message.content) ? message.content.filter(part => part.type === 'tool_result') : []) : messages.filter(message => message.role === 'tool')
+  const identityKey = transport === 'responses' ? 'call_id' : transport === 'anthropic' ? 'tool_use_id' : 'tool_call_id'
+  const owned = candidates.filter(result => result[identityKey] === toolUseID)
+  if (owned.length !== 1) return { resultOwned: false, reasonDelivered: false }
+  const content = transport === 'responses' ? owned[0].output : owned[0].content
+  const text = typeof content === 'string' ? content : Array.isArray(content) ? content.filter(part => ['text', 'input_text'].includes(part?.type) && typeof part.text === 'string').map(part => part.text).join('\n') : ''
+  return { resultOwned: true, reasonDelivered: text.includes(REASON) }
+}
 export async function stopHost(child, done) {
   if (!child || !done) return
   const signal = name => { try { if (child.pid) process.kill(-child.pid, name) } catch (error) { if (error.code !== 'ESRCH') throw error } }
@@ -91,9 +109,12 @@ export async function stopHost(child, done) {
   } finally { signal('SIGKILL') }
 }
 
-export async function runClaudePretoolControl({ catalog, packageRoot, claudeBinary, opencodeBinary }) {
+export const runClaudePretoolControl = options => runPretoolControl({ ...options, dialect: 'claude-code', nativeBinary: options.claudeBinary })
+export async function runPretoolControl({ catalog, packageRoot, dialect, nativeBinary, opencodeBinary }) {
+  ensure(['claude-code', 'codex'].includes(dialect), 'CONFORMANCE_DIALECT_INVALID')
+  const codex = dialect === 'codex'
   if (process.platform === 'win32') throw new ConformanceError('PLATFORM_UNAVAILABLE: POSIX process groups', 2)
-  const nativeVersion = await verifyPinnedVersion(claudeBinary, 'claude', catalog.versions.native['claude-code'])
+  const nativeVersion = await verifyPinnedVersion(nativeBinary, codex ? 'codex' : 'claude', catalog.versions.native[dialect])
   const hostVersion = await verifyPinnedVersion(opencodeBinary, 'opencode', catalog.versions.hosts.v1)
   const entrypoint = join(packageRoot, 'dist/index.js')
   try { await access(entrypoint) } catch { throw new ConformanceError('DEPENDENCY_UNAVAILABLE: built adapter', 3) }
@@ -104,9 +125,9 @@ export async function runClaudePretoolControl({ catalog, packageRoot, claudeBina
   let auxiliaryRequests = 0, totalRequests = 0, nativeHelloRequests = 0
   try {
     const project = join(root, 'project'), nativeHome = join(root, 'native-home'), hostHome = join(root, 'host-home')
-    const trace = join(root, 'owned-hook.jsonl'), hook = join(root, 'hook.cjs'), source = join(root, 'hooks.json'), mcp = join(root, 'mcp.json')
+    const trace = join(root, 'owned-hook.jsonl'), hook = join(root, 'hook.cjs'), source = join(nativeHome, 'native/hooks.json'), mcp = join(root, 'mcp.json')
     await Promise.all([project, nativeHome, hostHome].map(path => mkdir(path)))
-    const nativeConfig = join(nativeHome, 'claude'), hostConfig = join(hostHome, 'config/opencode')
+    const nativeConfig = join(nativeHome, 'native'), hostConfig = join(hostHome, 'config/opencode')
     await Promise.all([mkdir(nativeConfig), mkdir(hostConfig, { recursive: true }), writeFile(mcp, '{"mcpServers":{}}')])
     const hookText = `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({input:p,transcriptExists:typeof p.transcript_path==='string'&&fs.existsSync(p.transcript_path)})+'\\n');if(p.tool_input.command.includes('CONFORMANCE_DENY'))console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:${JSON.stringify(REASON)}}}));`
     await writeFile(hook, hookText)
@@ -126,52 +147,62 @@ export async function runClaudePretoolControl({ catalog, packageRoot, claudeBina
         ensure(route !== undefined, 'GATEWAY_ROUTE_INVALID')
         if (route === 'native-hello') { nativeHelloRequests++; response.writeHead(404); response.end('{}'); return }
         if (route === 'native-count-tokens') { auxiliaryRequests++; response.writeHead(200, { 'content-type': 'application/json' }); response.end('{"input_tokens":1}'); return }
-        const native = route === 'native-model'
+        const responses = route === 'codex-model'
+        const native = route === 'native-model' || responses
+        ensure(!native || responses === codex, 'GATEWAY_NATIVE_TRANSPORT_INVALID')
         const body = JSON.parse(Buffer.concat(chunks))
-        const primary = body.tools?.some(tool => native ? tool.name === 'Bash' : tool.function?.name === 'bash')
+        const primary = body.tools?.some(tool => responses ? tool.name === 'exec_command' : native ? tool.name === 'Bash' : tool.function?.name === 'bash')
+        if (responses) ensure(primary, 'GATEWAY_NATIVE_TOOL_UNAVAILABLE')
         if (!primary) { auxiliaryRequests++; if (native) emitAnthropic(response, body, {}, 'auxiliary', false); else emitOpenAI(response, {}, 'auxiliary', false); return }
-        const id = CASES.find(id => JSON.stringify(body.messages).includes('CONFORMANCE_CASE:' + id))
+        const messages = responses ? body.input : body.messages
+        const id = CASES.find(id => JSON.stringify(messages).includes('CONFORMANCE_CASE:' + id))
         ensure(id, 'GATEWAY_CASE_MISSING')
         const backend = native ? 'native' : 'host', key = backend + ':' + id
         const state = traffic.get(key) ?? { count: 0, reasonDelivered: false }
         state.count++
         ensure(state.count <= 2, 'GATEWAY_PRIMARY_LIMIT')
-        const results = native ? body.messages.flatMap(message => Array.isArray(message.content) ? message.content.filter(part => part.type === 'tool_result') : []) : body.messages.filter(message => message.role === 'tool')
-        if (state.count === 1) ensure(!JSON.stringify(body.messages).includes(REASON), 'GATEWAY_REASON_CONTAMINATED')
-        else { ensure(results.length > 0, 'GATEWAY_TOOL_RESULT_MISSING'); state.reasonDelivered = JSON.stringify(results).includes(REASON) }
+        if (state.count === 1) ensure(!JSON.stringify(messages).includes(REASON), 'GATEWAY_REASON_CONTAMINATED')
+        else Object.assign(state, controlToolResult(messages, responses ? 'responses' : native ? 'anthropic' : 'chat', toolID(backend, id)))
         traffic.set(key, state)
         const args = { command: command(id), description: 'Controlled conformance side effect' }
-        if (native) emitAnthropic(response, body, args, toolID(backend, id), state.count === 1)
+        if (responses) emitResponses(response, args, toolID(backend, id), state.count === 1)
+        else if (native) emitAnthropic(response, body, args, toolID(backend, id), state.count === 1)
         else emitOpenAI(response, args, toolID(backend, id), state.count === 1)
       } catch (error) { gatewayErrors.push(error instanceof ConformanceError ? error.message : 'GATEWAY_INVALID_REQUEST'); if (!response.headersSent) response.writeHead(500); response.end('{}') }
     })
     await new Promise((resolve, reject) => { gateway.once('error', reject); gateway.listen(0, '127.0.0.1', resolve) })
     const address = 'http://127.0.0.1:' + gateway.address().port
     const environment = home => ({ PATH: process.env.PATH, HOME: home, PWD: project, SHELL: '/bin/sh', LANG: 'C', XDG_CONFIG_HOME: join(home, 'config'), XDG_STATE_HOME: join(home, 'state'), XDG_DATA_HOME: join(home, 'data'), XDG_CACHE_HOME: join(home, 'cache'), GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', DISABLE_TELEMETRY: '1', DISABLE_ERROR_REPORTING: '1', DISABLE_NON_ESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' })
-    const nativeEnv = { ...environment(nativeHome), CLAUDE_CONFIG_DIR: nativeConfig, ANTHROPIC_API_KEY: 'synthetic', ANTHROPIC_BASE_URL: address + '/native' }
-    const nativeArgs = ['-p', '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config', '--mcp-config', mcp, '--settings', source, '--tools', 'Bash', '--dangerously-skip-permissions', '--max-turns', '3', '--model', MODEL]
+    const nativeEnv = codex ? { ...environment(nativeHome), CODEX_HOME: nativeConfig } : { ...environment(nativeHome), CLAUDE_CONFIG_DIR: nativeConfig, ANTHROPIC_API_KEY: 'synthetic', ANTHROPIC_BASE_URL: address + '/native' }
+    const nativeArgs = codex ? ['exec', '--json', '--dangerously-bypass-hook-trust', '--skip-git-repo-check', '--model', 'fixture', '-'] : ['-p', '--output-format', 'json', '--setting-sources', '', '--strict-mcp-config', '--mcp-config', mcp, '--settings', source, '--tools', 'Bash', '--dangerously-skip-permissions', '--max-turns', '3', '--model', MODEL]
+    if (codex) await writeFile(join(nativeConfig, 'config.toml'), 'model="fixture"\nmodel_provider="fixture"\napproval_policy="never"\nsandbox_mode="danger-full-access"\n[features]\nhooks=true\n[model_providers.fixture]\nname="Fixture"\nbase_url="' + address + '/native/v1"\nwire_api="responses"\nrequires_openai_auth=false\nsupports_websockets=false\n')
     const observe = async (backend, id) => {
       const lines = (await readFile(trace, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
       const row = lines[0], input = row?.input, requests = traffic.get(backend + ':' + id)
       let content = null
       try { content = await readFile(marker(id), 'utf8') } catch (error) { if (error.code !== 'ENOENT') throw error }
       if (content !== null) ensure(content === (id === 'deny' ? 'CONFORMANCE_DENY' : 'CONFORMANCE_ALLOW'), 'CONFORMANCE_SIDE_EFFECT_CONTENT')
-      return { id, hookInvocations: lines.length, event: input?.hook_event_name ?? null, tool: input?.tool_name ?? null, cwdMatches: input?.cwd === project, commandMatches: input?.tool_input?.command === command(id), identityValid: typeof input?.session_id === 'string' && input.session_id.length > 0 && input.tool_use_id === toolID(backend, id) && input.permission_mode === 'bypassPermissions', transcriptExists: row?.transcriptExists === true, reasonDelivered: requests?.reasonDelivered === true, sideEffect: content !== null, primaryModelCalls: requests?.count ?? 0 }
+      return { id, hookInvocations: lines.length, event: input?.hook_event_name ?? null, tool: input?.tool_name ?? null, cwdMatches: input?.cwd === project, commandMatches: input?.tool_input?.command === command(id), identityValid: controlIdentityValid(input, dialect, toolID(backend, id)), transcriptExists: row?.transcriptExists === true, resultOwned: requests?.resultOwned === true, reasonDelivered: requests?.reasonDelivered === true, sideEffect: content !== null, primaryModelCalls: requests?.count ?? 0 }
     }
     const prepare = async id => { await writeFile(trace, ''); await rm(marker(id), { force: true }) }
     const nativeControls = []
     for (const id of CASES) {
       stage = 'native-' + id
       await prepare(id)
-      const execution = await runNativeProcess(claudeBinary, nativeArgs, 'CONFORMANCE_CASE:' + id, project, nativeEnv)
-      const result = JSON.parse(execution.stdout)
-      ensure(result.is_error === false && result.result?.includes(DONE), 'NATIVE_RESULT_INVALID')
+      const execution = await runNativeProcess(nativeBinary, nativeArgs, 'CONFORMANCE_CASE:' + id, project, nativeEnv)
+      if (codex) {
+        const results = execution.stdout.trim().split('\n').map(line => JSON.parse(line))
+        ensure(results.filter(row => row.type === 'turn.completed').length === 1 && results.some(row => row.type === 'item.completed' && row.item?.type === 'agent_message' && row.item.text === DONE), 'NATIVE_RESULT_INVALID')
+      } else {
+        const result = JSON.parse(execution.stdout)
+        ensure(result.is_error === false && result.result?.includes(DONE), 'NATIVE_RESULT_INVALID')
+      }
       nativeControls.push(await observe('native', id))
     }
     stage = 'host-start'
     const password = 'synthetic-conformance-only'
     const hostEnv = { ...environment(hostHome), OPENCODE_CONFIG_DIR: hostConfig, OPENCODE_DISABLE_PROJECT_CONFIG: '1', OPENCODE_DISABLE_CLAUDE_CODE: '1', OPENCODE_DISABLE_DEFAULT_PLUGINS: '1', OPENCODE_DISABLE_MODELS_FETCH: '1', OPENCODE_DISABLE_EXTERNAL_SKILLS: '1', OPENCODE_PASSWORD: password }
-    const options = { sources: [{ id: 'conformance', dialect: 'claude-code', path: source }], reviewedDigests: { conformance: sourceDigest }, permissionMode: 'bypassPermissions' }
+    const options = { sources: [{ id: 'conformance', dialect, path: source }], reviewedDigests: { conformance: sourceDigest }, permissionMode: 'bypassPermissions' }
     await writeFile(join(hostConfig, 'opencode.json'), JSON.stringify({ model: 'fixture/fixture', small_model: 'fixture/fixture', enabled_providers: ['fixture'], snapshot: false, share: 'disabled', autoupdate: false, permission: 'allow', plugin: [[pathToFileURL(entrypoint).href, options]], provider: { fixture: { npm: '@ai-sdk/openai-compatible', options: { apiKey: 'synthetic', baseURL: address + '/host/v1' }, models: { fixture: { name: 'Conformance fixture', tool_call: true, limit: { context: 50000, output: 2000 } } } } } }))
     child = spawn(opencodeBinary, ['--print-logs', 'serve', '--hostname', '127.0.0.1', '--port', '0'], { cwd: project, env: hostEnv, detached: true, stdio: ['ignore', 'pipe', 'pipe'] })
     done = new Promise(resolve => child.once('close', resolve))
@@ -201,8 +232,8 @@ export async function runClaudePretoolControl({ catalog, packageRoot, claudeBina
     ensure(hostCodes.size === 0, 'HOST_DIAGNOSTIC_FAILURE')
     ensure(sha(await readFile(source)) === sourceDigest && sha(await readFile(hook)) === hookDigest, 'CONFORMANCE_SOURCE_CHANGED')
     ensure(await fingerprintAdapter(packageRoot) === adapterBuildSha256, 'CONFORMANCE_BUILD_CHANGED')
-    const comparison = compareControlObservations({ sourceDigest, hookDigest, controls: nativeControls }, { sourceDigest, hookDigest, controls: hostControls })
-    return { caseID: 'claude.pretooluse.control', host: 'v1', nativeVersion, hostVersion, status: 'passed', platform: process.platform, architecture: process.arch, adapterBuildSha256, comparison, auxiliaryRequests, nativeHelloRequests, isolation: { temporaryHomeAndConfig: true, loopbackProvider: true, sourceBytesUnchanged: true, nativePermissionBypass: true, nativeTrustVerified: false, machineManagedSettingsMayRemain: true }, limits: ['Specified observables only; full event payload and rendering remain unverified', 'No real-model or native trust conformance claim', 'Native api/hello receives 404 and is counted outside model requests', 'V1 only; Codex and V2 are not exercised by this case'] }
+    const outcome = evaluateControlObservations({ sourceDigest, hookDigest, controls: nativeControls }, { sourceDigest, hookDigest, controls: hostControls })
+    return { caseID: codex ? 'codex.pretooluse.control' : 'claude.pretooluse.control', host: 'v1', nativeVersion, hostVersion, ...outcome, platform: process.platform, architecture: process.arch, adapterBuildSha256, auxiliaryRequests, nativeHelloRequests, isolation: { temporaryHomeAndConfig: true, loopbackProvider: true, sourceBytesUnchanged: true, nativePermissionBypass: true, nativeTrustVerified: false, machineManagedSettingsMayRemain: true, ...(codex ? { nativeHookTrustBypassed: true } : {}) }, limits: ['Specified observables only; full event payload and rendering remain unverified', 'No real-model or native trust conformance claim', ...(codex ? ['Native exec_command is observed independently as Bash hook input; other tool families remain unverified'] : ['Native api/hello receives 404 and is counted outside model requests']), 'V1 only; V2 is not exercised by this case'] }
   } catch (error) {
     if (error instanceof ConformanceError) throw error
     throw new ConformanceError('CONFORMANCE_CASE_FAILED: ' + stage)

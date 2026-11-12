@@ -83,8 +83,8 @@ test('catalog validation rejects duplicate obligations and unsafe or unclassifie
 
 function controlTrace() {
   return { sourceDigest: 'a'.repeat(64), hookDigest: 'b'.repeat(64), controls: [
-    { id: 'deny', hookInvocations: 1, event: 'PreToolUse', tool: 'Bash', cwdMatches: true, commandMatches: true, identityValid: true, transcriptExists: true, reasonDelivered: true, sideEffect: false, primaryModelCalls: 2 },
-    { id: 'allow', hookInvocations: 1, event: 'PreToolUse', tool: 'Bash', cwdMatches: true, commandMatches: true, identityValid: true, transcriptExists: true, reasonDelivered: false, sideEffect: true, primaryModelCalls: 2 },
+    { id: 'deny', hookInvocations: 1, event: 'PreToolUse', tool: 'Bash', cwdMatches: true, commandMatches: true, identityValid: true, transcriptExists: true, resultOwned: true, reasonDelivered: true, sideEffect: false, primaryModelCalls: 2 },
+    { id: 'allow', hookInvocations: 1, event: 'PreToolUse', tool: 'Bash', cwdMatches: true, commandMatches: true, identityValid: true, transcriptExists: true, resultOwned: true, reasonDelivered: false, sideEffect: true, primaryModelCalls: 2 },
   ] }
 }
 
@@ -106,6 +106,7 @@ test('matching but wrong native and host observations cannot produce a vacuous c
     (trace: any) => { trace.controls[1].sideEffect = false },
     (trace: any) => { trace.controls[1].reasonDelivered = true },
     (trace: any) => { trace.controls[0].commandMatches = false },
+    (trace: any) => { trace.controls[0].resultOwned = false },
     (trace: any) => { trace.controls[0].primaryModelCalls = 1 },
     (trace: any) => { trace.controls[0].tool = 'Read' },
     (trace: any) => { trace.controls.reverse() },
@@ -126,6 +127,13 @@ test('comparison rejects source substitutions, absent controls and malformed evi
     mutate(value)
     assert.throws(() => compareControlObservations(controlTrace(), value), /CONFORMANCE_OBSERVATION_INVALID/)
   }
+})
+
+test('control failures identify the backend, control and observable without disclosing payloads', async () => {
+  const { compareControlObservations } = await library()
+  const trace = controlTrace()
+  trace.controls[0]!.identityValid = false
+  assert.throws(() => compareControlObservations(trace, controlTrace()), { message: 'CONFORMANCE_CONTROL_FAILED: native.deny.identityValid' })
 })
 
 test('the native hello request is classified separately from model calls and unknown routes', async () => {

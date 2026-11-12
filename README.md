@@ -12,7 +12,7 @@ The [architecture guide](docs/architecture.md) describes the host-neutral engine
 
 Use the [read-only inspector](docs/inspection.md) to review native source digests, selected registrations, exclusions and compatibility gaps before activation.
 
-The [native conformance catalog and runner](conformance/README.md) track versioned requirements, existing evidence and gaps separately. An independent native-versus-V1 control case checks tool denial and an allowed side effect with the same hook configuration. Passing that case does not establish full native conformance or private migration parity.
+The [native conformance catalog and runner](conformance/README.md) track versioned requirements, existing evidence and gaps separately. Independent native-versus-V1 cases check Claude and Codex tool denial and allowed side effects with unchanged hook configurations. Per-dialect Stop rejection cases verify the accepted V1 incompatibility boundary. Passing selected cases does not establish full native conformance or private migration parity.
 
 Configurations containing selected enabled `Stop` registrations are incompatible with both default host entrypoints. Loading fails with `HOST_STOP_UNSUPPORTED`, naming the offending configurations, event and missing awaited completion-decision capability. V1 rejection is an accepted limitation. V2 rejection is a supported-subset boundary while its completion adapter remains unintegrated; full V2 Stop parity remains required. See [the compatibility exception](docs/compatibility.md#v1-stop-exception).
 
