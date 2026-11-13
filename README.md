@@ -4,6 +4,8 @@ Compatibility adapters for running native Claude Code and Codex hook configurati
 
 Each source retains its native protocol and registration identity. Multiple sources may be selected together; registrations are never deduplicated.
 
+Node requires version 22.13 or later. The default V1 binding keeps owned native inputs, records and prompt context in [private durable session storage](docs/session-state.md), using built-in SQLite on Node and Bun. Its cold-resume comparisons preserve historical original input after a tool rewrite; full lifecycle and compaction parity remain separate requirements.
+
 The package has a shared runtime and separate V1/V2 entrypoints. The implementation target is every feasible behavior through stock host APIs, with demonstrated host limitations documented in the [V1 implementation status](docs/v1-compatibility.md). Verified subsets can be used while remaining services, mappings and conformance work proceeds. Tool enforcement and [prompt submission](docs/prompts.md) have controlled runtime evidence on both pinned hosts. V2 native integration and complete lifecycle/artifact/trust coverage remain separate work. Review the intended source configuration and supported boundaries before migrating an existing integration; see [compatibility](docs/compatibility.md) and [runtime configuration](docs/runtime.md).
 
 V1 providers with custom authentication fetch loaders require [explicit provider composition](docs/v1-provider-composition.md) for prompt context; tool-only use avoids that transport limitation. The [stock-host guide](docs/stock-hosts.md) defines the supported command/prompt/tool subset, explicit source selection, incompatible configurations and executable checks.

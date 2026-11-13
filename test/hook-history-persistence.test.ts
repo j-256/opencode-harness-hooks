@@ -1,5 +1,9 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { executeRegistration } from '../src/handlers.js'
 import { StartupRecords } from '../src/startup-records.js'
 import { PromptAttachments } from '../src/prompt-attachments.js'
 import { Sessions } from '../src/sessions.js'
@@ -24,6 +28,22 @@ function admit(records: StartupRecords | PromptAttachments, sessions: Sessions, 
   const session = sessions.get('session')
   records.admit({ host: 'v1', event: 'UserPromptSubmit', sessionID: 'session', messageID: 'first', prompt: 'Original', signal: session.turnSignal }, session, result)
 }
+
+test('structured startup context on a nonzero command exit survives cold restoration', async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'startup-exit-'))
+  const sessions = new Sessions(), source = new StartupRecords(), next = new Sessions(), restored = new StartupRecords()
+  t.after(async () => { source.dispose(); restored.dispose(); sessions.dispose(); next.dispose(); await rm(cwd, { recursive: true, force: true }) })
+  const result = await executeRegistration({ id: 'registration', sourceID: 'source', dialect: 'claude-code', event: 'SessionStart', groupIndex: 0, handlerIndex: 0, handler: { type: 'command', command: '/bin/sh', args: ['-c', 'printf \'%s\' \'{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"EXTRA"}}\'; exit 3'] } }, { host: 'v1', event: 'SessionStart', sessionID: 'session', cwd, data: { source: 'startup', transcript_path: join(cwd, 'transcript.jsonl') } }, { projectRoot: cwd, environment: { PATH: process.env.PATH }, captureCommandArtifacts: true })
+  assert.equal(result.status, 'success')
+  const input = dispatch('SessionStart')
+  admit(source, sessions, { ...input, entries: [{ ...input.entries[0]!, result }] })
+  const snapshot = source.snapshot('session')
+  source.dispose(); sessions.dispose()
+  restored.restore(next.get('session'), snapshot)
+  assert.deepEqual(restored.snapshot('session'), snapshot)
+  assert.equal(restored.read('session')[0]!.records[0]!.body.attachment.exitCode, 3)
+  assert.match(restored.read('session')[0]!.model.claude[0]!, /EXTRA/)
+})
 
 for (const event of ['SessionStart', 'UserPromptSubmit'] as const) for (const variant of ['error', 'timeout', 'additional', 'empty', ...(event === 'UserPromptSubmit' ? ['warning'] as const : [])] as const) test(`${event} ${variant} artifacts survive restoration without regenerated IDs or timestamps`, () => {
   const result = dispatch(event), base = result.entries[0]!.result as HookEffect

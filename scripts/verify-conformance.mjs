@@ -5,16 +5,17 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { ConformanceError, validateCatalog, readInventory, coverageReport, conformanceExitStatus } from './lib/conformance.mjs'
 
-const EXECUTABLE_CASES = new Set(['claude.sessionstart.context', 'codex.sessionstart.context', 'claude.pretooluse.control', 'codex.pretooluse.control', 'claude.pretooluse.input-rewrite', 'codex.pretooluse.input-rewrite', 'claude.posttooluse.effects', 'codex.posttooluse.effects', 'claude.tool-failures', 'codex.tool-failures', 'claude.pretooluse.http', 'claude.posttooluse.http', 'claude.pretooluse.http-failures', 'claude-code.v1.stop-load-rejection', 'codex.v1.stop-load-rejection'])
+const EXECUTABLE_CASES = new Set(['claude.session.resume', 'codex.session.resume', 'claude.sessionstart.context', 'codex.sessionstart.context', 'claude.pretooluse.control', 'codex.pretooluse.control', 'claude.pretooluse.input-rewrite', 'codex.pretooluse.input-rewrite', 'claude.posttooluse.effects', 'codex.posttooluse.effects', 'claude.tool-failures', 'codex.tool-failures', 'claude.pretooluse.http', 'claude.posttooluse.http', 'claude.pretooluse.http-failures', 'claude-code.v1.stop-load-rejection', 'codex.v1.stop-load-rejection'])
 const HELP = `Usage: node scripts/verify-conformance.mjs [-r] [-c CASE ...] [-H v1|v2] [-C PATH] [-X PATH] [-o PATH]
 
 List pinned native requirements and existing evidence without executing hooks.
 An optional case compares actual native behavior with an installed OpenCode.
 Pins: Claude Code 2.1.318, Codex 0.167.0, OpenCode V1 1.19.5 and V2 2.2.5.
-Requires Node.js 22+. Inventory and help need no binaries, build or account.
+Requires Node.js 22.13+. Inventory and help need no binaries, build or account.
 
 Options:
   -c, --case ID          Repeat for independent cases (V1 only):
+                        claude.session.resume, codex.session.resume,
                         claude.sessionstart.context, codex.sessionstart.context,
                         claude.pretooluse.control, codex.pretooluse.control,
                         claude.pretooluse.input-rewrite,
@@ -78,9 +79,9 @@ try {
         const { runStopRejection } = await import('./lib/conformance-stop.mjs')
         runs.push(await runStopRejection(options))
       } else {
-        const { runPretoolControl, runStartupContext, runInputRewrite, runPosttoolEffects, runToolFailures, runHttpPretool, runHttpPosttool, runHttpFailures } = await import('./lib/conformance-pretool.mjs')
+        const { runPretoolControl, runStartupContext, runSessionResume, runInputRewrite, runPosttoolEffects, runToolFailures, runHttpPretool, runHttpPosttool, runHttpFailures } = await import('./lib/conformance-pretool.mjs')
         const nativeBinary = scenario.dialect === 'codex' ? binary(parsed.values['codex-binary'] ?? process.env.CODEX_BINARY ?? 'codex') : binary(parsed.values['claude-binary'] ?? process.env.CLAUDE_BINARY ?? 'claude')
-        const run = scenario.id.endsWith('.sessionstart.context') ? runStartupContext : scenario.id.endsWith('.http-failures') ? runHttpFailures : scenario.id.endsWith('.posttooluse.http') ? runHttpPosttool : scenario.id.endsWith('.pretooluse.http') ? runHttpPretool : scenario.id.endsWith('.tool-failures') ? runToolFailures : scenario.id.endsWith('.posttooluse.effects') ? runPosttoolEffects : scenario.id.endsWith('.input-rewrite') ? runInputRewrite : runPretoolControl
+        const run = scenario.id.endsWith('.session.resume') ? runSessionResume : scenario.id.endsWith('.sessionstart.context') ? runStartupContext : scenario.id.endsWith('.http-failures') ? runHttpFailures : scenario.id.endsWith('.posttooluse.http') ? runHttpPosttool : scenario.id.endsWith('.pretooluse.http') ? runHttpPretool : scenario.id.endsWith('.tool-failures') ? runToolFailures : scenario.id.endsWith('.posttooluse.effects') ? runPosttoolEffects : scenario.id.endsWith('.input-rewrite') ? runInputRewrite : runPretoolControl
         runs.push(await run({ ...options, nativeBinary }))
       }
     }

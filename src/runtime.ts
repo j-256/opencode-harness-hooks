@@ -35,6 +35,11 @@ const STOP_HOST_CAPABILITY = 'awaited-completion-decision'
 type NativeData = NonNullable<NativeEvent['dialectData']>
 
 export interface RuntimeServices {
+  readonly nativeState?: {
+    readonly captureOriginals?: boolean
+    readonly ensure: (session: SessionSnapshot, signal: AbortSignal) => Promise<void>
+    readonly checkpoint: (session: SessionSnapshot, signal: AbortSignal) => Promise<void>
+  }
   readonly sessionStart?: SessionStartServices
   readonly stop?: StopServices
   readonly stopUnavailableCapability?: 'awaited-completion-decision' | 'verified-completion-adapter'
@@ -97,7 +102,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     if (source.unwiredEvents.length) throw new HostHookError('HOST_EVENT_UNAVAILABLE', 'unsupported', source.id)
   }
   const sessions = new Sessions()
-  const hasCodexToolHooks = sources.some(source => source.enabled && source.dialect === 'codex' && source.registrations.some(registration => ['PreToolUse', 'PostToolUse'].includes(registration.event)))
+  const needsCodexOriginals = services.nativeState?.captureOriginals || sources.some(source => source.enabled && source.dialect === 'codex' && source.registrations.length)
   const active = new Set<Promise<DispatchResult>>()
   let observerFailures = 0
   const diagnostic = services.dispatchDiagnostic ?? ((value: DispatchResult['diagnostic']) => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', code: 'DISPATCH_RESULT', ...value })) })
@@ -111,7 +116,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
   const starts = services.sessionStart && sources.some(source => source.enabled && source.registrations.some(registration => registration.event === 'SessionStart')) ? new SessionStarts({ host, sources, sessions, hostServices: { ...services.host, environment, projectRoot: directory }, ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}), services: services.sessionStart, observe }) : undefined
   const stops = services.stop && host === 'v2' && sources.some(source => source.enabled && source.registrations.some(registration => registration.event === 'Stop')) ? new Stops({ host, sources, sessions, hostServices: { ...services.host, environment, projectRoot: directory }, ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}), ...(starts ? { starts } : {}), services: services.stop, observe }) : undefined
   const reported = new WeakSet<object>()
-  const needsModelArtifacts = !!services.transcripts?.observeModel && sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.length)
+  const needsModelArtifacts = !!services.transcripts?.observeModel && (services.nativeState?.captureOriginals === true || sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.length))
   const observeModel = (event: HostModelEvent) => {
     if (starts) {
       if (event.host !== host) throw new HostHookError('HOST_VERSION_MISMATCH', 'unsupported')
@@ -161,9 +166,10 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
       const signal = AbortSignal.any([event.signal, session.signal, session.turnSignal])
       const pending = (async () => {
         if (signal.aborted) throw new HostHookError('HOST_TOOL_CANCELLED', 'cancelled')
+        await services.nativeState?.ensure(session, signal)
         if (starts) await runService(null, signal, () => starts.wait(event.sessionID))
-        if (sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.length)) services.transcripts?.observe(event, session)
-        if (hasCodexToolHooks) services.codexTranscripts?.observe(event, session)
+        if (services.nativeState?.captureOriginals || sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.length)) services.transcripts?.observe(event, session)
+        if (needsCodexOriginals) services.codexTranscripts?.observe(event, session)
         const failure = v1ShellFailure(event)
         const base: NativeEvent = { host, event: event.event, ...(failure ? { dialectEvents: { codex: 'PostToolUse' } } : {}), sessionID: event.sessionID, cwd: directory, tool: event.tool, toolInput: event.event === 'PreToolUse' ? event.toolInput : event.effectiveInput }
         const selected = matched(sources, base).filter(registration => !nativeSkip(registration, eventForDialect(base, registration.dialect)))
@@ -185,6 +191,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
         for (const registration of selected) {
           try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
         }
+        await services.nativeState?.checkpoint(session, signal)
         const dispatch = await dispatchEvent(sources, nativeEvent, { ...services.host, environment, projectRoot: directory, signal, sessionSignal: session.signal })
         return observe(dispatch)
       })().catch((error: unknown) => {
@@ -206,6 +213,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     const signal = AbortSignal.any([event.signal, session.signal, session.turnSignal])
     const pending = (async () => {
       if (signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')
+      await services.nativeState?.ensure(session, signal)
       if (starts) await runService(null, signal, () => starts.wait(event.sessionID))
       const base: NativeEvent = { host, event: 'UserPromptSubmit', sessionID: event.sessionID, cwd: directory }
       const selected = matched(sources, base).filter(registration => !nativeSkip(registration, base))
@@ -219,6 +227,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
       for (const registration of selected) {
         try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
       }
+      await services.nativeState?.checkpoint(session, signal)
       return observe(await dispatchEvent(sources, nativeEvent, { ...services.host, ...(services.transcripts?.admitPrompt ? { captureCommandArtifacts: true, captureHttpArtifacts: true } : {}), environment, projectRoot: directory, signal, sessionSignal: session.signal }))
     })().catch((error: unknown) => {
       if (signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')

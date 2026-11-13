@@ -189,3 +189,18 @@ test('unrelated session commits do not invalidate an owned absent-session receip
   assert.deepEqual((await f.store.load('left')).payload, { input: 'left' })
   assert.deepEqual((await f.store.load('right')).payload, { input: 'right' })
 })
+
+test('bounded snapshot discovery verifies live receipts and excludes deleted sessions', async t => {
+  const f = await fixture(t), seen: string[] = []
+  assert.equal(await f.store.someSession(() => true), false)
+  await f.store.save(await f.store.load('first'), { context: false })
+  await f.store.save(await f.store.load('second'), { context: true })
+  await f.store.delete(await f.store.load('deleted'))
+  assert.equal(await f.store.someSession(receipt => { seen.push(receipt.sessionID); assert.ok(Object.isFrozen(receipt.payload)); return receipt.payload!.context === true }), true)
+  assert.deepEqual(seen, ['first', 'second'])
+  await assert.rejects(f.store.load(undefined as never), { code: 'SESSION_STORE_SESSION_INVALID' })
+  await assert.rejects(f.store.someSession(() => true, AbortSignal.abort()), { code: 'SESSION_STORE_CANCELLED' })
+  const cancelled = new AbortController()
+  await assert.rejects(f.store.someSession(() => { cancelled.abort(); return true }, cancelled.signal), { code: 'SESSION_STORE_CANCELLED' })
+  await assert.rejects(f.store.someSession(() => { throw new Error('PRIVATE_CALLBACK_DETAIL') }), { code: 'SESSION_STORE_STORAGE_FAILED' })
+})

@@ -544,6 +544,18 @@
       "dialect": "codex",
       "area": "effects",
       "summary": "Deliver owned fresh startup context before the first user and preserve native startup metadata"
+    },
+    {
+      "id": "claude-code.state.resume-original-input",
+      "dialect": "claude-code",
+      "area": "state",
+      "summary": "Retain owned original shell input and native transcript identity across a cold process restart and an accepted resumed turn"
+    },
+    {
+      "id": "codex.state.resume-original-input",
+      "dialect": "codex",
+      "area": "state",
+      "summary": "Retain owned original shell input and native transcript identity across a cold process restart and an accepted resumed turn"
     }
   ],
   "evidence": [
@@ -1358,6 +1370,44 @@
         "Startup context retained after a tool turn",
         "Allowed and denied tool side effects",
         "Unchanged source and executed hook bytes"
+      ]
+    },
+    {
+      "id": "claude.session.resume",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.state.resume-original-input"
+      ],
+      "description": "Independent native session resume and a restarted stock V1 server retain historical original shell input after a rewrite, using identical source and hook bytes",
+      "observables": [
+        "A retained native session identity across independent processes",
+        "A retained native transcript prefix at the resumed tool hook",
+        "The owned historical original input rather than the effective rewrite",
+        "Current pre/post input, hook invocation and side-effect controls",
+        "Current result ownership and literal output in the next model request",
+        "Unchanged source and hook bytes and a stable adapter build fingerprint"
+      ]
+    },
+    {
+      "id": "codex.session.resume",
+      "dialect": "codex",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "codex.state.resume-original-input"
+      ],
+      "description": "Independent native session resume and a restarted stock V1 server retain historical original shell input after a rewrite, using identical source and hook bytes",
+      "observables": [
+        "A retained native session identity across independent processes",
+        "A retained native transcript prefix at the resumed tool hook",
+        "The owned historical original input rather than the effective rewrite",
+        "Current pre/post input, hook invocation and side-effect controls",
+        "Current result ownership and literal output in the next model request",
+        "Unchanged source and hook bytes and a stable adapter build fingerprint"
       ]
     }
   ],

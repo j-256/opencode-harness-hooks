@@ -69,6 +69,8 @@ export class PromptContexts {
   private continuations = 0
   private bytes = 0
 
+  requiresProjection(sessionID: string): boolean { return [...(this.sessions.get(sessionID)?.entries.values() ?? [])].some(entry => entry.contexts.length || entry.projection || entry.history || entry.startup?.claude.length || entry.startup?.codex.length) }
+
   snapshotV1(sessionID: string) {
     const state = this.sessions.get(sessionID)
     if (state && (state.reservations.size || state.retired.size || [...state.entries.values()].some(row => row.kind !== 'prompt' || row.projection || row.history))) fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
@@ -113,6 +115,13 @@ export class PromptContexts {
     const state = this.sessions.get(session.sessionID), entry = session.turnID ? state?.entries.get(session.turnID) : undefined
     if (!state || !entry) return
     if (state.signal !== session.signal || entry.turnSignal !== session.turnSignal || entry.kind !== 'prompt') fail('HOST_PROMPT_CONTEXT_UNAVAILABLE')
+    this.discardPendingPrompt(session, entry.turnID)
+  }
+
+  discardPendingPrompt(session: SessionSnapshot, messageID: string): void {
+    const state = this.sessions.get(session.sessionID), entry = state?.entries.get(messageID)
+    if (!state || !entry) return
+    if (state.signal !== session.signal || entry.kind !== 'prompt' || entry.history || entry.projection) fail('SESSION_SNAPSHOT_PROMPT_RECONCILIATION_UNAVAILABLE')
     this.invalidate(state)
     state.entries.delete(entry.turnID); this.bytes -= entry.bytes; this.prompts--
     if (!state.entries.size && !state.reservations.size && !state.retired.size) state.cleanup()

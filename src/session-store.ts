@@ -42,6 +42,7 @@ export interface StoredSession {
 }
 function fail(code: string): never { throw new HostHookError(code, code === 'SESSION_STORE_CANCELLED' ? 'cancelled' : 'unsupported') }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
+function validSessionID(value: unknown): value is string { return typeof value === 'string' && !!value && !value.includes('\0') && Buffer.byteLength(value) <= MAX_ID_BYTES }
 function errno(error: unknown, code: string): boolean { return record(error) && error.code === code }
 function cancelled(signal?: AbortSignal): void { if (signal?.aborted) fail('SESSION_STORE_CANCELLED') }
 function hash(value: string): string { return createHash('sha256').update(value).digest('hex') }
@@ -97,7 +98,28 @@ export class SessionStore {
   }
 
   load(sessionID: string, signal?: AbortSignal): Promise<StoredSession> {
+    if (!validSessionID(sessionID)) return this.rejected('load', new HostHookError('SESSION_STORE_SESSION_INVALID', 'unsupported'))
     return this.operation('load', async db => this.transaction(db, () => this.read(db, sessionID)), sessionID, signal)
+  }
+
+  someSession(predicate: (receipt: StoredSession) => boolean, signal?: AbortSignal): Promise<boolean> {
+    if (typeof predicate !== 'function') return this.rejected('load', new HostHookError('SESSION_STORE_INPUT_INVALID', 'unsupported'))
+    return this.operation('load', async db => this.transaction(db, () => {
+      let cursor: string | undefined
+      for (let index = 0; index <= this.sessions; index++) {
+        cancelled(signal)
+        const row = cursor === undefined ? db.prepare('SELECT session_id FROM sessions WHERE deleted=0 ORDER BY session_id LIMIT 1').get() : db.prepare('SELECT session_id FROM sessions WHERE deleted=0 AND session_id>? ORDER BY session_id LIMIT 1').get(cursor)
+        if (!row) return false
+        if (index === this.sessions) fail('SESSION_STORE_LIMIT')
+        if (!validSessionID(row.session_id)) fail('SESSION_STORE_SCHEMA_INVALID')
+        cursor = row.session_id
+        const result = predicate(this.read(db, cursor))
+        cancelled(signal)
+        if (typeof result !== 'boolean') fail('SESSION_STORE_INPUT_INVALID')
+        if (result) return true
+      }
+      return false
+    }), undefined, signal)
   }
 
   save(previous: StoredSession, payload: Readonly<Record<string, JsonValue>>, signal?: AbortSignal): Promise<StoredSession> {
@@ -177,9 +199,9 @@ export class SessionStore {
     } catch { this.observerFailures++ }
   }
 
-  private operation<T>(phase: Phase, operation: (db: Database) => Promise<T>, sessionID: string, signal?: AbortSignal): Promise<T> {
+  private operation<T>(phase: Phase, operation: (db: Database) => Promise<T>, sessionID?: string, signal?: AbortSignal): Promise<T> {
     if (this.closed) return this.rejected(phase, new HostHookError('SESSION_STORE_CLOSED', 'cancelled'), sessionID)
-    if (typeof sessionID !== 'string' || !sessionID || sessionID.includes('\0') || Buffer.byteLength(sessionID) > MAX_ID_BYTES) return this.rejected(phase, new HostHookError('SESSION_STORE_SESSION_INVALID', 'unsupported'))
+    if (sessionID !== undefined && !validSessionID(sessionID)) return this.rejected(phase, new HostHookError('SESSION_STORE_SESSION_INVALID', 'unsupported'))
     if (this.active.size >= MAX_PENDING) return this.rejected(phase, new HostHookError('SESSION_STORE_LIMIT', 'unsupported'), sessionID)
     const started = performance.now()
     const pending = (async () => {

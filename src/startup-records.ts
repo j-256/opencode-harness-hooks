@@ -200,6 +200,13 @@ export class StartupRecords {
     state.bindings.delete(activationID)
   }
 
+  releasePrompt(session: SessionSnapshot, messageID: string): void {
+    const state = this.states.get(session.sessionID)
+    if (!state) return
+    if (state.signal !== session.signal) fail('SESSION_SNAPSHOT_OWNER_MISMATCH')
+    for (const [id, binding] of state.bindings) if (binding === messageID) state.bindings.delete(id)
+  }
+
   bind(session: SessionSnapshot, activationID: string, messageID: string): void {
     if (this.disposed || session.signal.aborted || session.turnSignal.aborted) fail('STARTUP_CANCELLED')
     const state = this.states.get(session.sessionID), previous = state?.bindings.get(activationID)

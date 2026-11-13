@@ -57,6 +57,7 @@ export class ModelContext {
     if (!receipt && required) fail('TRANSCRIPT_MODEL_CONTEXT_UNAVAILABLE')
     return receipt?.date ?? undefined
   }
+  hasTurn(sessionID: string, turnID: string): boolean { return this.states.get(sessionID)?.turns.has(turnID) === true }
 
   snapshot(sessionID: string): ModelContextSnapshot {
     const state = this.states.get(sessionID)

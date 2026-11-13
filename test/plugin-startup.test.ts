@@ -98,7 +98,9 @@ for (const dialect of ['claude-code', 'codex'] as const) test(`session-created o
   const directory = await mkdtemp(join(tmpdir(), 'plugin-startup-observer-'))
   t.after(() => rm(directory, { recursive: true, force: true }))
   const diagnostics: string[] = []
-  t.mock.method(console, 'error', (...values: unknown[]) => { diagnostics.push(values.join(' ')) })
+  const originalError = console.error
+  console.error = (...values: unknown[]) => { diagnostics.push(values.join(' ')) }
+  t.after(() => { console.error = originalError })
   const source = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: ':' }] }] } })
   await writeFile(join(directory, 'hooks.json'), source)
   let release!: () => void, entered!: () => void

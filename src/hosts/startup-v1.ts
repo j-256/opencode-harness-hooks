@@ -41,7 +41,7 @@ export class V1Startups {
   private wrapper?: string
   private defaultModel?: string
 
-  constructor(private readonly input: V1Input, private readonly transcripts: TranscriptService, private readonly codex: CodexTranscriptService, private readonly services: RuntimeServices) {
+  constructor(private readonly input: V1Input, private readonly transcripts: TranscriptService, private readonly codex: CodexTranscriptService, private readonly services: RuntimeServices, private readonly nativeState?: RuntimeServices['nativeState']) {
     this.environment = { ...(services.host?.environment ?? process.env) }
     const state = this.environment.XDG_STATE_HOME ?? join(this.environment.HOME ?? homedir(), '.local', 'state')
     this.service = services.sessionStart ?? { environmentDirectory: join(state, 'opencode-harness-hooks', createHash('sha256').update(input.directory).digest('hex'), 'claude-environment'), admit: async delivery => {
@@ -59,6 +59,7 @@ export class V1Startups {
         }
         if (delivery.environment) this.shell.admit(delivery.session, delivery.event.activationID, delivery.environment)
         current.batch = batch
+        await this.nativeState?.checkpoint(delivery.session, delivery.session.signal)
       } catch (error) {
         rollback(undo)
         throw error
@@ -116,6 +117,7 @@ export class V1Startups {
   }
 
   async ensure(session: SessionSnapshot, waiter: AbortSignal = session.turnSignal): Promise<void> {
+    await this.nativeState?.ensure(session, waiter)
     if (!this.active.hasStartHooks) return
     if (this.createdOverflow) fail('HOST_STARTUP_LIMIT')
     let current = this.states.get(session.sessionID)
@@ -140,6 +142,7 @@ export class V1Startups {
         const state = this.states.get(session.sessionID)
         if (!state || state.activationID !== activationID) fail('HOST_STARTUP_OWNER_MISMATCH')
         state.event = event
+        await this.nativeState?.checkpoint(session, session.signal)
         await this.active.start(event)
       })()
       current = { activationID, pending }
@@ -151,21 +154,25 @@ export class V1Startups {
 
   bind(session: SessionSnapshot, contexts: PromptContexts): void {
     const state = this.states.get(session.sessionID)
-    if (!state?.batch || state.bound) return
+    const batches = this.transcripts.pendingStarts?.(session.sessionID) ?? (state?.batch && !state.bound ? [state.batch] : [])
+    if (!batches.length) return
     if (!session.turnID || session.turnSignal.aborted || session.signal.aborted) throw new HostHookError('HOST_STARTUP_CANCELLED', 'cancelled')
     const undo: (() => void)[] = [() => contexts.withdraw(session)]
     try {
-      if (this.has('claude-code') && (!this.transcripts.bindStart || !this.transcripts.unbindStart) || this.has('codex') && (!this.codex.bindStart || !this.codex.unbindStart)) fail('HOST_STARTUP_ARTIFACT_UNAVAILABLE')
-      if (this.has('claude-code')) {
-        this.transcripts.bindStart!(session, state.activationID, session.turnID)
-        undo.push(() => this.transcripts.unbindStart!(session, state.activationID, session.turnID!))
+      for (const batch of batches) {
+        if (this.has('claude-code') || this.transcripts.pendingStarts) {
+          if (!this.transcripts.bindStart || !this.transcripts.unbindStart) fail('HOST_STARTUP_ARTIFACT_UNAVAILABLE')
+          this.transcripts.bindStart(session, batch.activationID, session.turnID)
+          undo.push(() => this.transcripts.unbindStart!(session, batch.activationID, session.turnID!))
+        }
+        if (this.codex.hasStart?.(session.sessionID, batch.activationID) || !this.codex.hasStart && this.has('codex') || batch.model.codex.length) {
+          if (!this.codex.bindStart || !this.codex.unbindStart) fail('HOST_STARTUP_ARTIFACT_UNAVAILABLE')
+          this.codex.bindStart(session, batch.activationID, session.turnID)
+          undo.push(() => this.codex.unbindStart!(session, batch.activationID, session.turnID!))
+        }
       }
-      if (this.has('codex')) {
-        this.codex.bindStart!(session, state.activationID, session.turnID)
-        undo.push(() => this.codex.unbindStart!(session, state.activationID, session.turnID!))
-      }
-      contexts.rememberStartup(session, state.batch.model)
-      state.bound = session.turnID
+      contexts.rememberStartup(session, { claude: batches.flatMap(batch => batch.model.claude), codex: batches.flatMap(batch => batch.model.codex) })
+      if (state) state.bound = session.turnID
     } catch (error) {
       rollback(undo)
       throw error

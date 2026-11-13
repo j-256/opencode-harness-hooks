@@ -37,6 +37,7 @@ export class OriginalInputs {
     const call = this.sessions.get(sessionID)?.calls.get(key(turnID, callID))
     return call ? { tool: call.tool, input: call.input } : undefined
   }
+  hasTurn(sessionID: string, turnID: string): boolean { return [...(this.sessions.get(sessionID)?.calls.values() ?? [])].some(call => call.turnID === turnID) }
 
   snapshot(sessionID: string) {
     return snapshotCopy({ kind: SNAPSHOT_KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, calls: [...(this.sessions.get(sessionID)?.calls.values() ?? [])].map(({ turnID, callID, tool, input }) => ({ turnID, callID, tool, input })) })

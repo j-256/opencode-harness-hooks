@@ -38,6 +38,8 @@ for (const dialect of ['claude', 'codex'] as const) test(`${dialect} cold restor
   assert.ok(after.includes('original'))
   assert.ok(!after.includes('effective'))
   assert.deepEqual(restored.snapshotV1('session'), snapshot)
+  assert.throws(() => restored.discardPendingPrompt(current, 'turn'), { code: 'SESSION_SNAPSHOT_PROMPT_RECONCILIATION_UNAVAILABLE' })
+  assert.deepEqual(restored.snapshotV1('session'), snapshot)
   next.close('session')
   assert.equal(restored instanceof ClaudeTranscript ? restored.inspect().originals : restored.inspect().originalCalls, 0)
 })

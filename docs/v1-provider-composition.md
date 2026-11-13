@@ -1,6 +1,6 @@
 # V1 providers with authentication fetch loaders
 
-V1 providers that inject credentials through an authentication loader need explicit composition when prompt hooks are selected. The default harness entrypoint installs its prompt transport during configuration, and OpenCode 1.19.5 reapplies configuration after authentication-loader options. Without composition, the configuration fetch can replace the provider's authenticated fetch. Tool-only configurations do not install that prompt wrapper.
+V1 providers that inject credentials through an authentication loader need explicit composition when selected hooks or retained historical context require prompt projection. The default harness entrypoint installs its prompt transport during configuration, and OpenCode 1.19.5 reapplies configuration after authentication-loader options. Without composition, the configuration fetch can replace the provider's authenticated fetch. A tool-only configuration with no retained context does not install the authentication-loader wrapper.
 
 `composeV1Provider` from `opencode-harness-hooks/v1` or `opencode-harness-hooks/opencode` combines an initialized provider plugin with the guarded V1 harness. The bridge leaves the managed provider's configuration fetch unset and wraps the fetch returned by its authentication loader. Native prompt-context projection and private-header removal happen before the original authenticated fetch receives the request. Credential injection, refresh and request routing stay with the provider.
 
@@ -28,7 +28,7 @@ The provider must expose an authentication provider ID and loader. Missing loade
 
 For the managed provider, a separate configured `provider.options.fetch` conflicts with the authentication loader and is rejected with `HOST_PROMPT_TRANSPORT_UNAVAILABLE`. The rejection also blocks prompt admission if the host swallows the configuration error. The resolved provider fetch is checked again before request execution. Legitimate fetches from repeated loader calls remain owned by the bridge and keep their respective authenticated delegates. The bridge does not choose one of two independent fetch implementations silently.
 
-Tool-only composition preserves the original authentication loader. The helper exercises one bridged authentication provider together with ordinary configured providers. Multiple authentication plugins sharing one harness runtime, arbitrary providers and authentication refresh protocols still need their own integration evidence. V2 uses its separate binding and does not use this helper. All other [stock-host limitations](stock-hosts.md) remain applicable, including selected Stop rejection.
+Tool-only composition with no retained prompt context preserves the original authentication loader. A bounded discovery read of [durable session state](session-state.md) identifies historical context that still requires projection after a source-selection change. The helper exercises one bridged authentication provider together with ordinary configured providers. Multiple authentication plugins sharing one harness runtime, arbitrary providers and authentication refresh protocols still need their own integration evidence. V2 uses its separate binding and does not use this helper. All other [stock-host limitations](stock-hosts.md) remain applicable, including selected Stop rejection.
 
 ## Verify composition
 

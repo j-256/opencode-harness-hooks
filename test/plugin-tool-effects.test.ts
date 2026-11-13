@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { createHarnessHooks } from '../src/plugin.js'
+import { createHarnessHooks } from './helpers/isolated-v1.js'
 
 test('default V1 delivers mixed native pre-context, rewriting and post-feedback without carrying them into the next turn', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'harness-v1-tool-effects-'))

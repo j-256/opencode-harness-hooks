@@ -27,6 +27,7 @@ export interface CodexTranscriptMessage { readonly id: string; readonly turnID: 
 export interface CodexTranscriptHistory { readonly id: string; readonly messages: readonly CodexTranscriptMessage[] }
 export interface CodexTranscriptView { readonly sessionID: string; readonly turnID: string; readonly transcriptPath: string }
 export interface CodexTranscriptService {
+  hasStart?(sessionID: string, activationID: string): boolean
   prepareStart?(event: SessionStartEvent, session: SessionSnapshot, signal: AbortSignal): Promise<Omit<CodexTranscriptView, 'turnID'>>
   rememberStart?(session: SessionSnapshot, activationID: string, contexts: readonly string[]): void
   revokeStart?(session: SessionSnapshot, activationID: string): void
@@ -144,6 +145,15 @@ export class CodexTranscript implements CodexTranscriptService {
     }
     state.batches.set(activationID, { contexts, created: Date.now() }); state.bytes += bytes
     this.startupBytes += bytes; this.startupBatches++
+  }
+  hasStart(sessionID: string, activationID: string): boolean { return this.starts.get(sessionID)?.batches.has(activationID) === true }
+
+  discardPendingPrompt(session: SessionSnapshot, messageID: string): void {
+    if (this.originals.hasTurn(session.sessionID, messageID) || this.published.get(session.sessionID)?.layout.some(raw => { const row: unknown = JSON.parse(raw); return Array.isArray(row) && row[0] === 'message' && row[2] === messageID })) fail('SESSION_SNAPSHOT_PROMPT_RECONCILIATION_UNAVAILABLE')
+    const state = this.starts.get(session.sessionID)
+    if (!state) return
+    if (state.signal !== session.signal) fail('SESSION_SNAPSHOT_OWNER_MISMATCH')
+    for (const batch of state.batches.values()) if (batch.messageID === messageID) delete batch.messageID
   }
 
   snapshotV1(sessionID: string) {

@@ -60,6 +60,14 @@ The Codex control checks more than file existence: the hook must read journal re
 
 ## Input replacement
 
+The `claude.session.resume` and `codex.session.resume` cases run a replacement turn and an unchanged-command turn in the same native session, with a cold V1 server restart between the corresponding host turns:
+
+```sh
+node scripts/verify-conformance.mjs --case claude.session.resume --case codex.session.resume
+```
+
+Each resumed hook must retain its session identity, the earlier transcript prefix and the owned original shell input from the rewritten turn. The unchanged turn independently retains the input, invocation, side-effect and model-result controls described below. Source and hook bytes stay unchanged, and native resume runs through a new native CLI process. The dedicated resume-original-input requirement is narrower than full state, startup, compaction or lifecycle conformance; those broader obligations remain unverified. See [durable V1 state](../docs/session-state.md) for the binding and its boundaries.
+
 Run the independent shell input-rewrite comparisons for both dialects:
 
 ```sh

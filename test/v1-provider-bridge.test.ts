@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { composeV1Provider } from '../src/opencode.js'
+import { composeV1Provider } from './helpers/isolated-v1.js'
 import { ClaudeTranscript } from '../src/transcript.js'
 
 const quote = (value: string) => "'" + value.replaceAll("'", "'\"'\"'") + "'"
@@ -19,8 +19,9 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }, ev
   await writeFile(path, text)
   const sources = ['claude-code', 'codex'].map(dialect => ({ id: dialect, dialect, path }))
   const digest = createHash('sha256').update(text).digest('hex')
-  const input = { directory, client: { session: { get: async () => ({ data: { id: 'session' } }), messages: async () => ({ data: [] }) } } }
-  return { input, options: { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, digest])), permissionMode: 'default' } }
+  let savedMessages: unknown[] = []
+  const input = { directory, client: { session: { get: async () => ({ data: { id: 'session' } }), messages: async () => ({ data: savedMessages }) } } }
+  return { input, setHistory: (value: unknown[]) => { savedMessages = value }, options: { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, digest])), permissionMode: 'default' } }
 }
 const identity = (id: string, agent = 'build') => ({ sessionID: 'session', agent, message: { id, agent: 'build', model: { modelID: 'model', providerID: 'fixture' } }, model: { modelID: 'model', providerID: 'fixture', api: { npm: '@ai-sdk/openai-compatible' } } })
 
@@ -269,4 +270,53 @@ test('V1 provider errors cannot suppress fatal activation guards or their config
   await assert.rejects(hooks.config({}), { code: 'SOURCE_REVIEW_REQUIRED' })
   await assert.rejects(hooks['chat.message'](prompt, { message: prompt.message, parts: [{ type: 'text', text: 'Original' }] }), { code: 'SOURCE_REVIEW_REQUIRED' })
   assert.equal(calls, 0)
+})
+
+test('a cold tool-only selection retains prior prompt context through its authenticated provider', async t => {
+  const f = await fixture(t), requests: Request[] = []
+  const provider = { auth: { provider: 'fixture', methods: [], loader: async () => ({ apiKey: 'fixture', fetch: async (input: RequestInfo | URL, init?: RequestInit) => { requests.push(new Request(input, init)); return new Response('{}') } }) } }
+  const first = await composeV1Provider(f.input, f.options, provider, services)
+  t.after(() => first.dispose())
+  await first.config({ model: 'fixture/model' })
+  await first['chat.message'](identity('first'), { message: identity('first').message, parts: [{ type: 'text', text: 'Original' }] })
+  f.setHistory([{ info: { id: 'first', role: 'user', sessionID: 'session', time: { created: Date.now() } }, parts: [{ type: 'text', text: 'Original' }] }])
+  await first.dispose()
+  const options = { ...f.options, sources: f.options.sources.map(source => ({ ...source, selection: { events: ['PreToolUse'] } })) }
+  const second = await composeV1Provider(f.input, options, provider, services)
+  t.after(() => second.dispose())
+  await second.config({ model: 'fixture/model' })
+  const loaded = await second.auth.loader(), prompt = identity('second')
+  await second['chat.message'](prompt, { message: prompt.message, parts: [{ type: 'text', text: 'Original' }] })
+  const messages = ['first', 'second'].map(id => ({ info: { ...identity(id).message, role: 'user', sessionID: 'session' }, parts: [{ type: 'text', text: 'Original' }] }))
+  await second['experimental.chat.messages.transform']({}, { messages })
+  await second['chat.params']({ ...prompt, provider: { id: 'fixture', options: loaded } })
+  const headers: Record<string, string> = {}; await second['chat.headers'](prompt, { headers })
+  await loaded.fetch('https://provider.invalid/chat/completions', { method: 'POST', headers, body: JSON.stringify({ messages: [{ role: 'user', content: 'Original' }, { role: 'user', content: 'Original' }] }) })
+  const body = await requests[0]!.json()
+  assert.match(JSON.stringify(body.messages[0]), /CLAUDE_BRIDGE_CONTEXT/)
+  assert.deepEqual(body.messages[1], { role: 'developer', content: 'CODEX_BRIDGE_CONTEXT' })
+  assert.equal(JSON.stringify(body).split('CODEX_BRIDGE_CONTEXT').length - 1, 1)
+})
+
+test('deselected startup hooks retain unbound context through an authenticated provider after restart', async t => {
+  const f = await fixture(t, 'SessionStart'), requests: Request[] = []
+  const script = join(f.input.directory, 'hook.cjs'), capture = join(f.input.directory, 'starts.txt')
+  await writeFile(script, `const fs=require('node:fs');fs.readFileSync(0,'utf8');fs.appendFileSync(${JSON.stringify(capture)},'x');console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'SessionStart',additionalContext:'CARRIED_STARTUP'}}))`)
+  const provider = { auth: { provider: 'fixture', methods: [], loader: async () => ({ fetch: async (input: RequestInfo | URL, init?: RequestInit) => { requests.push(new Request(input, init)); return new Response('{}') } }) } }
+  const first = await composeV1Provider(f.input, f.options, provider, services)
+  t.after(() => first.dispose())
+  await first.config({ model: 'fixture/model' })
+  await first.event({ event: { type: 'session.created', properties: { info: { id: 'session' } } } })
+  await first.dispose()
+  const second = await composeV1Provider(f.input, { ...f.options, sources: f.options.sources.map(source => ({ ...source, selection: { events: ['PreToolUse'] } })) }, provider, services)
+  t.after(() => second.dispose())
+  await second.config({ model: 'fixture/model' })
+  const loaded = await second.auth.loader(), prompt = identity('accepted')
+  await second['chat.message'](prompt, { message: prompt.message, parts: [{ type: 'text', text: 'Original' }] })
+  await second['experimental.chat.messages.transform']({}, { messages: [{ info: { ...prompt.message, role: 'user', sessionID: 'session' }, parts: [{ type: 'text', text: 'Original' }] }] })
+  await second['chat.params']({ ...prompt, provider: { id: 'fixture', options: loaded } })
+  const headers: Record<string, string> = {}; await second['chat.headers'](prompt, { headers })
+  await loaded.fetch('https://provider.invalid/chat/completions', { method: 'POST', headers, body: JSON.stringify({ messages: [{ role: 'user', content: 'Original' }] }) })
+  assert.equal(JSON.stringify(await requests[0]!.json()).split('CARRIED_STARTUP').length - 1, 2)
+  assert.equal(await readFile(capture, 'utf8'), 'xx')
 })

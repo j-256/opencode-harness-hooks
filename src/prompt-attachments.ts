@@ -112,6 +112,13 @@ export class PromptAttachments {
     return turn.attachments
   }
 
+  discardPendingPrompt(session: SessionSnapshot, messageID: string): void {
+    const state = this.states.get(session.sessionID), turn = state?.turns.get(messageID)
+    if (!state || !turn) return
+    if (state.signal !== session.signal) fail('SESSION_SNAPSHOT_OWNER_MISMATCH')
+    state.turns.delete(messageID); this.turns--; this.attachments -= turn.attachments.length; this.bytes -= turn.bytes
+  }
+
   snapshot(sessionID: string) {
     const state = this.states.get(sessionID)
     return snapshotCopy({ kind: SNAPSHOT_KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, initialized: state !== undefined, turns: [...(state?.turns ?? [])].map(([messageID, turn]) => ({ messageID, promptHash: turn.promptHash, attachments: turn.attachments })) })

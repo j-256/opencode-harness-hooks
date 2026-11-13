@@ -43,6 +43,7 @@ export interface TranscriptHistory {
   readonly messages: readonly unknown[]
 }
 export interface TranscriptService {
+  pendingStarts?(sessionID: string): readonly StartupBatch[]
   admitStart?(delivery: SessionStartDelivery): StartupBatch
   revokeStart?(session: SessionSnapshot, activationID: string): void
   bindStart?(session: SessionSnapshot, activationID: string, messageID: string): void
@@ -198,6 +199,12 @@ export class ClaudeTranscript implements TranscriptService {
   unbindStart(session: SessionSnapshot, activationID: string, messageID: string): void { this.starts.unbind(session, activationID, messageID) }
   revokeStart(session: SessionSnapshot, activationID: string): void { this.starts.revoke(session, activationID) }
   pendingStarts(sessionID: string): readonly StartupBatch[] { return this.starts.pending(sessionID) }
+
+  discardPendingPrompt(session: SessionSnapshot, messageID: string): void {
+    if (this.originals.hasTurn(session.sessionID, messageID) || this.models.hasTurn(session.sessionID, messageID)) fail('SESSION_SNAPSHOT_PROMPT_RECONCILIATION_UNAVAILABLE')
+    this.starts.releasePrompt(session, messageID)
+    this.prompts.discardPendingPrompt(session, messageID)
+  }
 
   snapshotV1(sessionID: string) {
     if (this.options.host !== 'v1') fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
@@ -399,8 +406,8 @@ export class ClaudeTranscript implements TranscriptService {
       for (const result of results) push(`${entry.id}/${result.id}/result`, result.created, 'user', { role: 'user', content: [{ type: 'tool_result', tool_use_id: result.id, content: result.content, ...(result.error ? { is_error: true } : {}) }] })
       for (const record of this.stops.read(event.sessionID, entry.id, entry.turnID, completionSignature(entry))) append('stop/' + record.id, record.created, { ...record.body })
     }
-    if (event.event === 'UserPromptSubmit') {
-      startup(event.messageID)
+    if (event.event === 'UserPromptSubmit' || event.event === 'SessionStart') {
+      if (event.event === 'UserPromptSubmit') startup(event.messageID)
       for (const record of this.starts.unbound(event.sessionID)) append('startup/' + record.id, record.created, { ...record.body })
     }
     if (!current && event.event !== 'UserPromptSubmit' && event.event !== 'Stop' && event.event !== 'SessionStart') fail('TRANSCRIPT_CURRENT_CALL_MISSING')

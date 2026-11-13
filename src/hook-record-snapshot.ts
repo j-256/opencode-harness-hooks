@@ -28,7 +28,7 @@ export function nativeHookRecord(input: unknown, event: 'SessionStart' | 'UserPr
   if (item.hookEvent !== event || (additional ? item.hookName !== event || !item.toolUseID.startsWith('hook-') || !UUID.test(item.toolUseID.slice('hook-'.length)) : !UUID.test(item.toolUseID) || (event === 'SessionStart' ? !START_NAME.test(item.hookName) : item.hookName !== event))) fail()
   if (event === 'SessionStart' && item.type === 'hook_system_message') fail()
   if (event === 'UserPromptSubmit' && item.type === 'hook_non_blocking_error' && (item.exitCode === 2 || item.command === undefined || item.durationMs === undefined)) fail()
-  if (item.type === 'hook_success' && item.exitCode !== 0) fail()
+  if (item.type === 'hook_success' && item.exitCode !== 0 && (event === 'UserPromptSubmit' || item.content !== '')) fail()
   const rendered = additional ? `<system-reminder>\n${event} hook additional context: ${item.content[0]}\n</system-reminder>` : item.type === 'hook_success' && (event === 'UserPromptSubmit' || item.content) ? `<system-reminder>\n${item.hookName} hook success: ${item.content}\n</system-reminder>` : undefined
   if (rendered === undefined ? row.body.rendered !== undefined || row.body.renderedRole !== undefined : row.body.renderedRole !== 'system' || row.body.rendered?.[0]?.content !== rendered) fail()
   return freeze(JSON.parse(JSON.stringify(value)) as NativeHookRecord)

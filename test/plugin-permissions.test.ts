@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { createHarnessHooks, setupHarnessHooks } from '../src/plugin.js'
+import { createHarnessHooks, setupHarnessHooks } from './helpers/isolated-v1.js'
 import type { RuntimeServices } from '../src/runtime.js'
 
 async function fixture(t: { after: (callback: () => Promise<void>) => void }) {
