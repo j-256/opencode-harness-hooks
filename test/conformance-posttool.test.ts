@@ -132,3 +132,39 @@ test('post-tool effects are narrow V1 requirements and a measured gap remains fa
     assert.equal(conformanceExitStatus(failed, 'v1', true), 1)
   }
 })
+
+test('failed-shell fixture selects native failure events, preserves side effects and emits failure context', async t => {
+  const { createPosttoolFixture } = await library()
+  const project = await mkdtemp(join(tmpdir(), 'failed-tool-fixture-'))
+  t.after(() => rm(project, { recursive: true, force: true }))
+  const hook = join(project, 'hook.cjs'), capture = join(project, 'trace.jsonl')
+  const fixture = createPosttoolFixture({ project, hook, trace: capture, node: process.execPath, dialect: 'claude-code', failedFirst: true })
+  assert.ok(JSON.parse(fixture.sourceText).hooks.PostToolUseFailure)
+  const command = fixture.command('context', 'first')
+  const executed = await new Promise<{ code: number | null; stdout: string }>(resolve => execFile('/bin/sh', ['-c', command], (error, stdout) => resolve({ code: error?.code as number ?? 0, stdout })))
+  assert.equal(executed.code, 17)
+  assert.equal(executed.stdout, fixture.modelOptions('context', 'a', 'b').firstOutput)
+  await writeFile(hook, fixture.hookText)
+  const stdout = await new Promise<string>((resolve, reject) => { const child = execFile(process.execPath, [hook], (error, text) => error ? reject(error) : resolve(text)); child.stdin!.end(JSON.stringify({ hook_event_name: 'PostToolUseFailure', tool_name: 'Bash', tool_input: { command } })) })
+  assert.deepEqual(JSON.parse(stdout).hookSpecificOutput, { hookEventName: 'PostToolUseFailure', additionalContext: effect })
+  assert.equal(JSON.parse((await readFile(capture, 'utf8')).trim()).completedSideEffect, true)
+})
+
+test('failed-shell receipts require literal failure payload evidence without promoting broader requirements', async () => {
+  const { evaluatePosttoolObservations } = await library()
+  const native = trace(), host = trace()
+  for (const value of [native, host]) for (const row of value.controls) row.failurePayloadValid = true
+  assert.equal(evaluatePosttoolObservations(native, host, 'claude-code', { failedFirst: true }).status, 'passed')
+  host.controls[0].failurePayloadValid = false
+  const failed = evaluatePosttoolObservations(native, host, 'claude-code', { failedFirst: true })
+  assert.equal(failed.status, 'failed')
+  assert.equal(failed.comparison.observations.host.controls[0].failurePayloadValid, false)
+  const catalog = JSON.parse(await readFile(new URL('../conformance/catalog.json', import.meta.url), 'utf8'))
+  const { coverageReport } = await import(new URL('../scripts/lib/conformance.mjs', import.meta.url).href)
+  for (const [dialect, prefix] of [['claude-code', 'claude'], ['codex', 'codex']] as const) {
+    assert.ok(catalog.cases.some((row: any) => row.id === prefix + '.tool-failures'))
+    const report = coverageReport(catalog, [], [{ caseID: prefix + '.tool-failures', host: 'v1', nativeVersion: catalog.versions.native[dialect], hostVersion: '1.19.5', status: 'passed' }])
+    assert.equal(report.requirements.find((row: any) => row.id === dialect + '.tool-failures.shell').targets.v1.status, 'verified')
+    assert.equal(report.requirements.find((row: any) => row.id === dialect + '.event.PostToolUse.outputs').targets.v1.status, 'unverified')
+  }
+})

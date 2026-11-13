@@ -12,6 +12,7 @@ const PLACEMENTS = Object.freeze(['message', 'tool-result'])
 const ORDERS = Object.freeze(['before', 'after', 'inside'])
 const DIGEST = /^[a-f0-9]{64}$/
 const DIAGNOSTIC = /^(?:HOST|SOURCE|PLUGIN)_[A-Z_]+$/
+const FAILED_SHELL_EXIT = 17
 const HOOK_TIMEOUT_SECONDS = 5
 const MAX_LAYOUT_ITEMS = 4
 const object = value => value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -19,18 +20,19 @@ const quote = value => "'" + value.replaceAll("'", "'\"'\"'") + "'"
 const count = (text, token) => token ? text.split(token).length - 1 : 0
 const text = content => typeof content === 'string' ? content : Array.isArray(content) ? content.filter(part => ['text', 'input_text', 'output_text'].includes(part?.type) && typeof part.text === 'string').map(part => part.text).join('\n') : ''
 
-export function createPosttoolFixture({ project, hook, trace, node, dialect }) {
+export function createPosttoolFixture({ project, hook, trace, node, dialect, failedFirst = false }) {
   const cases = CASES[dialect]
   if (!cases) throw new ConformanceError('CONFORMANCE_DIALECT_INVALID')
   const records = Object.fromEntries(cases.map(id => [id, Object.fromEntries(PHASES.map(phase => {
     const marker = 'POSTTOOL_' + id.toUpperCase() + '_' + phase.toUpperCase(), output = marker + '_OUTPUT', path = join(project, id + '-' + phase + '.marker')
     const split = output.indexOf('_') + 1
-    return [phase, { path, marker, output, command: 'printf %s ' + quote(marker) + ' > ' + quote(path) + '; printf %s ' + [output.slice(0, split), output.slice(split)].map(quote).join(' ') }]
+    return [phase, { path, marker, output, command: 'printf %s ' + quote(marker) + ' > ' + quote(path) + '; printf %s ' + [output.slice(0, split), output.slice(split)].map(quote).join(' ') + (failedFirst && phase === 'first' ? '; exit ' + FAILED_SHELL_EXIT : '') }]
   }))]))
-  const commands = Object.fromEntries(cases.flatMap(id => PHASES.map(phase => [records[id][phase].command, { path: records[id][phase].path, ...(phase === 'first' && id !== 'noop' ? { output: id === 'context' ? { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: EFFECTS.context } } : { decision: 'block', reason: EFFECTS[id] } } : {}) }])))
-  const hookText = `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const row=${JSON.stringify(commands)}[p.tool_input?.command];fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({input:p,transcriptExists:typeof p.transcript_path==='string'&&fs.existsSync(p.transcript_path),completedSideEffect:!!row&&fs.existsSync(row.path)})+'\\n');if(p.hook_event_name==='PostToolUse'&&p.tool_name==='Bash'&&row?.output)console.log(JSON.stringify(row.output));`
-  const sourceText = JSON.stringify({ hooks: { PostToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: quote(node) + ' ' + quote(hook), timeout: HOOK_TIMEOUT_SECONDS }] }] } })
-  return { cases, hookText, sourceText, effectTokens: Object.values(EFFECTS), command: (id, phase) => records[id][phase].command, records: id => records[id], modelOptions: (id, firstID, nextID) => ({ firstID, nextID, firstOutput: records[id].first.output, nextOutput: records[id].next.output, effect: EFFECTS[id], replacement: id === 'replacement' }) }
+  const commands = Object.fromEntries(cases.flatMap(id => PHASES.map(phase => [records[id][phase].command, { path: records[id][phase].path, ...(phase === 'first' && id !== 'noop' ? { output: id === 'context' ? { hookSpecificOutput: { hookEventName: failedFirst && dialect === 'claude-code' ? 'PostToolUseFailure' : 'PostToolUse', additionalContext: EFFECTS.context } } : { decision: 'block', reason: EFFECTS[id] } } : {}) }])))
+  const hookText = `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const row=${JSON.stringify(commands)}[p.tool_input?.command];fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({input:p,transcriptExists:typeof p.transcript_path==='string'&&fs.existsSync(p.transcript_path),completedSideEffect:!!row&&fs.existsSync(row.path)})+'\\n');if(['PostToolUse','PostToolUseFailure'].includes(p.hook_event_name)&&p.tool_name==='Bash'&&row?.output)console.log(JSON.stringify(row.output));`
+  const group = [{ matcher: 'Bash', hooks: [{ type: 'command', command: quote(node) + ' ' + quote(hook), timeout: HOOK_TIMEOUT_SECONDS }] }]
+  const sourceText = JSON.stringify({ hooks: { PostToolUse: group, ...(failedFirst && dialect === 'claude-code' ? { PostToolUseFailure: group } : {}) } })
+  return { cases, hookText, sourceText, failedFirst, effectTokens: Object.values(EFFECTS), command: (id, phase) => records[id][phase].command, records: id => records[id], modelOptions: (id, firstID, nextID) => ({ firstID, nextID, firstOutput: records[id].first.output, nextOutput: records[id].next.output, effect: EFFECTS[id], replacement: id === 'replacement' }) }
 }
 
 function segments(messages, transport) {
@@ -68,20 +70,23 @@ export async function observePosttool({ fixture, id, lines, requests, project, d
     try { sideEffectsValid &&= await readFile(record.path, 'utf8') === record.marker } catch (error) { if (error.code !== 'ENOENT') throw error; sideEffectsValid = false }
   }
   const inputs = lines.map(row => row.input)
-  return { id, postInvocations: lines.length, primaryModelCalls: requests?.count ?? 0, hookOrderValid: lines.length === PHASES.length && inputs.every((input, index) => input?.hook_event_name === 'PostToolUse' && input.tool_use_id === toolIDs[index]), toolValid: inputs.length === PHASES.length && inputs.every(input => input?.tool_name === 'Bash'), cwdMatches: inputs.length === PHASES.length && inputs.every(input => input?.cwd === project), identitiesValid: inputs.length === PHASES.length && inputs.every(validIdentity) && inputs[0].session_id === inputs[1].session_id && (dialect !== 'codex' || inputs[0].turn_id === inputs[1].turn_id), inputMatches: inputs.length === PHASES.length && inputs.every((input, index) => input?.tool_input?.command === fixture.command(id, PHASES[index])), transcriptExists: lines.length === PHASES.length && lines.every(row => row.transcriptExists === true), sideEffectsValid, resultOwned: requests?.first?.resultOwned === true && requests?.next?.resultOwned === true, firstResultValid: requests?.first?.resultValid === true, firstOriginalOutputPresent: requests?.first?.originalOutputPresent === true, firstEffectTextPresent: requests?.first?.effectTextPresent === true, nextResultClean: requests?.next?.resultValid === true, effectCountValid: requests?.first?.effectCountValid === true && requests?.next?.effectCountValid === true, effectView: requests?.first?.effectView ?? [], nextEffectView: requests?.next?.effectView ?? [] }
+  const first = inputs[0], firstOutput = fixture.modelOptions(id).firstOutput
+  const failurePayloadValid = dialect === 'claude-code' ? typeof first?.error === 'string' && first.error.includes(firstOutput) && first.error.includes('Exit code ' + FAILED_SHELL_EXIT) && first.is_interrupt === false && first.tool_response === undefined : typeof first?.tool_response === 'string' && first.tool_response === firstOutput && first.error === undefined
+  return { id, ...(fixture.failedFirst ? { failurePayloadValid } : {}), postInvocations: lines.length, primaryModelCalls: requests?.count ?? 0, hookOrderValid: lines.length === PHASES.length && inputs.every((input, index) => input?.hook_event_name === (fixture.failedFirst && dialect === 'claude-code' && index === 0 ? 'PostToolUseFailure' : 'PostToolUse') && input.tool_use_id === toolIDs[index]), toolValid: inputs.length === PHASES.length && inputs.every(input => input?.tool_name === 'Bash'), cwdMatches: inputs.length === PHASES.length && inputs.every(input => input?.cwd === project), identitiesValid: inputs.length === PHASES.length && inputs.every(validIdentity) && inputs[0].session_id === inputs[1].session_id && (dialect !== 'codex' || inputs[0].turn_id === inputs[1].turn_id), inputMatches: inputs.length === PHASES.length && inputs.every((input, index) => input?.tool_input?.command === fixture.command(id, PHASES[index])), transcriptExists: lines.length === PHASES.length && lines.every(row => row.transcriptExists === true), sideEffectsValid, resultOwned: requests?.first?.resultOwned === true && requests?.next?.resultOwned === true, firstResultValid: requests?.first?.resultValid === true, firstOriginalOutputPresent: requests?.first?.originalOutputPresent === true, firstEffectTextPresent: requests?.first?.effectTextPresent === true, nextResultClean: requests?.next?.resultValid === true, effectCountValid: requests?.first?.effectCountValid === true && requests?.next?.effectCountValid === true, effectView: requests?.first?.effectView ?? [], nextEffectView: requests?.next?.effectView ?? [] }
 }
 
-export function evaluatePosttoolObservations(native, host, dialect) {
+export function evaluatePosttoolObservations(native, host, dialect, { failedFirst = false } = {}) {
+  const booleanFields = [...BOOLEAN_FIELDS, ...(failedFirst ? ['failurePayloadValid'] : [])]
   const cases = CASES[dialect]
   for (const trace of [native, host]) if (!cases || !object(trace) || !DIGEST.test(trace.sourceDigest ?? '') || !DIGEST.test(trace.hookDigest ?? '') || !Array.isArray(trace.controls) || trace.controls.length !== cases.length || !trace.controls.every(object) || !Array.isArray(trace.diagnostics) || !trace.diagnostics.every(value => typeof value === 'string' && DIAGNOSTIC.test(value))) throw new ConformanceError('CONFORMANCE_OBSERVATION_INVALID')
   if (native.sourceDigest !== host.sourceDigest || native.hookDigest !== host.hookDigest) throw new ConformanceError('CONFORMANCE_SOURCE_MISMATCH')
   const safeLayout = (rows, next = false) => Array.isArray(rows) ? rows.slice(0, MAX_LAYOUT_ITEMS).map(row => ({ role: ROLES.includes(row?.role) ? row.role : 'unexpected', placement: PLACEMENTS.includes(row?.placement) ? row.placement : 'unexpected', order: ORDERS.includes(row?.order) ? row.order : 'unexpected', occurrences: Number.isSafeInteger(row?.occurrences) && row.occurrences >= 0 ? row.occurrences : null, ...(next ? { nextOrder: ORDERS.includes(row?.nextOrder) ? row.nextOrder : 'unexpected' } : {}) })) : []
-  const safe = trace => ({ diagnostics: [...trace.diagnostics], controls: trace.controls.map((row, index) => ({ id: cases[index], ...Object.fromEntries(NUMBER_FIELDS.map(key => [key, Number.isSafeInteger(row[key]) && row[key] >= 0 ? row[key] : null])), ...Object.fromEntries(BOOLEAN_FIELDS.map(key => [key, typeof row[key] === 'boolean' ? row[key] : null])), effectView: safeLayout(row.effectView), nextEffectView: safeLayout(row.nextEffectView, true) })) })
+  const safe = trace => ({ diagnostics: [...trace.diagnostics], controls: trace.controls.map((row, index) => ({ id: cases[index], ...Object.fromEntries(NUMBER_FIELDS.map(key => [key, Number.isSafeInteger(row[key]) && row[key] >= 0 ? row[key] : null])), ...Object.fromEntries(booleanFields.map(key => [key, typeof row[key] === 'boolean' ? row[key] : null])), effectView: safeLayout(row.effectView), nextEffectView: safeLayout(row.nextEffectView, true) })) })
   const failures = []
   for (const [backend, trace] of [['native', native], ['host', host]]) {
     if (trace.diagnostics.length) failures.push(backend + '.diagnostics')
     for (const [index, row] of trace.controls.entries()) {
-      const id = cases[index], expected = { id, postInvocations: 2, primaryModelCalls: 3, ...Object.fromEntries(BOOLEAN_FIELDS.map(key => [key, true])), firstOriginalOutputPresent: id !== 'replacement', firstEffectTextPresent: id !== 'noop' }
+      const id = cases[index], expected = { id, postInvocations: 2, primaryModelCalls: 3, ...Object.fromEntries(booleanFields.map(key => [key, true])), firstOriginalOutputPresent: id !== 'replacement', firstEffectTextPresent: id !== 'noop' }
       for (const [key, value] of Object.entries(expected)) if (row[key] !== value) failures.push(backend + '.' + id + '.' + key)
       const view = safeLayout(row.effectView)
       const validLayout = Array.isArray(row.effectView) && view.length === (id === 'noop' ? 0 : 1) && view.every(item => !Object.values(item).includes('unexpected') && item.occurrences === 1 && (item.placement === 'tool-result' ? item.role === 'tool' && item.order === 'inside' : item.order !== 'inside'))
@@ -92,5 +97,5 @@ export function evaluatePosttoolObservations(native, host, dialect) {
       if (!validNextLayout || backend === 'host' && JSON.stringify(nextView) !== JSON.stringify(safeLayout(native.controls[index].nextEffectView, true))) failures.push(backend + '.' + id + '.nextEffectLayout')
     }
   }
-  return { status: failures.length ? 'failed' : 'passed', comparison: { match: failures.length === 0, sourceDigest: native.sourceDigest, hookDigest: native.hookDigest, compared: [...NUMBER_FIELDS, ...BOOLEAN_FIELDS, 'effectView', 'nextEffectView'], failures, observations: { native: safe(native), host: safe(host) } } }
+  return { status: failures.length ? 'failed' : 'passed', comparison: { match: failures.length === 0, sourceDigest: native.sourceDigest, hookDigest: native.hookDigest, compared: [...NUMBER_FIELDS, ...booleanFields, 'effectView', 'nextEffectView'], failures, observations: { native: safe(native), host: safe(host) } } }
 }

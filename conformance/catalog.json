@@ -497,6 +497,20 @@
       "event": "PostToolUse",
       "area": "effects",
       "summary": "Post-tool block feedback replaces the owned model-visible result without undoing completed side effects or affecting a later call; a no-op control remains unchanged"
+    },
+    {
+      "id": "claude-code.tool-failures.shell",
+      "dialect": "claude-code",
+      "event": "PostToolUseFailure",
+      "area": "effects",
+      "summary": "Completed nonzero shell calls deliver the native event and selected error/output fields, preserve completed side effects and apply owned post-tool effects without contaminating a later successful call"
+    },
+    {
+      "id": "codex.tool-failures.shell",
+      "dialect": "codex",
+      "event": "PostToolUse",
+      "area": "effects",
+      "summary": "Completed nonzero shell calls deliver the native event and selected error/output fields, preserve completed side effects and apply owned post-tool effects without contaminating a later successful call"
     }
   ],
   "evidence": [
@@ -1156,6 +1170,56 @@
       ],
       "description": "Native post-tool effects and default V1 through identical hooks, sequential calls and no-op controls",
       "observables": [
+        "post-tool invocation count and call ordering",
+        "owned session, turn and call identities",
+        "actual completed filesystem effects",
+        "first result preservation or replacement",
+        "model-visible effect role and placement relative to the owned result",
+        "second result ownership and absence of replayed effects",
+        "no-op control",
+        "primary model request count",
+        "unsupported host diagnostics retained as failed evidence",
+        "source/hook digests and adapter build fingerprint"
+      ]
+    },
+    {
+      "id": "claude.tool-failures",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.tool-failures.shell"
+      ],
+      "description": "Native nonzero shell result and default V1 through unchanged hooks, completed effects and a later successful control",
+      "observables": [
+        "dialect-specific event routing after nonzero shell exit",
+        "selected native failure payload fields",
+        "post-tool invocation count and call ordering",
+        "owned session, turn and call identities",
+        "actual completed filesystem effects",
+        "first result preservation or replacement",
+        "model-visible effect role and placement relative to the owned result",
+        "second result ownership and absence of replayed effects",
+        "no-op control",
+        "primary model request count",
+        "unsupported host diagnostics retained as failed evidence",
+        "source/hook digests and adapter build fingerprint"
+      ]
+    },
+    {
+      "id": "codex.tool-failures",
+      "dialect": "codex",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "codex.tool-failures.shell"
+      ],
+      "description": "Native nonzero shell result and default V1 through unchanged hooks, completed effects and a later successful control",
+      "observables": [
+        "dialect-specific event routing after nonzero shell exit",
+        "selected native failure payload fields",
         "post-tool invocation count and call ordering",
         "owned session, turn and call identities",
         "actual completed filesystem effects",
