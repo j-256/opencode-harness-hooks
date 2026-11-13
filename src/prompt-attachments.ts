@@ -6,7 +6,7 @@ import type { SessionSnapshot } from './sessions.js'
 import type { JsonValue } from './types.js'
 import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
 import { nativeHookRecord } from './hook-record-snapshot.js'
-import { PROMPT_MODEL_KIND, PROMPT_MODEL_STATUS } from './model-artifact.js'
+import { AGENT_MODEL_KIND, AGENT_MODEL_STATUS, PROMPT_MODEL_KIND, PROMPT_MODEL_STATUS } from './model-artifact.js'
 
 const SNAPSHOT_KIND = 'prompt-attachments'
 const MODEL_VALIDATION_ERROR = 'JSON validation failed'
@@ -53,6 +53,15 @@ export class PromptAttachments {
       const command = 'commandArtifact' in result ? result.commandArtifact : undefined
       const http = result.httpArtifact
       const model = result.modelArtifact
+      if (model?.kind === AGENT_MODEL_KIND) {
+        if (command || http || result.actions.length || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+        const accepted = model.status === AGENT_MODEL_STATUS.SUCCESS && result.status === 'success' && result.code === 'MODEL_EVALUATED'
+          || model.status === AGENT_MODEL_STATUS.TIMEOUT && result.status === 'failed' && result.code === 'EXECUTION_TIMEOUT'
+          || model.status === AGENT_MODEL_STATUS.TURN_LIMIT && result.status === 'failed' && result.code === 'AGENT_TURN_LIMIT'
+          || model.status === AGENT_MODEL_STATUS.API_ERROR && result.status === 'failed' && result.code === 'MODEL_REQUEST_FAILED'
+        if (!accepted) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+        continue
+      }
       if (model) {
         if (command || http || model.kind !== PROMPT_MODEL_KIND || typeof model.prompt !== 'string' || typeof model.stdout !== 'string' || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime()) || result.actions.length) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
         if (model.status === PROMPT_MODEL_STATUS.SUCCESS && result.status === 'success' && result.code === 'MODEL_EVALUATED' && !model.stdout) continue

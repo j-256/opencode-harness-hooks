@@ -15,6 +15,11 @@ const ALWAYS_FEEDBACK_EVENTS = new Set(['PostToolUseFailure', 'TaskCreated'])
 const END_TURN_EVENTS = new Set(['PostToolBatch', 'UserPromptSubmit', 'UserPromptExpansion'])
 const OUTPUT_WRAPPER_BYTES = Buffer.byteLength('{"value":}')
 
+function immutable<T>(value: T): T {
+  if (value !== null && typeof value === 'object') { for (const item of Object.values(value)) immutable(item); Object.freeze(value) }
+  return value
+}
+
 function renderPrompt(template: string, input: string): string {
   let substituted = false
   const prompt = template.replace(/\\\$|\$ARGUMENTS/g, token => {
@@ -51,12 +56,13 @@ export async function runModel(registration: Registration, event: NativeEvent, p
   if (!Number.isSafeInteger(inputLimit) || inputLimit < 1 || !Number.isSafeInteger(outputLimit) || outputLimit < 1) throw new HookServiceError('EXECUTION_INVALID_INVOCATION')
   const prompt = renderPrompt(String(registration.handler.prompt), input)
   if (Buffer.byteLength(prompt) > inputLimit) throw new HookServiceError('EXECUTION_INPUT_LIMIT')
+  const context = agent ? immutable({ ...(event.host ? { host: event.host } : {}), dialect: registration.dialect, event: event.event, sourceID: registration.sourceID, registrationID: registration.id, nativeInput: JSON.parse(input) as Readonly<Record<string, JsonValue>> }) : undefined
   const output = await runService(handlerTimeoutMs(registration, host), host.signal, async signal => {
     const request: ModelHookRequest = {
       prompt, sessionID: event.sessionID, cwd: event.cwd, signal,
       ...(typeof registration.handler.model === 'string' ? { model: registration.handler.model } : {}),
     }
-    return agent ? host.runAgent!({ ...request, maxTurns: AGENT_MAX_TURNS }) : host.evaluatePrompt!(request)
+    return agent ? host.runAgent!({ ...request, maxTurns: AGENT_MAX_TURNS, context: context! }) : host.evaluatePrompt!(request)
   })
   const copied = snapshotJsonObject({ value: output === undefined ? null : output }, outputLimit + OUTPUT_WRAPPER_BYTES, kind => { throw kind === 'size' ? new HookServiceError('EXECUTION_OUTPUT_LIMIT') : new ModelOutputError('') })
   const response = copied.value.value

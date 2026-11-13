@@ -1,5 +1,5 @@
 import type { BackgroundExecutor } from './background-types.js'
-import type { Dialect } from './contracts.js'
+import type { Dialect, HostVersion } from './contracts.js'
 import type { JsonValue } from './types.js'
 
 export interface SourceContext {
@@ -22,6 +22,16 @@ export interface ModelHookRequest {
 
 export interface AgentHookRequest extends ModelHookRequest {
   readonly maxTurns: number
+  readonly context?: AgentHookContext
+}
+
+export interface AgentHookContext {
+  readonly host?: HostVersion
+  readonly dialect: Dialect
+  readonly event: string
+  readonly sourceID: string
+  readonly registrationID: string
+  readonly nativeInput: Readonly<Record<string, JsonValue>>
 }
 
 export interface McpHookRequest {
