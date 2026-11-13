@@ -72,6 +72,16 @@ Distinct marker files prove that the replacement executes and the original does 
 
 These cases verify only their narrow input-replacement and effective post-tool input requirements. They do not certify whole-object replacement, competing rewrites, denial precedence, other tool families, full post-tool payload/output behavior, trust or permission-policy override, exact output wrapping, transcript contents, parallel scheduling, or V2. The fixture's native permission bypass and host allowance do not establish that an explicit allow can override an interactive permission policy. Existing deny/allow and transcript-content comparisons retain their own requirements.
 
+## Post-tool effects
+
+Run the post-tool comparison cases with sequential calls and no-op controls:
+
+```sh
+node scripts/verify-conformance.mjs --case claude.posttooluse.effects --case codex.posttooluse.effects --require-complete
+```
+
+The [post-tool conformance guide](../docs/posttool-conformance.md) defines selected result preservation/replacement, model-visible role/placement, completed side effects, and call-isolation observations. Native Claude and V1 agree on the selected context/feedback behavior. Codex result replacement remains a failed V1 comparison with `HOST_EFFECT_UNAVAILABLE`; the runner retains its native/host observations and continues other selected cases before exiting 1. Passing diagnostic rejection is not native equivalence. Exact formatting, broad post-tool behavior and V2 remain unverified.
+
 ## Extending the suite
 
 Add a stable requirement for each independently testable native behavior and register a case with explicit source dialect, supported host targets, and observables. Broad event obligations need native branch coverage before they can be declared verified; a single example is insufficient. Reconcile version-sensitive behavior with the pinned native release, using public documentation as a starting reference rather than runtime proof.

@@ -122,3 +122,16 @@ test('input-rewrite cases appear in help and check only their own conditional na
     assert.match(wrongHost.stderr, /CONFORMANCE_USAGE_CASE/)
   }
 })
+
+test('post-tool cases document conditional binaries and reject unsupported hosts', { skip: process.platform === 'win32' }, async () => {
+  const help = await invoke(['--help'], { PATH: '' })
+  for (const prefix of ['claude', 'codex']) {
+    const name = prefix + '.posttooluse.effects'
+    assert.ok(help.stdout.includes(name))
+    const result = await invoke(['-c', name, '-C', '/missing/claude', '-X', '/missing/codex'])
+    assert.equal(result.status, 3); assert.equal(result.stdout, '')
+    assert.match(result.stderr, new RegExp('DEPENDENCY_UNAVAILABLE: ' + prefix))
+    const unsupported = await invoke(['-c', name, '-H', 'v2'], { PATH: '' })
+    assert.equal(unsupported.status, 2); assert.match(unsupported.stderr, /CONFORMANCE_USAGE_CASE/)
+  }
+})

@@ -9,6 +9,7 @@ import { ConformanceError, evaluateControlObservations } from './conformance.mjs
 import { runNativeProcess } from './native-process.mjs'
 import { inspectCodexTranscript, verifyCodexTranscriptReader } from './conformance-transcript.mjs'
 import { createRewriteFixture, evaluateRewriteObservations, observeRewrite, REWRITE_CASES, rewriteToolResult } from './conformance-rewrite.mjs'
+import { createPosttoolFixture, evaluatePosttoolObservations, observePosttool, posttoolModelView } from './conformance-posttool.mjs'
 
 const MODEL = 'claude-sonnet-4-6'
 const REASON = 'CONFORMANCE_OWNED_DENIAL_REASON'
@@ -112,12 +113,12 @@ export async function stopHost(child, done) {
 }
 
 export const runClaudePretoolControl = options => runPretoolControl({ ...options, dialect: 'claude-code', nativeBinary: options.claudeBinary })
-export const runPretoolControl = options => runToolComparison({ ...options, rewriteInput: false })
-export const runInputRewrite = options => runToolComparison({ ...options, rewriteInput: true })
-async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, opencodeBinary, rewriteInput }) {
+export const runPretoolControl = options => runToolComparison({ ...options, rewriteInput: false, posttoolEffects: false })
+export const runInputRewrite = options => runToolComparison({ ...options, rewriteInput: true, posttoolEffects: false })
+export const runPosttoolEffects = options => runToolComparison({ ...options, rewriteInput: false, posttoolEffects: true })
+async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, opencodeBinary, rewriteInput, posttoolEffects }) {
   ensure(['claude-code', 'codex'].includes(dialect), 'CONFORMANCE_DIALECT_INVALID')
   const codex = dialect === 'codex'
-  const cases = rewriteInput ? REWRITE_CASES : CONTROL_CASES
   if (process.platform === 'win32') throw new ConformanceError('PLATFORM_UNAVAILABLE: POSIX process groups', 2)
   const nativeVersion = await verifyPinnedVersion(nativeBinary, codex ? 'codex' : 'claude', catalog.versions.native[dialect])
   const hostVersion = await verifyPinnedVersion(opencodeBinary, 'opencode', catalog.versions.hosts.v1)
@@ -135,14 +136,16 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
     const nativeConfig = join(nativeHome, 'native'), hostConfig = join(hostHome, 'config/opencode')
     await Promise.all([mkdir(nativeConfig), mkdir(hostConfig, { recursive: true }), mkdir(join(nativeHome, 'tmp')), mkdir(join(hostHome, 'tmp')), writeFile(mcp, '{"mcpServers":{}}')])
     const rewrite = rewriteInput ? createRewriteFixture({ project, hook, trace, node: process.execPath }) : undefined
-    const hookText = rewrite?.hookText ?? `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const transcriptExists=typeof p.transcript_path==='string'&&fs.existsSync(p.transcript_path);let transcriptContentValid;if(${codex}){transcriptContentValid=false;try{if(transcriptExists&&fs.statSync(p.transcript_path).size<=${MAX_BYTES}){const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(line=>JSON.parse(line));const inspect=${inspectCodexTranscript.toString()};transcriptContentValid=inspect(rows,p,'CONFORMANCE_CASE:'+(p.tool_input.command.includes('CONFORMANCE_DENY')?'deny':'allow'))}}catch{}}fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({input:p,transcriptExists,transcriptContentValid})+'\\n');if(p.tool_input.command.includes('CONFORMANCE_DENY'))console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:${JSON.stringify(REASON)}}}));`
+    const posttool = posttoolEffects ? createPosttoolFixture({ project, hook, trace, node: process.execPath, dialect }) : undefined
+    const cases = posttool?.cases ?? (rewrite ? REWRITE_CASES : CONTROL_CASES)
+    const hookText = posttool?.hookText ?? rewrite?.hookText ?? `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const transcriptExists=typeof p.transcript_path==='string'&&fs.existsSync(p.transcript_path);let transcriptContentValid;if(${codex}){transcriptContentValid=false;try{if(transcriptExists&&fs.statSync(p.transcript_path).size<=${MAX_BYTES}){const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(line=>JSON.parse(line));const inspect=${inspectCodexTranscript.toString()};transcriptContentValid=inspect(rows,p,'CONFORMANCE_CASE:'+(p.tool_input.command.includes('CONFORMANCE_DENY')?'deny':'allow'))}}catch{}}fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({input:p,transcriptExists,transcriptContentValid})+'\\n');if(p.tool_input.command.includes('CONFORMANCE_DENY'))console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:${JSON.stringify(REASON)}}}));`
     await writeFile(hook, hookText)
-    const sourceText = rewrite?.sourceText ?? JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: [process.execPath, hook].map(quote).join(' '), timeout: HOOK_TIMEOUT_SECONDS }] }] } })
+    const sourceText = posttool?.sourceText ?? rewrite?.sourceText ?? JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: [process.execPath, hook].map(quote).join(' '), timeout: HOOK_TIMEOUT_SECONDS }] }] } })
     await writeFile(source, sourceText)
     const sourceDigest = sha(sourceText), hookDigest = sha(hookText)
     const marker = id => join(project, id + '.marker')
     const command = rewrite?.command ?? (id => 'printf ' + (id === 'deny' ? 'CONFORMANCE_DENY' : 'CONFORMANCE_ALLOW') + ' > ' + quote(marker(id)))
-    const toolID = (backend, id) => (backend === 'native' ? 'toolu_' : 'call_') + 'conformance_' + id
+    const toolID = (backend, id, phase) => (backend === 'native' ? 'toolu_' : 'call_') + 'conformance_' + id + (posttool ? '_' + phase : '')
     gateway = createServer(async (request, response) => {
       try {
         ensure(++totalRequests <= MAX_REQUESTS, 'GATEWAY_REQUEST_LIMIT')
@@ -166,15 +169,22 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
         const backend = native ? 'native' : 'host', key = backend + ':' + id
         const state = traffic.get(key) ?? { count: 0, reasonDelivered: false }
         state.count++
-        ensure(state.count <= 2, 'GATEWAY_PRIMARY_LIMIT')
+        ensure(state.count <= (posttool ? 3 : 2), 'GATEWAY_PRIMARY_LIMIT')
         const transport = responses ? 'responses' : native ? 'anthropic' : 'chat'
-        if (state.count === 1) ensure(rewrite ? [rewrite.expectedOutput(id), ...rewrite.unexpectedOutputs(id)].every(value => !JSON.stringify(messages).includes(value)) : !JSON.stringify(messages).includes(REASON), rewrite ? 'GATEWAY_RESULT_CONTAMINATED' : 'GATEWAY_REASON_CONTAMINATED')
+        if (posttool) {
+          if (state.count === 1) ensure(posttool.effectTokens.every(value => !JSON.stringify(messages).includes(value)), 'GATEWAY_RESULT_CONTAMINATED')
+          else {
+            const phase = state.count === 2 ? 'first' : 'next'
+            state[phase] = posttoolModelView(messages, transport, posttool.modelOptions(id, toolID(backend, id, 'first'), toolID(backend, id, 'next')), phase)
+          }
+        } else if (state.count === 1) ensure(rewrite ? [rewrite.expectedOutput(id), ...rewrite.unexpectedOutputs(id)].every(value => !JSON.stringify(messages).includes(value)) : !JSON.stringify(messages).includes(REASON), rewrite ? 'GATEWAY_RESULT_CONTAMINATED' : 'GATEWAY_REASON_CONTAMINATED')
         else Object.assign(state, rewrite ? rewriteToolResult(messages, transport, toolID(backend, id), rewrite.expectedOutput(id), rewrite.unexpectedOutputs(id)) : controlToolResult(messages, transport, toolID(backend, id)))
         traffic.set(key, state)
-        const args = { command: command(id), description: 'Controlled conformance side effect' }
-        if (responses) emitResponses(response, args, toolID(backend, id), state.count === 1)
-        else if (native) emitAnthropic(response, body, args, toolID(backend, id), state.count === 1)
-        else emitOpenAI(response, args, toolID(backend, id), state.count === 1)
+        const phase = state.count === 1 ? 'first' : 'next', invoke = state.count < (posttool ? 3 : 2)
+        const args = { command: posttool ? posttool.command(id, phase) : command(id), description: 'Controlled conformance side effect' }, callID = toolID(backend, id, phase)
+        if (responses) emitResponses(response, args, callID, invoke)
+        else if (native) emitAnthropic(response, body, args, callID, invoke)
+        else emitOpenAI(response, args, callID, invoke)
       } catch (error) { gatewayErrors.push(error instanceof ConformanceError ? error.message : 'GATEWAY_INVALID_REQUEST'); if (!response.headersSent) response.writeHead(500); response.end('{}') }
     })
     await new Promise((resolve, reject) => { gateway.once('error', reject); gateway.listen(0, '127.0.0.1', resolve) })
@@ -186,6 +196,7 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
     const observe = async (backend, id) => {
       const lines = (await readFile(trace, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
       const row = lines[0], input = row?.input, requests = traffic.get(backend + ':' + id)
+      if (posttool) return observePosttool({ fixture: posttool, id, lines, requests, project, dialect, toolIDs: ['first', 'next'].map(phase => toolID(backend, id, phase)) })
       if (rewrite) return observeRewrite({ fixture: rewrite, lines, requests, dialect, toolUseID: toolID(backend, id), project, id })
       let content = null
       try { content = await readFile(marker(id), 'utf8') } catch (error) { if (error.code !== 'ENOENT') throw error }
@@ -193,7 +204,7 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
       const artifact = codex ? { transcriptContentValid: row?.transcriptContentValid === true, nativeReaderAccepted: row?.transcriptExists === true && await verifyCodexTranscriptReader({ binary: nativeBinary, root, project, input, prompt: 'CONFORMANCE_CASE:' + id, fixtureID: backend + '-' + id, ...(backend === 'native' ? { nativeHome: nativeConfig } : {}) }) } : {}
       return { id, hookInvocations: lines.length, event: input?.hook_event_name ?? null, tool: input?.tool_name ?? null, cwdMatches: input?.cwd === project, commandMatches: input?.tool_input?.command === command(id), identityValid: controlIdentityValid(input, dialect, toolID(backend, id)), transcriptExists: row?.transcriptExists === true, resultOwned: requests?.resultOwned === true, reasonDelivered: requests?.reasonDelivered === true, sideEffect: content !== null, primaryModelCalls: requests?.count ?? 0, ...artifact }
     }
-    const prepare = async id => { await writeFile(trace, ''); await Promise.all((rewrite ? Object.values(rewrite.markerPaths) : [marker(id)]).map(path => rm(path, { force: true }))) }
+    const prepare = async id => { await writeFile(trace, ''); await Promise.all((posttool ? Object.values(posttool.records(id)).map(row => row.path) : rewrite ? Object.values(rewrite.markerPaths) : [marker(id)]).map(path => rm(path, { force: true }))) }
     const nativeControls = []
     for (const id of cases) {
       stage = 'native-' + id
@@ -238,12 +249,12 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
     }
     stage = 'compare'
     ensure(gatewayErrors.length === 0, 'GATEWAY_FAILED: ' + [...new Set(gatewayErrors)].join(','))
-    ensure(hostCodes.size === 0, 'HOST_DIAGNOSTIC_FAILURE')
+    if (!posttool) ensure(hostCodes.size === 0, 'HOST_DIAGNOSTIC_FAILURE')
     ensure(sha(await readFile(source)) === sourceDigest && sha(await readFile(hook)) === hookDigest, 'CONFORMANCE_SOURCE_CHANGED')
     ensure(await fingerprintAdapter(packageRoot) === adapterBuildSha256, 'CONFORMANCE_BUILD_CHANGED')
     const traces = [{ sourceDigest, hookDigest, controls: nativeControls }, { sourceDigest, hookDigest, controls: hostControls }]
-    const outcome = rewrite ? evaluateRewriteObservations(...traces) : evaluateControlObservations(...traces, { codexTranscript: codex })
-    return { caseID: (codex ? 'codex' : 'claude') + '.pretooluse.' + (rewrite ? 'input-rewrite' : 'control'), host: 'v1', nativeVersion, hostVersion, ...outcome, platform: process.platform, architecture: process.arch, adapterBuildSha256, auxiliaryRequests, nativeHelloRequests, isolation: { temporaryHomeAndConfig: true, loopbackProvider: true, sourceBytesUnchanged: true, nativePermissionBypass: true, nativeTrustVerified: false, machineManagedSettingsMayRemain: true, ...(codex ? { nativeHookTrustBypassed: true } : {}) }, limits: ['Specified observables only; full event payload and rendering remain unverified', 'No real-model or native trust conformance claim', ...(codex ? ['Native exec_command is observed independently as Bash hook input; other tool families remain unverified'] : ['Native api/hello receives 404 and is counted outside model requests']), 'V1 only; V2 is not exercised by this case'] }
+    const outcome = posttool ? evaluatePosttoolObservations({ ...traces[0], diagnostics: [] }, { ...traces[1], diagnostics: [...hostCodes].sort() }, dialect) : rewrite ? evaluateRewriteObservations(...traces) : evaluateControlObservations(...traces, { codexTranscript: codex })
+    return { caseID: (codex ? 'codex' : 'claude') + (posttool ? '.posttooluse.effects' : '.pretooluse.' + (rewrite ? 'input-rewrite' : 'control')), host: 'v1', nativeVersion, hostVersion, ...outcome, platform: process.platform, architecture: process.arch, adapterBuildSha256, auxiliaryRequests, nativeHelloRequests, isolation: { temporaryHomeAndConfig: true, loopbackProvider: true, sourceBytesUnchanged: true, nativePermissionBypass: true, nativeTrustVerified: false, machineManagedSettingsMayRemain: true, ...(codex ? { nativeHookTrustBypassed: true } : {}) }, limits: ['Specified observables only; full event payload and rendering remain unverified', 'No real-model or native trust conformance claim', ...(codex ? ['Native exec_command is observed independently as Bash hook input; other tool families remain unverified'] : ['Native api/hello receives 404 and is counted outside model requests']), 'V1 only; V2 is not exercised by this case'] }
   } catch (error) {
     if (error instanceof ConformanceError) throw error
     throw new ConformanceError('CONFORMANCE_CASE_FAILED: ' + stage)

@@ -20,6 +20,8 @@ Each required capability is classified as verified, unsupported, or unresolved, 
 
 The [native input-rewrite comparisons](../conformance/README.md#input-replacement) exercise original pre-tool input, executed shell replacement, effective post-tool input, and owned model-visible output through unchanged hooks and an unchanged-command control. Passing those cases verifies their narrow requirements for V1; broad input, permission, post-tool, and V2 obligations remain separate.
 
+The [post-tool comparisons](posttool-conformance.md) measure Claude context/feedback, Codex result replacement, and isolation between sequential calls. The selected Claude controls agree with V1. Default V1's unavailable Codex result replacement remains a failed comparison with preserved diagnostics and native/host observations. These cases do not certify full post-tool output or lifecycle equivalence.
+
 ## V1 Stop exception
 
 OpenCode V1 cannot load configurations containing enabled `Stop` registrations. This is an accepted exception to identical behavior: the expected V1 result is a prominent fatal load error, not Stop execution parity. `HOST_STOP_UNSUPPORTED` identifies every offending source configuration, the `Stop` event and the unavailable `awaited-completion-decision` host capability. The bridge does not skip Stop registrations or approximate them with an idle observer. Native disablement or explicit selection can exclude registrations, and those exclusions remain reported.

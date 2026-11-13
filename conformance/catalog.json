@@ -483,6 +483,20 @@
       "event": "PostToolUse",
       "area": "payload",
       "summary": "One post-tool observation follows the pre-tool observation with the same session and call identity and the effective command, including the unchanged control"
+    },
+    {
+      "id": "claude-code.posttooluse.effects",
+      "dialect": "claude-code",
+      "event": "PostToolUse",
+      "area": "effects",
+      "summary": "Post-tool context and feedback preserve the original result, retain native model-visible roles and placement, and do not leak into a later call; a no-op control remains unchanged"
+    },
+    {
+      "id": "codex.posttooluse.effects",
+      "dialect": "codex",
+      "event": "PostToolUse",
+      "area": "effects",
+      "summary": "Post-tool block feedback replaces the owned model-visible result without undoing completed side effects or affecting a later call; a no-op control remains unchanged"
     }
   ],
   "evidence": [
@@ -955,6 +969,26 @@
         "payload"
       ],
       "scope": "Registered native/V1 input-rewrite scenario and independent observation checks; availability alone does not establish execution or verify broad event coverage"
+    },
+    {
+      "id": "posttool-effects-comparison",
+      "level": "host-probe",
+      "artifacts": [
+        "scripts/lib/conformance-posttool.mjs",
+        "test/conformance-posttool.test.ts"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [
+        "PostToolUse"
+      ],
+      "areas": [
+        "effects",
+        "payload"
+      ],
+      "scope": "Registered native/V1 post-tool effect comparison with selected visible-layout and sequential-call isolation checks; availability is not successful conformance evidence"
     }
   ],
   "cases": [
@@ -1086,6 +1120,52 @@
         "unchanged-command control side effect",
         "literal output on exactly one owned result in the next model request",
         "primary model request count"
+      ]
+    },
+    {
+      "id": "claude.posttooluse.effects",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.posttooluse.effects"
+      ],
+      "description": "Native post-tool effects and default V1 through identical hooks, sequential calls and no-op controls",
+      "observables": [
+        "post-tool invocation count and call ordering",
+        "owned session, turn and call identities",
+        "actual completed filesystem effects",
+        "first result preservation or replacement",
+        "model-visible effect role and placement relative to the owned result",
+        "second result ownership and absence of replayed effects",
+        "no-op control",
+        "primary model request count",
+        "unsupported host diagnostics retained as failed evidence",
+        "source/hook digests and adapter build fingerprint"
+      ]
+    },
+    {
+      "id": "codex.posttooluse.effects",
+      "dialect": "codex",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "codex.posttooluse.effects"
+      ],
+      "description": "Native post-tool effects and default V1 through identical hooks, sequential calls and no-op controls",
+      "observables": [
+        "post-tool invocation count and call ordering",
+        "owned session, turn and call identities",
+        "actual completed filesystem effects",
+        "first result preservation or replacement",
+        "model-visible effect role and placement relative to the owned result",
+        "second result ownership and absence of replayed effects",
+        "no-op control",
+        "primary model request count",
+        "unsupported host diagnostics retained as failed evidence",
+        "source/hook digests and adapter build fingerprint"
       ]
     }
   ],

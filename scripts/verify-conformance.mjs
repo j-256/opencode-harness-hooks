@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { ConformanceError, validateCatalog, readInventory, coverageReport, conformanceExitStatus } from './lib/conformance.mjs'
 
-const EXECUTABLE_CASES = new Set(['claude.pretooluse.control', 'codex.pretooluse.control', 'claude.pretooluse.input-rewrite', 'codex.pretooluse.input-rewrite', 'claude-code.v1.stop-load-rejection', 'codex.v1.stop-load-rejection'])
+const EXECUTABLE_CASES = new Set(['claude.pretooluse.control', 'codex.pretooluse.control', 'claude.pretooluse.input-rewrite', 'codex.pretooluse.input-rewrite', 'claude.posttooluse.effects', 'codex.posttooluse.effects', 'claude-code.v1.stop-load-rejection', 'codex.v1.stop-load-rejection'])
 const HELP = `Usage: node scripts/verify-conformance.mjs [-r] [-c CASE ...] [-H v1|v2] [-C PATH] [-X PATH] [-o PATH]
 
 List pinned native requirements and existing evidence without executing hooks.
@@ -18,6 +18,7 @@ Options:
                         claude.pretooluse.control, codex.pretooluse.control,
                         claude.pretooluse.input-rewrite,
                         codex.pretooluse.input-rewrite,
+                        claude.posttooluse.effects, codex.posttooluse.effects,
                         claude-code.v1.stop-load-rejection,
                         codex.v1.stop-load-rejection
   -H, --host VERSION     Completeness target, v1 (default) or v2
@@ -72,9 +73,9 @@ try {
         const { runStopRejection } = await import('./lib/conformance-stop.mjs')
         runs.push(await runStopRejection(options))
       } else {
-        const { runPretoolControl, runInputRewrite } = await import('./lib/conformance-pretool.mjs')
+        const { runPretoolControl, runInputRewrite, runPosttoolEffects } = await import('./lib/conformance-pretool.mjs')
         const nativeBinary = scenario.dialect === 'codex' ? binary(parsed.values['codex-binary'] ?? process.env.CODEX_BINARY ?? 'codex') : binary(parsed.values['claude-binary'] ?? process.env.CLAUDE_BINARY ?? 'claude')
-        const run = scenario.id.endsWith('.input-rewrite') ? runInputRewrite : runPretoolControl
+        const run = scenario.id.endsWith('.posttooluse.effects') ? runPosttoolEffects : scenario.id.endsWith('.input-rewrite') ? runInputRewrite : runPretoolControl
         runs.push(await run({ ...options, nativeBinary }))
       }
     }
