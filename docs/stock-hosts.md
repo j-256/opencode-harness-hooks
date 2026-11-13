@@ -1,6 +1,6 @@
 # Supported subset on stock OpenCode
 
-The default package targets OpenCode V1 1.19.5 and V2 2.2.5 without host patches. The supported subset uses foreground command handlers on the prompt and tool paths below. It does not establish full Claude Code or Codex compatibility, a complete configuration migration, or native trust and lifecycle parity. The package's full-equivalence verdict remains false.
+The default package targets OpenCode V1 1.19.5 and V2 2.2.5 without host patches. The supported subset uses foreground command handlers on the prompt and tool paths below. The [bounded V1 delivery profile and gap register](v1-compatibility.md) separate useful delivery from complete native equivalence and the V2 integration track. The subset does not establish a complete configuration migration or native trust/lifecycle parity, so the package's full-equivalence verdict remains false.
 
 ## Behavior and boundaries
 
@@ -10,8 +10,8 @@ The default package targets OpenCode V1 1.19.5 and V2 2.2.5 without host patches
 | Registrations | Each selected registration executes independently | No deduplication; equivalent policies from both sources can run twice |
 | `UserPromptSubmit` | Command-based blocking and dialect-specific context delivery across accepted text prompts | V1 custom authentication fetch loaders require explicit composition; full attachment, provider, resume and lifecycle coverage remains required |
 | `PreToolUse` | Command-based denial, whole input replacement and selected Claude preapproval | Forced approval, deferred execution, complete permission precedence and arbitrary cross-tool translations remain unverified |
-| `PostToolUse` | Foreground command observation of the executed effective arguments | Default model-context delivery and other post-tool output effects remain unsupported; completed tool effects cannot be undone |
-| Stop | Prominent incompatible-configuration error and fatal admission/execution guards | Enabled selected Stop is incompatible with both default entrypoints; V1 rejection is the sole accepted full-project exception |
+| `PostToolUse` | Foreground observation of effective arguments; V1 context/feedback and one Codex string result replacement | V2 default effect delivery needs its service; structured/conflicting replacements and full native rendering remain gaps. Completed effects cannot be undone |
+| Stop | Prominent incompatible-configuration error and fatal admission/execution guards | Enabled selected Stop is incompatible with both default entrypoints; V1 rejection is an accepted host limitation and V2 completion remains a separate track |
 | Other events and services | Explicit unsupported diagnostics for unavailable events/services | Startup, native environment persistence, complete model/agent/MCP/background delivery and native extensions remain integration gates |
 
 The actual-host fixtures use controlled shell commands and a declared permission mode. Their results do not certify arbitrary source scripts or all host tools. File-operation translation between patch and Edit/Write algorithms requires its own evidence. POSIX/macOS execution does not establish Windows support.
@@ -20,7 +20,7 @@ The default V1 prompt transport is incompatible with providers that supply a cus
 
 V1 internal model requests are isolated from primary prompt projection by comparing the executing agent with the originating message's agent. The prompt probe verifies automatic title completion and absent private correlation headers on provider requests. Matching identities remain primary even when the selected agent is named `title`; missing identity does not bypass primary validation.
 
-Post-tool context differs from prompt-submission context. The default package delivers the exercised prompt-submission context; post-tool context requires an explicit core effect service and is not part of this default-package subset. Unsupported post-tool effects produce diagnostics after execution rather than retroactively denying the tool.
+Post-tool context differs from prompt-submission context. Default V1 supplies the documented [tool-result context, feedback and string replacement delivery](runtime.md#v1-tool-context-and-feedback); V2 default effect delivery remains a separate boundary. An explicit effect service owns custom delivery. Unsupported post-tool effects produce diagnostics after execution rather than retroactively denying the tool.
 
 ## Select native sources explicitly
 

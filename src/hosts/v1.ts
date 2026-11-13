@@ -3,20 +3,21 @@ import type { HostToolEvent, ToolCall, ToolHostOptions } from './tools.js'
 import type { EffectResolution } from '../effects.js'
 
 const MAX_CONTEXT_BYTES = 128 * 1024
-interface PendingContext { readonly sessionID: string; readonly parts: string[]; bytes: number; finishing: boolean }
+interface PendingContext { readonly sessionID: string; readonly parts: string[]; bytes: number; finishing: boolean; replacement?: string }
 function key(call: ToolCall): string { return JSON.stringify([call.sessionID, call.callID]) }
 
 function context(effects: EffectResolution): string[] {
-  if (effects.context.some(row => row.action.placement !== 'model') || effects.warnings.length || effects.extensions.length || effects.continuations.length || effects.resultReplacements.length) throw new HostHookError('HOST_EFFECT_UNAVAILABLE', 'unsupported')
+  if (effects.context.some(row => row.action.placement !== 'model') || effects.warnings.length || effects.extensions.length || effects.continuations.length) throw new HostHookError('HOST_EFFECT_UNAVAILABLE', 'unsupported')
   return [...effects.feedback, ...effects.context].sort((left, right) => left.configuredOrder - right.configuredOrder).map(row => row.action.text).filter(text => text.length > 0)
 }
 
-function append(output: unknown, parts: readonly string[]): void {
+function render(output: unknown, state: PendingContext): void {
   if (!record(output)) throw new HostHookError('HOST_TOOL_RESULT_UNSUPPORTED', 'unsupported')
   const descriptor = Object.getOwnPropertyDescriptor(output, 'output')
   if (!descriptor || !('value' in descriptor) || typeof descriptor.value !== 'string') throw new HostHookError('HOST_TOOL_RESULT_UNSUPPORTED', 'unsupported')
   if (!descriptor.writable) throw new HostHookError('HOST_TOOL_RESULT_IMMUTABLE', 'unsupported')
-  output.output = `${descriptor.value}\n\n<harness-hook-context>\n${parts.join('\n\n')}\n</harness-hook-context>`
+  const value = state.replacement ?? descriptor.value
+  output.output = state.parts.length ? `${value}\n\n<harness-hook-context>\n${state.parts.join('\n\n')}\n</harness-hook-context>` : value
 }
 
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
@@ -35,13 +36,20 @@ export function createV1Hooks(options: ToolHostOptions) {
   const custom = options.applyEffects !== undefined
   const applyEffects = async (event: HostToolEvent, effects: EffectResolution): Promise<void> => {
     if (event.event !== 'PreToolUse' && (effects.stop || effects.block)) throw new HostHookError('HOST_EFFECT_UNAVAILABLE', 'unsupported')
+    let replacement: string | undefined
+    if (effects.resultReplacements.length) {
+      const row = effects.resultReplacements[0]!
+      if (effects.resultReplacements.length !== 1 || event.event !== 'PostToolUse' || row.dialect !== 'codex' || typeof row.action.output !== 'string') throw new HostHookError('HOST_EFFECT_UNAVAILABLE', 'unsupported')
+      replacement = row.action.output
+    }
     const parts = context(effects)
     const state = pending.get(key(event))
     if (!state || event.signal.aborted) throw new HostHookError('HOST_TOOL_CANCELLED', 'cancelled')
-    const bytes = state.bytes + parts.reduce((sum, part) => sum + Buffer.byteLength(part), 0)
-    if (bytes > MAX_CONTEXT_BYTES) throw new HostHookError('HOST_TOOL_CONTEXT_LIMIT', 'unsupported')
+    const bytes = state.bytes + parts.reduce((sum, part) => sum + Buffer.byteLength(part), 0) + (replacement === undefined ? 0 : Buffer.byteLength(replacement))
+    if (bytes > MAX_CONTEXT_BYTES) throw new HostHookError(replacement === undefined ? 'HOST_TOOL_CONTEXT_LIMIT' : 'HOST_TOOL_REPLACEMENT_LIMIT', 'unsupported')
     state.parts.push(...parts)
     state.bytes = bytes
+    if (replacement !== undefined) state.replacement = replacement
   }
   const dispatch: ToolHostOptions['dispatch'] = async event => {
     const id = key(event)
@@ -88,7 +96,7 @@ export function createV1Hooks(options: ToolHostOptions) {
       const status = outcome(input.tool, output)
       try {
         await bridge.after(input, input.args, status, output)
-        if (state && pending.get(id) === state && state.parts.length && status !== 'unknown') append(output, state.parts)
+        if (state && pending.get(id) === state && (state.parts.length || state.replacement !== undefined) && status !== 'unknown') render(output, state)
       } catch (error) {
         bridge.effectFailure(input, status === 'error' ? 'PostToolUseFailure' : 'PostToolUse', error)
       } finally { if (pending.get(id) === state) pending.delete(id) }

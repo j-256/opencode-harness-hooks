@@ -80,7 +80,7 @@ Run the post-tool comparison cases with sequential calls and no-op controls:
 node scripts/verify-conformance.mjs --case claude.posttooluse.effects --case codex.posttooluse.effects --require-complete
 ```
 
-The [post-tool conformance guide](../docs/posttool-conformance.md) defines selected result preservation/replacement, model-visible role/placement, completed side effects, and call-isolation observations. Native Claude and V1 agree on the selected context/feedback behavior. Codex result replacement remains a failed V1 comparison with `HOST_EFFECT_UNAVAILABLE`; the runner retains its native/host observations and continues other selected cases before exiting 1. Passing diagnostic rejection is not native equivalence. Exact formatting, broad post-tool behavior and V2 remain unverified.
+The [post-tool conformance guide](../docs/posttool-conformance.md) defines selected result preservation/replacement, model-visible role/placement, completed side effects, and call-isolation observations. Native Claude and V1 agree on the selected context/feedback behavior; native Codex and V1 agree on the exercised string result replacement. A regression retains failed native/host observations and the runner continues other selected cases before exiting 1. Passing diagnostic rejection is not native equivalence. Exact formatting, broad post-tool behavior and V2 remain unverified. Those broader proof gaps remain visible without blocking the [bounded V1 delivery profile](../docs/v1-compatibility.md).
 
 ## Extending the suite
 

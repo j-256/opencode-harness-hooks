@@ -16,11 +16,11 @@ The default V1 adapter also supplies a [Codex tool-hook transcript projection](c
 
 ## Evidence and completion
 
-Each required capability is classified as verified, unsupported, or unresolved, with supporting evidence. A required unsupported or unresolved capability prevents an equivalence claim. Missing evidence also prevents that claim. Tests proving an unsupported diagnostic are diagnostic coverage, not successful protocol equivalence.
+Each required capability is classified as verified, unsupported, or unresolved, with supporting evidence. A required unsupported or unresolved capability prevents a full equivalence claim. Missing evidence also prevents that claim. Tests proving an unsupported diagnostic are diagnostic coverage, not successful protocol equivalence. Bounded V1 delivery uses the [documented profile and gap register](v1-compatibility.md): verify the supported surface, reject incompatible configurations clearly, and record remaining limitations, missing bindings and unverified behavior. Complete native equivalence and V2 integration are separate targets rather than prerequisites for that delivery.
 
 The [native input-rewrite comparisons](../conformance/README.md#input-replacement) exercise original pre-tool input, executed shell replacement, effective post-tool input, and owned model-visible output through unchanged hooks and an unchanged-command control. Passing those cases verifies their narrow requirements for V1; broad input, permission, post-tool, and V2 obligations remain separate.
 
-The [post-tool comparisons](posttool-conformance.md) measure Claude context/feedback, Codex result replacement, and isolation between sequential calls. The selected Claude controls agree with V1. Default V1's unavailable Codex result replacement remains a failed comparison with preserved diagnostics and native/host observations. These cases do not certify full post-tool output or lifecycle equivalence.
+The [post-tool comparisons](posttool-conformance.md) measure Claude context/feedback, Codex string result replacement, and isolation between sequential calls. The selected controls agree with V1's default text-result delivery. Unsupported replacement shapes and conflicts retain explicit diagnostics. These cases do not certify full post-tool output or lifecycle equivalence.
 
 ## V1 Stop exception
 

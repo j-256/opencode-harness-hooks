@@ -4,14 +4,99 @@ import type { AttributedAction, DispatchResult } from '../src/engine.js'
 import type { HookAction } from '../src/effect-types.js'
 import { createV1Hooks } from '../src/hosts/v1.js'
 
-function result(actions: readonly HookAction[]): DispatchResult {
-  const attributed: AttributedAction[] = actions.map(action => ({ action, sourceID: 'fixture', sourceDigest: 'revision', registrationID: 'hook', dialect: 'claude-code', configuredOrder: 0, completionOrder: 0 }))
+function result(actions: readonly HookAction[], dialect: 'claude-code' | 'codex' = 'claude-code'): DispatchResult {
+  const attributed: AttributedAction[] = actions.map(action => ({ action, sourceID: 'fixture', sourceDigest: 'revision', registrationID: 'hook', dialect, configuredOrder: 0, completionOrder: 0 }))
   const permission = attributed.flatMap(row => row.action.kind === 'permission' ? [{ ...row, action: row.action }] : [])[0]
   return { entries: [], actions: attributed, ...(permission ? { permission } : {}), cancelled: false, diagnostic: { dispatchID: 'dispatch', sessionID: 'session', event: 'PreToolUse', durationMs: 0, cancelled: false, failed: 0, unsupported: 0, skipped: 0, background: 0, handlers: [] } }
 }
 const call = { tool: 'write', sessionID: 'session', callID: 'call' }
 const output = () => ({ title: 'Written', metadata: { preserved: true }, output: 'ORIGINAL_TOOL_RESULT' })
 const context = (text: string): HookAction => ({ kind: 'context', placement: 'model', text, channel: 'additionalContext' })
+
+test('default V1 delivers an owned Codex post-tool string replacement and retained context once', async t => {
+  const hooks = createV1Hooks({ dispatch: async event => result(event.event === 'PreToolUse' ? [context('PRE_CONTEXT')] : [{ kind: 'replace-result', output: 'REPLACED_RESULT', rejectNested: true }, context('POST_CONTEXT')], 'codex') })
+  t.after(() => hooks.dispose())
+  await hooks['tool.execute.before'](call, { args: {} })
+  const value = output()
+  await hooks['tool.execute.after']({ ...call, args: {} }, value)
+  assert.ok(value.output.startsWith('REPLACED_RESULT'))
+  assert.equal(value.output.includes('ORIGINAL_TOOL_RESULT'), false)
+  for (const marker of ['PRE_CONTEXT', 'POST_CONTEXT']) assert.equal(value.output.split(marker).length - 1, 1)
+  assert.equal(value.title, 'Written'); assert.deepEqual(value.metadata, { preserved: true })
+  const delivered = value.output
+  await hooks['tool.execute.after']({ ...call, args: {} }, value)
+  assert.equal(value.output, delivered)
+  assert.deepEqual(hooks.inspect().diagnostics, [])
+})
+
+test('default V1 replaces with an empty string and isolates replacements between calls and sessions', async t => {
+  const hooks = createV1Hooks({ dispatch: async event => result(event.event === 'PostToolUse' ? [{ kind: 'replace-result', output: event.sessionID === 'empty' ? '' : event.sessionID + ':' + event.callID, rejectNested: true }] : [], 'codex') })
+  t.after(() => hooks.dispose())
+  const calls = [{ ...call, sessionID: 'empty' }, call, { ...call, sessionID: 'other' }, { ...call, callID: 'parallel' }]
+  for (const input of calls) await hooks['tool.execute.before'](input, { args: {} })
+  for (const input of calls.toReversed()) {
+    const value = output()
+    await hooks['tool.execute.after']({ ...input, args: {} }, value)
+    assert.equal(value.output, input.sessionID === 'empty' ? '' : input.sessionID + ':' + input.callID)
+  }
+  assert.deepEqual(hooks.inspect().diagnostics, [])
+})
+
+test('default V1 bounds replacement and context together without partially rendering oversized output', async t => {
+  const hooks = createV1Hooks({ dispatch: async event => result(event.event === 'PreToolUse' ? [context('x'.repeat(64 * 1024))] : [{ kind: 'replace-result', output: '\u00e9'.repeat(32 * 1024 + 1), rejectNested: true }, context('UNDLVD_POST')], 'codex') })
+  t.after(() => hooks.dispose())
+  await hooks['tool.execute.before'](call, { args: {} })
+  const value = output()
+  await hooks['tool.execute.after']({ ...call, args: {} }, value)
+  assert.ok(value.output.startsWith('ORIGINAL_TOOL_RESULT'))
+  assert.equal(value.output.includes('\u00e9'), false); assert.equal(value.output.includes('UNDLVD_POST'), false)
+  assert.deepEqual(hooks.inspect().diagnostics.map(row => row.code), ['HOST_TOOL_REPLACEMENT_LIMIT'])
+})
+
+test('default V1 retains replacement boundaries for unknown shapes, conflicts and immutable results', async t => {
+  for (const mode of ['structured', 'conflict', 'immutable', 'extension']) {
+    const actions: HookAction[] = [{ kind: 'replace-result', output: mode === 'structured' ? { content: 'REPLACED' } : 'REPLACED', rejectNested: true }]
+    if (mode === 'conflict') actions.push({ kind: 'replace-result', output: 'COMPETING', rejectNested: true })
+    if (mode === 'extension') actions.push({ kind: 'native-extension', name: 'unsupported', value: true })
+    const hooks = createV1Hooks({ dispatch: async event => result(event.event === 'PostToolUse' ? actions : [], 'codex') })
+    t.after(() => hooks.dispose())
+    await hooks['tool.execute.before'](call, { args: {} })
+    const value = mode === 'immutable' ? Object.freeze(output()) : output()
+    await hooks['tool.execute.after']({ ...call, args: {} }, value)
+    assert.equal(value.output, 'ORIGINAL_TOOL_RESULT')
+    assert.deepEqual(hooks.inspect().diagnostics.map(row => row.code), [mode === 'conflict' ? 'RESULT_CONFLICT_UNVERIFIED' : mode === 'immutable' ? 'HOST_TOOL_RESULT_IMMUTABLE' : 'HOST_EFFECT_UNAVAILABLE'])
+  }
+})
+
+test('default V1 discards a late replacement when the call is disposed', async () => {
+  let entered!: () => void, finish!: (value: DispatchResult) => void
+  const ready = new Promise<void>(resolve => { entered = resolve })
+  const hooks = createV1Hooks({ dispatch: async event => {
+    if (event.event === 'PreToolUse') return result([], 'codex')
+    entered(); return new Promise(resolve => { finish = resolve })
+  } })
+  await hooks['tool.execute.before'](call, { args: {} })
+  const value = output(), pending = hooks['tool.execute.after']({ ...call, args: {} }, value)
+  await ready; await hooks.dispose()
+  finish(result([{ kind: 'replace-result', output: 'LATE_RESULT', rejectNested: true }], 'codex'))
+  await pending
+  assert.equal(value.output, 'ORIGINAL_TOOL_RESULT')
+})
+
+test('default V1 does not apply result replacements before execution or through the failure event', async t => {
+  const actions: HookAction[] = [{ kind: 'replace-result', output: 'UNEXPECTED_REPLACEMENT', rejectNested: true }]
+  const before = createV1Hooks({ dispatch: async () => result(actions, 'codex') })
+  t.after(() => before.dispose())
+  await assert.rejects(before['tool.execute.before'](call, { args: {} }), { code: 'HOST_EFFECT_UNAVAILABLE' })
+  const failed = createV1Hooks({ dispatch: async event => result(event.event === 'PreToolUse' ? [] : actions, 'codex') })
+  t.after(() => failed.dispose())
+  const bash = { ...call, tool: 'bash' }
+  await failed['tool.execute.before'](bash, { args: { command: 'failure' } })
+  const value = { title: 'Failed', metadata: { exit: 1 }, output: 'ORIGINAL_FAILURE' }
+  await failed['tool.execute.after']({ ...bash, args: { command: 'failure' } }, value)
+  assert.equal(value.output, 'ORIGINAL_FAILURE')
+  assert.deepEqual(failed.inspect().diagnostics.map(row => row.code), ['HOST_EFFECT_UNAVAILABLE'])
+})
 
 test('default V1 retains pre-tool context while applying the effective input replacement', async t => {
   const hooks = createV1Hooks({ dispatch: async event => result(event.event === 'PreToolUse' ? [context('PRE_CONTEXT'), { kind: 'replace-input', input: { file_path: 'file.txt', content: 'rewritten' } }] : []) })
