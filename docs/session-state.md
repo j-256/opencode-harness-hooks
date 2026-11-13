@@ -1,0 +1,13 @@
+# Durable native session storage
+
+`SessionStore` stores owned native projections in a private SQLite database. Node uses its built-in SQLite API and requires Node 22.13 or later without experimental flags. Bun uses its own built-in SQLite API. Runtime selection is explicit; a missing backend fails with `SESSION_STORE_RUNTIME_UNAVAILABLE`. The store adds no native package dependency.
+
+The database scope binds the canonical project directory, host contract and native contract versions. Opening it under a different scope fails; a format change requires an explicit migration rather than erasing older state. The database and SQLite sidecars must be private, regular, singly linked files owned by the process user. The private directory and database inode remain checked during use. Symlinks, changed ownership or changed safety boundaries reject before an operation can publish state.
+
+`load(sessionID)` returns an immutable receipt and JSON payload. `save(receipt, payload)` accepts only a receipt issued by the same store. A transaction checks its session revision before updating data, so a stale writer cannot replace a newer accepted projection. The payload is copied before asynchronous work; its checksum and stored byte length are verified on read. No hook is executed by loading or saving state.
+
+Deletion publishes a tombstone. Tombstone retention is bounded, and a global generation guard prevents an old absent-state receipt from recreating a deleted row after its tombstone is pruned. Live session and aggregate payload quotas are checked in the same write transaction. Oversized state fails explicitly without truncation or replacement of the previously accepted payload. The defaults permit a payload up to 32 MiB, retained live payloads up to 256 MiB and up to 1,024 live sessions; retained tombstones have a separate bound equal to the configured session limit. SQLite file growth also has a page budget.
+
+Disposal rejects new operations, drains accepted work and closes the connection while retaining durable records. Session deletion and runtime disposal therefore have distinct data lifetimes. Failure diagnostics identify operation, session, outcome, correlation ID and elapsed time without payload contents or storage paths. Failed diagnostic observers are counted separately.
+
+Native history consumers must validate their own snapshot shapes, restore original IDs and timestamps, bind restored state to the new session lifetime and await required checkpoints before externally visible effects. A durable store alone does not establish native resume conformance or recover original tool input that was discarded before the plugin observed it.
