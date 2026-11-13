@@ -246,6 +246,9 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     services.transcripts?.admitPrompt?.(event, session, dispatch)
   }
   return { report, sessions, tools, prompt, admitPrompt, promptOperation, observeModel, needsModelArtifacts,
+    hasPromptModelHooks: sources.some(source => source.dialect === 'claude-code' && source.registrations.some(registration => registration.handler.type === 'prompt')),
+    modelOptions: Object.freeze({ ...(options.promptModel ? { promptModel: options.promptModel } : {}), ...(options.modelAliases ? { modelAliases: options.modelAliases } : {}) }),
+    nativePromptModels: Object.freeze(sources.flatMap(source => source.dialect === 'claude-code' ? source.registrations.flatMap(registration => registration.handler.type === 'prompt' && typeof registration.handler.model === 'string' ? [registration.handler.model] : []) : [])),
     removeStartupSession: async (sessionID: string) => { sessions.close(sessionID); if (starts) await starts.removeSession(sessionID); else await retainedEnvironments?.removeSession(sessionID) },
     start: (event: SessionStartEvent) => starts ? starts.start(event) : Promise.reject(new HostHookError('HOST_EVENT_UNAVAILABLE', 'unsupported')),
     stop: (event: StopEvent) => stops ? stops.complete(event) : Promise.reject(new HostHookError('HOST_EVENT_UNAVAILABLE', 'unsupported')),

@@ -7,11 +7,15 @@ import type { LoadedCodexConfig, SourceSpec } from './types.js'
 
 const WIRED_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'UserPromptSubmit'])
 const PERMISSION_MODES = new Set(['default', 'acceptEdits', 'plan', 'dontAsk', 'bypassPermissions', 'auto'])
+const MAX_MODEL_BYTES = 4096
+const MAX_MODEL_ALIASES = 128
 
 export interface RuntimeOptions {
   readonly sources: readonly SourceSpec[]
   readonly reviewedDigests: Readonly<Record<string, string>>
   readonly permissionMode?: string
+  readonly promptModel?: string
+  readonly modelAliases?: Readonly<Record<string, string>>
 }
 export interface RuntimeReport {
   readonly host: HostVersion
@@ -35,14 +39,27 @@ export interface RuntimeReport {
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 
 function optionsCopy(value: unknown, directory: string): RuntimeOptions {
-  if (!record(value) || Object.keys(value).some(key => !['sources', 'reviewedDigests', 'permissionMode'].includes(key)) || !Array.isArray(value.sources) || !value.sources.length || !record(value.reviewedDigests)) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
+  if (!record(value) || Object.keys(value).some(key => !['sources', 'reviewedDigests', 'permissionMode', 'promptModel', 'modelAliases'].includes(key)) || !Array.isArray(value.sources) || !value.sources.length || !record(value.reviewedDigests)) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
   if (value.permissionMode !== undefined && (typeof value.permissionMode !== 'string' || !PERMISSION_MODES.has(value.permissionMode))) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
   if (Object.values(value.reviewedDigests).some(digest => typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest))) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
   const sources = value.sources.map(source => {
     if (!record(source)) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
     return snapshotSourceSpec(source as unknown as SourceSpec, undefined, directory)
   })
-  return { sources, reviewedDigests: { ...value.reviewedDigests } as Record<string, string>, ...(typeof value.permissionMode === 'string' ? { permissionMode: value.permissionMode } : {}) }
+  const validModel = (input: unknown): input is string => typeof input === 'string' && /^[^/\s\x00-\x1f]+\/.+$/u.test(input) && !/[\x00-\x1f]/u.test(input) && Buffer.byteLength(input) <= MAX_MODEL_BYTES
+  if (value.promptModel !== undefined && !validModel(value.promptModel)) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
+  let aliases: Readonly<Record<string, string>> | undefined
+  if (value.modelAliases !== undefined) {
+    if (!record(value.modelAliases) || Reflect.ownKeys(value.modelAliases).length > MAX_MODEL_ALIASES) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
+    const copied: Record<string, string> = Object.create(null)
+    for (const key of Reflect.ownKeys(value.modelAliases)) {
+      const field = Object.getOwnPropertyDescriptor(value.modelAliases, key)
+      if (typeof key !== 'string' || !key || Buffer.byteLength(key) > MAX_MODEL_BYTES || /[\x00-\x1f]/u.test(key) || !field || !('value' in field) || !validModel(field.value)) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
+      copied[key] = field.value
+    }
+    aliases = Object.freeze(copied)
+  }
+  return { sources, reviewedDigests: { ...value.reviewedDigests } as Record<string, string>, ...(typeof value.permissionMode === 'string' ? { permissionMode: value.permissionMode } : {}), ...(typeof value.promptModel === 'string' ? { promptModel: value.promptModel } : {}), ...(aliases ? { modelAliases: aliases } : {}) }
 }
 
 export async function inspectSources(host: HostVersion, directory: string, inputOptions: unknown, availableEvents: readonly string[] = []) {

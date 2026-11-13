@@ -18,6 +18,8 @@ import { ClaudeEnvironmentError } from '../claude-environment-files.js'
 import { realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+import { MODEL_REQUEST_HEADER, V1PromptModels } from './model-v1.js'
+import type { V1ModelClient } from './model-v1.js'
 
 const MAX_SESSION_CLEANUPS = 1024
 
@@ -25,7 +27,7 @@ export interface V1Input {
   readonly directory: string
   readonly client?: {
     readonly config?: { readonly get: (options: { readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }> }
-    readonly session: {
+    readonly session: Omit<V1ModelClient['session'], 'get'> & {
       readonly get: (options: { readonly path: { readonly id: string }; readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }>
       readonly messages: (options: { readonly path: { readonly id: string }; readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }>
     }
@@ -85,8 +87,16 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   } })
   const stateService = services.nativeState ?? nativeState!
   const startup = new V1Startups(input, transcripts, codexTranscripts, services, stateService)
-  const runtime = await createRuntime('v1', input.directory, options, { ...services, transcripts, codexTranscripts, nativeState: stateService, sessionStart: startup.service })
+  let models: V1PromptModels | undefined
+  const runtime = await createRuntime('v1', input.directory, options, { ...services, host: { ...services.host, environment, ...(!services.host?.evaluatePrompt ? { evaluatePrompt: request => {
+    if (!models) unavailable('HOST_PROMPT_MODEL_UNAVAILABLE')
+    return models.evaluate(request)
+  } } : {}) }, transcripts, codexTranscripts, nativeState: stateService, sessionStart: startup.service })
   startup.attach(runtime)
+  if (!services.host?.evaluatePrompt && runtime.hasPromptModelHooks) {
+    models = await V1PromptModels.create({ directory: input.directory, ...(input.client ? { client: input.client } : {}) })
+    models.attach(runtime.sessions, runtime.modelOptions)
+  }
   const hasContextHooks = runtime.hasPromptHooks || runtime.hasStartHooks
   const approvals = new CallApprovals({ diagnostic: runtime.tools.diagnostic })
   const needsProjection = (sessionID: string) => hasContextHooks || contexts.requiresProjection(sessionID)
@@ -110,7 +120,12 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     const previous = delegates.get(id)
     if (previous?.original === original) return previous.wrapped
     const wrapped: typeof fetch = async (input, init) => {
-      const token = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined)).get(PROMPT_REQUEST_HEADER)
+      const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
+      if (headers.has(MODEL_REQUEST_HEADER)) {
+        if (!models || headers.has(PROMPT_REQUEST_HEADER)) unavailable('HOST_MODEL_REQUEST_OWNER_MISMATCH')
+        return models.fetch(id, original, input, init)
+      }
+      const token = headers.get(PROMPT_REQUEST_HEADER)
       if (!token) return original(input, init)
       return runtime.promptOperation('request', contexts.owner(token) ?? {}, async () => {
         const projected = await contexts.project(new Request(input, init), token)
@@ -125,11 +140,11 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   let retainedProjection = false
   try { retainedProjection = !hasContextHooks && nativeState ? await nativeState.requiresProjection() : false }
   catch (error) { await Promise.allSettled([startup.dispose(), runtime.dispose(), nativeState?.dispose()]); contexts.dispose(); throw error }
-  if ((hasContextHooks || retainedProjection) && managed) managed.attach(original => wrap(managed.providerID, original))
+  if ((hasContextHooks || retainedProjection || models) && managed) managed.attach(original => wrap(managed.providerID, original))
   const protocols = new Map<string, { readonly turnID: string; readonly providerID: string; readonly protocol: PromptProtocol }>()
   const reply = input.client?.postSessionIdPermissionsPermissionId?.bind(input.client)
   const tools = createV1Hooks({ ...runtime.tools, ...(!runtime.tools.preapprove && reply ? { preapprove: async (event: HostToolEvent) => approvals.remember(event, runtime.sessions.get(event.sessionID)) } : {}) })
-  const disposeSession = async (sessionID: string) => { runtime.sessions.close(sessionID); protocols.delete(sessionID); await tools.disposeSession(sessionID) }
+  const disposeSession = async (sessionID: string) => { runtime.sessions.close(sessionID); protocols.delete(sessionID); await Promise.all([tools.disposeSession(sessionID), models?.removeSession(sessionID)]) }
   const cleanups = new Map<string, Promise<void>>()
   const cleanupFailures = new Map<string, readonly { readonly phase: string; readonly code: string }[]>()
   let cleanupObserverFailures = 0
@@ -169,16 +184,18 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   }
   const hooks = {
     ...tools,
-    config: async (config: { provider?: Record<string, { options?: Record<string, unknown> }>; model?: string; shell?: string }) => {
+    config: async (config: { provider?: Record<string, { options?: Record<string, unknown> }>; model?: string; small_model?: string; shell?: string; agent?: Record<string, unknown> }) => {
       await startup.configure(config)
+      models?.configure(config)
       config.provider ??= {}
       if (config.model?.includes('/')) config.provider[config.model.split('/')[0]!] ??= {}
+      if (models) for (const ref of [config.small_model, runtime.modelOptions.promptModel, ...Object.values(runtime.modelOptions.modelAliases ?? {}), ...runtime.nativePromptModels]) if (ref?.includes('/')) config.provider[ref.split('/')[0]!] ??= {}
       for (const [id, provider] of Object.entries(config.provider)) {
         provider.options ??= {}
         if (id === managed?.providerID) {
           if (provider.options.fetch !== undefined) {
             rejectedTransports.add(id)
-            if (hasContextHooks) unavailable('HOST_PROMPT_TRANSPORT_UNAVAILABLE')
+            if (hasContextHooks || models) unavailable('HOST_PROMPT_TRANSPORT_UNAVAILABLE')
             continue
           }
           rejectedTransports.delete(id)
@@ -191,6 +208,8 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     },
     'chat.message': async (prompt: Prompt, output: { readonly message: UserMessage; readonly parts?: readonly unknown[] }) => {
       runtime.sessions.prompt(prompt.sessionID, output.message.id, prompt.model?.modelID ?? output.message.model?.modelID)
+      const providerID = prompt.model?.providerID ?? output.message.model?.providerID, modelID = prompt.model?.modelID ?? output.message.model?.modelID
+      if (models && providerID && modelID) models.observe(prompt.sessionID, output.message.id, { providerID, modelID })
       const session = runtime.sessions.get(prompt.sessionID)
       await stateService.ensure(session, session.turnSignal)
       if (!needsProjection(prompt.sessionID)) {
@@ -211,6 +230,8 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       const model = prompt.message.model?.modelID ?? prompt.model?.modelID
       if (model) runtime.sessions.model(prompt.sessionID, model, prompt.message.id)
       const session = runtime.sessions.get(prompt.sessionID)
+      const providerID = prompt.model?.providerID ?? prompt.message.model?.providerID
+      if (models && providerID && model) models.observe(prompt.sessionID, prompt.message.id, { providerID, modelID: model })
       await stateService.ensure(session, session.turnSignal)
       if (!needsProjection(prompt.sessionID)) return
       const provider = prompt.provider
@@ -248,6 +269,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       if (token) output.headers[PROMPT_REQUEST_HEADER] = token
     },
     event: async ({ event }: { readonly event: { readonly type: string; readonly properties?: unknown } }) => {
+      if (models?.event(event.type, event.properties)) return
       startup.event(event.type, event.properties)
       if (event.type === 'session.created' && record(event.properties)) {
         const info = record(event.properties.info) ? event.properties.info : undefined
@@ -273,20 +295,35 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     },
     'shell.env': async (input: { readonly sessionID?: string }, output: { readonly env: Record<string, string> }) => {
       if (!input.sessionID) return
+      if (models?.owns(input.sessionID)) unavailable('HOST_MODEL_TOOL_UNAVAILABLE')
       Object.assign(output.env, await startup.shellEnvironment(runtime.sessions.get(input.sessionID)))
     },
-    inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), cleanup: Object.freeze({ pending: cleanups.size, failedSessions: cleanupFailures.size, overflowFailures: cleanupOverflowFailures, observerFailures: cleanupObserverFailures }), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
+    inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), ...(models ? { models: models.inspect() } : {}), cleanup: Object.freeze({ pending: cleanups.size, failedSessions: cleanupFailures.size, overflowFailures: cleanupOverflowFailures, observerFailures: cleanupObserverFailures }), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
     disposeSession,
-    dispose: async () => { runtime.sessions.dispose(); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await Promise.allSettled([...cleanups.values()]); try { await startup.dispose(); await tools.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose() } },
+    dispose: async () => { runtime.sessions.dispose(); await models?.dispose(); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await Promise.allSettled([...cleanups.values()]); try { await startup.dispose(); await tools.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose() } },
   }
+  const message = guarded(runtime, 'admission', hooks['chat.message'], (prompt, output) => ({ sessionID: prompt.sessionID, messageID: output.message.id }))
+  const parameters = guarded(runtime, 'parameters', hooks['chat.params'], prompt => ({ sessionID: prompt.sessionID, messageID: prompt.message.id }))
+  const headers = guarded(runtime, 'headers', hooks['chat.headers'], prompt => ({ sessionID: prompt.sessionID, messageID: prompt.message.id }))
+  const messages = guarded(runtime, 'layout', hooks['experimental.chat.messages.transform'], (_input, output) => {
+    const last = output.messages.findLast(message => record(message) && record(message.info) && message.info.role === 'user')
+    return record(last) && record(last.info) && typeof last.info.sessionID === 'string' && typeof last.info.id === 'string' ? { sessionID: last.info.sessionID, messageID: last.info.id } : {}
+  })
   return {
     ...hooks,
-    'chat.message': guarded(runtime, 'admission', hooks['chat.message'], (prompt, output) => ({ sessionID: prompt.sessionID, messageID: output.message.id })),
-    'chat.params': guarded(runtime, 'parameters', hooks['chat.params'], prompt => ({ sessionID: prompt.sessionID, messageID: prompt.message.id })),
-    'chat.headers': guarded(runtime, 'headers', hooks['chat.headers'], prompt => ({ sessionID: prompt.sessionID, messageID: prompt.message.id })),
-    'experimental.chat.messages.transform': guarded(runtime, 'layout', hooks['experimental.chat.messages.transform'], (_input, output) => {
-      const last = output.messages.findLast(message => record(message) && record(message.info) && message.info.role === 'user')
-      return record(last) && record(last.info) && typeof last.info.sessionID === 'string' && typeof last.info.id === 'string' ? { sessionID: last.info.sessionID, messageID: last.info.id } : {}
-    }),
+    'tool.execute.before': async (...args: Parameters<typeof tools['tool.execute.before']>) => { if (models?.owns(args[0].sessionID)) return models.tool(args[0]); return tools['tool.execute.before'](...args) },
+    'tool.execute.after': async (...args: Parameters<typeof tools['tool.execute.after']>) => { if (models?.owns(args[0].sessionID)) return models.tool(args[0]); return tools['tool.execute.after'](...args) },
+    'chat.message': async (...args: Parameters<typeof message>) => { if (models?.owns(args[0].sessionID)) return models.message(...args); return message(...args) },
+    'chat.params': async (...args: Parameters<typeof parameters>) => {
+      const prompt = args[0]
+      if (!models?.owns(prompt.sessionID)) return parameters(...args)
+      models.parameters(prompt)
+      const provider = prompt.provider, id = provider?.id ?? provider?.info?.id
+      const valid = id === managed?.providerID ? typeof provider?.options.fetch === 'function' && managedWrappers.has(provider.options.fetch as typeof fetch) : id !== undefined && wrappers.get(id) === provider?.options.fetch
+      if (!id || !valid || id !== prompt.model?.providerID) unavailable('HOST_PROMPT_TRANSPORT_UNAVAILABLE')
+    },
+    'chat.headers': async (...args: Parameters<typeof headers>) => { if (models?.owns(args[0].sessionID)) { models.headers(args[0]); models.requestHeaders(args[0], args[1].headers); return }; return headers(...args) },
+    'experimental.chat.messages.transform': async (...args: Parameters<typeof messages>) => { if (models?.layout(args[1].messages)) return; return messages(...args) },
+    'experimental.chat.system.transform': async (prompt: Prompt, output: { system: string[] }) => { if (models?.owns(prompt.sessionID)) models.system(prompt, output) },
   }
 }
