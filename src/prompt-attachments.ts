@@ -4,7 +4,11 @@ import { HostHookError } from './host-errors.js'
 import type { HostPromptEvent } from './prompt-types.js'
 import type { SessionSnapshot } from './sessions.js'
 import type { JsonValue } from './types.js'
+import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
+import { nativeHookRecord } from './hook-record-snapshot.js'
 
+const SNAPSHOT_KIND = 'prompt-attachments'
+const DIGEST = /^[a-f0-9]{64}$/
 const MAX_SESSIONS = 1024
 const MAX_TURNS = 10000
 const MAX_ATTACHMENTS = 20000
@@ -106,6 +110,36 @@ export class PromptAttachments {
     const turn = state.turns.get(messageID)
     if (!turn || turn.promptHash !== fingerprint(prompt)) fail('TRANSCRIPT_PROMPT_HISTORY_UNAVAILABLE')
     return turn.attachments
+  }
+
+  snapshot(sessionID: string) {
+    const state = this.states.get(sessionID)
+    return snapshotCopy({ kind: SNAPSHOT_KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, initialized: state !== undefined, turns: [...(state?.turns ?? [])].map(([messageID, turn]) => ({ messageID, promptHash: turn.promptHash, attachments: turn.attachments })) })
+  }
+
+  restore(session: SessionSnapshot, value: unknown): void {
+    const input = sessionSnapshot(SNAPSHOT_KIND, value, session, ['initialized', 'turns'])
+    if (this.disposed) fail('TRANSCRIPT_PROMPT_CANCELLED')
+    if (this.states.has(session.sessionID)) throw new HostHookError('SESSION_SNAPSHOT_STATE_CONFLICT', 'unsupported')
+    if (typeof input.initialized !== 'boolean' || !Array.isArray(input.turns) || !input.initialized && input.turns.length) throw new HostHookError('SESSION_SNAPSHOT_SCHEMA_INVALID', 'unsupported')
+    if (this.turns + input.turns.length > MAX_TURNS || input.initialized && this.states.size >= MAX_SESSIONS) fail('TRANSCRIPT_PROMPT_LIMIT')
+    const turns = new Map<string, Turn>(), identities = new Set<string>()
+    let bytes = 0, attachments = 0
+    for (const raw of input.turns) {
+      const row = snapshotObject(raw, ['messageID', 'promptHash', 'attachments'])
+      if (!snapshotID(row.messageID) || turns.has(row.messageID) || typeof row.promptHash !== 'string' || !DIGEST.test(row.promptHash) || !Array.isArray(row.attachments)) throw new HostHookError('SESSION_SNAPSHOT_SCHEMA_INVALID', 'unsupported')
+      const records = row.attachments.map(value => nativeHookRecord(value, 'UserPromptSubmit'))
+      for (const record of records) { if (identities.has(record.id)) throw new HostHookError('SESSION_SNAPSHOT_SCHEMA_INVALID', 'unsupported'); identities.add(record.id) }
+      const charge = Buffer.byteLength(JSON.stringify([session.sessionID, row.messageID, records]))
+      bytes += charge; attachments += records.length
+      if (this.bytes + bytes > MAX_BYTES || this.attachments + attachments > MAX_ATTACHMENTS) fail('TRANSCRIPT_PROMPT_LIMIT')
+      turns.set(row.messageID, { promptHash: row.promptHash, attachments: Object.freeze(records), bytes: charge })
+    }
+    if (session.signal.aborted) throw new HostHookError('SESSION_SNAPSHOT_CANCELLED', 'cancelled')
+    if (!input.initialized) return
+    const state = this.state(session)
+    for (const [id, turn] of turns) state.turns.set(id, turn)
+    this.bytes += bytes; this.turns += turns.size; this.attachments += attachments
   }
 
   dispose(): void { this.disposed = true; for (const state of this.states.values()) state.cleanup() }

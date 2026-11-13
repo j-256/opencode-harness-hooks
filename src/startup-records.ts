@@ -4,12 +4,16 @@ import type { SessionStartDelivery } from './session-start.js'
 import type { JsonValue } from './types.js'
 import type { CommandArtifact } from './effect-types.js'
 import type { SessionSnapshot } from './sessions.js'
+import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
+import { nativeHookRecord } from './hook-record-snapshot.js'
 
 const MAX_SESSIONS = 1024
 const MAX_BATCHES = 4096
 const MAX_BYTES = 32 * 1024 * 1024
 const MAX_EXIT = 255
 const MAX_ID_BYTES = 4096
+const SNAPSHOT_KIND = 'startup-records'
+const DIGEST = /^[a-f0-9]{64}$/
 const SOURCES = new Set(['startup', 'resume', 'clear', 'compact'])
 const SIGNALS = new Set<NodeJS.Signals>(['SIGINT', 'SIGTERM', 'SIGKILL'])
 export interface StartupRecord {
@@ -115,15 +119,61 @@ export class StartupRecords {
     if (signal.aborted || session.signal.aborted) fail('STARTUP_CANCELLED')
     let state = existing
     if (!state) {
-      const cleanup = () => { const current = this.states.get(session.sessionID); if (!current) return; this.bytes -= current.bytes; this.batches -= current.batches.size; this.states.delete(session.sessionID); session.signal.removeEventListener('abort', cleanup) }
-      state = { signal: session.signal, batches: new Map(), bindings: new Map(), failures: new Set(), failureBatches: new Map(), cleanup, bytes: 0 }
-      this.states.set(session.sessionID, state)
-      session.signal.addEventListener('abort', cleanup, { once: true })
+      state = this.createState(session)
     }
     state.batches.set(event.activationID, batch); for (const identity of failures) state.failures.add(identity)
     state.failureBatches.set(event.activationID, [...failures])
     state.bytes += bytes; this.bytes += bytes; this.batches++
     return batch
+  }
+
+  snapshot(sessionID: string) {
+    const state = this.states.get(sessionID)
+    return snapshotCopy({ kind: SNAPSHOT_KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, batches: [...(state?.batches ?? [])].map(([activationID, batch]) => ({ batch, binding: state?.bindings.get(activationID) ?? null, failures: state?.failureBatches.get(activationID) ?? [] })) })
+  }
+
+  restore(session: SessionSnapshot, value: unknown): void {
+    const input = sessionSnapshot(SNAPSHOT_KIND, value, session, ['batches'])
+    if (this.disposed) fail('STARTUP_CANCELLED')
+    if (this.states.has(session.sessionID)) throw new HostHookError('SESSION_SNAPSHOT_STATE_CONFLICT', 'unsupported')
+    if (!Array.isArray(input.batches)) throw new HostHookError('SESSION_SNAPSHOT_SCHEMA_INVALID', 'unsupported')
+    if (this.batches + input.batches.length > MAX_BATCHES || input.batches.length && this.states.size >= MAX_SESSIONS) fail('STARTUP_LIMIT')
+    const batches = new Map<string, StartupBatch>(), bindings = new Map<string, string>(), failures = new Map<string, readonly string[]>(), identities = new Set<string>()
+    let bytes = 0
+    for (const raw of input.batches) {
+      const row = snapshotObject(raw, ['batch', 'binding', 'failures']), item = snapshotObject(row.batch, ['activationID', 'records', 'model']), model = snapshotObject(item.model, ['claude', 'codex'])
+      if (!snapshotID(item.activationID) || batches.has(item.activationID) || !Array.isArray(item.records) || !Array.isArray(model.claude) || !model.claude.every(text => typeof text === 'string') || !Array.isArray(model.codex) || !model.codex.every(text => typeof text === 'string') || row.binding !== null && !snapshotID(row.binding) || !Array.isArray(row.failures) || row.failures.some(hash => typeof hash !== 'string' || !DIGEST.test(hash)) || new Set(row.failures).size !== row.failures.length) throw new HostHookError('SESSION_SNAPSHOT_SCHEMA_INVALID', 'unsupported')
+      const records = item.records.map(value => nativeHookRecord(value, 'SessionStart'))
+      for (const record of records) { if (identities.has(record.id)) throw new HostHookError('SESSION_SNAPSHOT_SCHEMA_INVALID', 'unsupported'); identities.add(record.id) }
+      const rendered = records.flatMap(record => record.body.rendered?.map(row => row.content) ?? [])
+      if (JSON.stringify(rendered) !== JSON.stringify(model.claude)) throw new HostHookError('SESSION_SNAPSHOT_SCHEMA_INVALID', 'unsupported')
+      const batch: StartupBatch = freeze({ activationID: item.activationID, records, model: { claude: [...model.claude] as string[], codex: [...model.codex] as string[] } })
+      bytes += Buffer.byteLength(JSON.stringify(batch))
+      if (this.bytes + bytes > MAX_BYTES) fail('STARTUP_LIMIT')
+      batches.set(batch.activationID, batch)
+      if (row.binding !== null) bindings.set(batch.activationID, row.binding)
+      failures.set(batch.activationID, [...row.failures] as string[])
+    }
+    if (session.signal.aborted) throw new HostHookError('SESSION_SNAPSHOT_CANCELLED', 'cancelled')
+    if (!batches.size) return
+    const state = this.createState(session)
+    for (const [id, batch] of batches) state.batches.set(id, batch)
+    for (const [id, binding] of bindings) state.bindings.set(id, binding)
+    for (const [id, hashes] of failures) { state.failureBatches.set(id, hashes); for (const hash of hashes) state.failures.add(hash) }
+    state.bytes = bytes; this.bytes += bytes; this.batches += batches.size
+  }
+
+  pending(sessionID: string): readonly StartupBatch[] {
+    const state = this.states.get(sessionID)
+    return Object.freeze([...(state?.batches ?? [])].flatMap(([id, batch]) => state?.bindings.has(id) ? [] : [batch]))
+  }
+
+  private createState(session: SessionSnapshot): State {
+    const cleanup = () => { const current = this.states.get(session.sessionID); if (!current) return; this.bytes -= current.bytes; this.batches -= current.batches.size; this.states.delete(session.sessionID); session.signal.removeEventListener('abort', cleanup) }
+    const state: State = { signal: session.signal, batches: new Map(), bindings: new Map(), failures: new Set(), failureBatches: new Map(), cleanup, bytes: 0 }
+    this.states.set(session.sessionID, state)
+    session.signal.addEventListener('abort', cleanup, { once: true })
+    return state
   }
 
   read(sessionID: string): readonly StartupBatch[] { return Object.freeze([...(this.states.get(sessionID)?.batches.values() ?? [])]) }

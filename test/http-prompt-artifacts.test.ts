@@ -45,6 +45,10 @@ test('HTTP prompt context admits the independently observed native attachment wi
   assert.equal(body.renderedRole, 'system')
   assert.equal(body.attachment.command, undefined)
   assert.equal(body.attachment.stdout, undefined)
+  const restored = new PromptAttachments(), next = new Sessions()
+  restored.restore(next.get('session'), attachments.snapshot('session'))
+  assert.deepEqual(restored.read('session', 'turn', 'User prompt'), rows)
+  restored.dispose(); next.dispose()
   attachments.dispose()
 })
 
