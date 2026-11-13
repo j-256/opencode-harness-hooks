@@ -5,6 +5,7 @@ import { HostHookError } from './host-errors.js'
 import { runService } from './service-execution.js'
 import type { SessionSnapshot } from './sessions.js'
 import type { StopModelBlocks } from './stop-records.js'
+import type { StartupBatch } from './startup-records.js'
 import { CLAUDE_USER_INTERRUPTION } from './stop-records.js'
 
 export const PROMPT_REQUEST_HEADER = 'x-opencode-harness-hooks-request'
@@ -20,7 +21,7 @@ export interface PromptLayout { readonly id: string; readonly text: readonly str
 export interface PromptContinuationOptions { readonly reconcileCancellation?: boolean }
 export interface PromptContinuationReservation { readonly admit: () => void; readonly release: () => void; readonly suppress?: () => void }
 export interface PromptStopHistory extends StopModelBlocks { readonly completionID: string; readonly assistantText: readonly string[]; readonly interrupted?: true }
-interface Entry { readonly kind: 'prompt' | 'continuation'; readonly turnID: string; readonly turnSignal: AbortSignal; readonly text: readonly string[]; readonly contexts: readonly Context[]; readonly projection?: readonly string[]; readonly history?: PromptStopHistory; readonly bytes: number }
+interface Entry { readonly kind: 'prompt' | 'continuation'; readonly turnID: string; readonly turnSignal: AbortSignal; readonly text: readonly string[]; readonly contexts: readonly Context[]; readonly projection?: readonly string[]; readonly history?: PromptStopHistory; readonly startup?: StartupBatch['model']; readonly bytes: number }
 interface Layout { readonly turnID: string; readonly turnSignal: AbortSignal; readonly rows: readonly PromptLayout[] }
 interface State { readonly signal: AbortSignal; readonly entries: Map<string, Entry>; readonly reservations: Map<string, Entry>; readonly retired: Map<string, Entry>; readonly cleanup: () => void; requests: AbortController; layout?: Layout }
 interface Ticket { readonly sessionID: string; readonly turnID: string; readonly sessionSignal: AbortSignal; readonly turnSignal: AbortSignal; readonly signal: AbortSignal; readonly protocol: PromptProtocol; readonly entries: readonly Entry[]; readonly hashes: Map<string, string> }
@@ -71,6 +72,21 @@ export class PromptContexts {
 
   rememberContinuation(session: SessionSnapshot, messageID: string, text: readonly string[], projection?: readonly string[]): void {
     this.retain(session, messageID, text, [], 'continuation', projection)
+  }
+
+  rememberStartup(session: SessionSnapshot, input: StartupBatch['model']): void {
+    if (this.lifetime.signal.aborted || session.signal.aborted || session.turnSignal.aborted) fail('HOST_PROMPT_CANCELLED')
+    const state = this.sessions.get(session.sessionID), entry = session.turnID ? state?.entries.get(session.turnID) : undefined
+    const strings = (value: unknown): value is readonly string[] => Array.isArray(value) && value.every(item => typeof item === 'string')
+    if (!state || state.signal !== session.signal || !entry || entry.kind !== 'prompt' || entry.turnSignal !== session.turnSignal || entry.startup || !record(input) || !strings(input.claude) || !strings(input.codex)) fail('HOST_STARTUP_CONTEXT_UNAVAILABLE')
+    const startup = Object.freeze({ claude: Object.freeze([...input.claude]), codex: Object.freeze([...input.codex]) })
+    const bytes = Buffer.byteLength(JSON.stringify(startup))
+    if (this.bytes + bytes > MAX_BYTES) fail('HOST_PROMPT_CONTEXT_LIMIT')
+    this.invalidate(state)
+    if (session.signal.aborted || session.turnSignal.aborted || this.lifetime.signal.aborted) fail('HOST_PROMPT_CANCELLED')
+    if (this.sessions.get(session.sessionID) !== state || state.entries.get(session.turnID!) !== entry) fail('HOST_STARTUP_CONTEXT_UNAVAILABLE')
+    state.entries.set(session.turnID!, { ...entry, startup, bytes: entry.bytes + bytes })
+    this.bytes += bytes
   }
 
   rememberHistory(session: SessionSnapshot, input: PromptStopHistory): void {
@@ -230,7 +246,7 @@ export class PromptContexts {
     if (state?.reservations.size) fail('HOST_PROMPT_ADMISSION_PENDING')
     if (!state || state.signal !== session.signal || !state.layout || !session.turnID || state.layout.turnID !== session.turnID || state.layout.turnSignal !== session.turnSignal || session.signal.aborted || session.turnSignal.aborted || this.lifetime.signal.aborted) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
     const entries = state.layout.rows.map(row => state.entries.get(row.id)!)
-    if (!entries.some(entry => entry.contexts.length || entry.projection || entry.history)) return undefined
+    if (!entries.some(entry => entry.contexts.length || entry.projection || entry.history || entry.startup?.claude.length || entry.startup?.codex.length)) return undefined
     if (this.tickets.size >= MAX_TICKETS) fail('HOST_PROMPT_REQUEST_LIMIT')
     const id = randomUUID()
     const signal = AbortSignal.any([session.signal, session.turnSignal, this.lifetime.signal, state.requests.signal])
@@ -277,7 +293,11 @@ export class PromptContexts {
           result.push({ ...raw, content: entry.projection.map(text => ({ type: partType, text })) })
           continue
         }
-        const claude = entry.contexts.filter(row => row.dialect === 'claude-code').sort((a, b) => a.completionOrder - b.completionOrder).map(row => ({ type: partType, text: `<system-reminder>\nUserPromptSubmit hook ${row.action.channel === 'stdout' ? 'success' : 'additional context'}: ${row.action.text}\n</system-reminder>` }))
+        for (const text of entry.startup?.codex ?? []) {
+          if (ticket.protocol === 'anthropic') fail('HOST_PROMPT_ROLE_UNAVAILABLE')
+          result.push(responses ? { type: 'message', role: 'developer', content: [{ type: partType, text }] } : { role: 'developer', content: text })
+        }
+        const claude = [...(entry.startup?.claude ?? []).map(text => ({ type: partType, text })), ...entry.contexts.filter(row => row.dialect === 'claude-code').sort((a, b) => a.completionOrder - b.completionOrder).map(row => ({ type: partType, text: `<system-reminder>\nUserPromptSubmit hook ${row.action.channel === 'stdout' ? 'success' : 'additional context'}: ${row.action.text}\n</system-reminder>` }))]
         const history = entry.history
         if (history) {
           const previous = source[position - 1]

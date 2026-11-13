@@ -3,6 +3,7 @@ import { HostHookError } from './host-errors.js'
 import type { SessionStartDelivery } from './session-start.js'
 import type { JsonValue } from './types.js'
 import type { CommandArtifact } from './effect-types.js'
+import type { SessionSnapshot } from './sessions.js'
 
 const MAX_SESSIONS = 1024
 const MAX_BATCHES = 4096
@@ -21,7 +22,7 @@ export interface StartupBatch {
   readonly records: readonly StartupRecord[]
   readonly model: { readonly claude: readonly string[]; readonly codex: readonly string[] }
 }
-interface State { readonly signal: AbortSignal; readonly batches: Map<string, StartupBatch>; readonly failures: Set<string>; readonly cleanup: () => void; bytes: number }
+interface State { readonly signal: AbortSignal; readonly batches: Map<string, StartupBatch>; readonly bindings: Map<string, string>; readonly failures: Set<string>; readonly cleanup: () => void; bytes: number }
 function fail(code: string): never { throw new HostHookError(code, code === 'STARTUP_CANCELLED' ? 'cancelled' : 'unsupported') }
 function id(value: unknown): value is string { return typeof value === 'string' && value.length > 0 && !value.includes('\0') && Buffer.byteLength(value) <= MAX_ID_BYTES }
 function time(value: number): boolean { return Number.isFinite(value) && !Number.isNaN(new Date(value).getTime()) }
@@ -115,7 +116,7 @@ export class StartupRecords {
     let state = existing
     if (!state) {
       const cleanup = () => { const current = this.states.get(session.sessionID); if (!current) return; this.bytes -= current.bytes; this.batches -= current.batches.size; this.states.delete(session.sessionID); session.signal.removeEventListener('abort', cleanup) }
-      state = { signal: session.signal, batches: new Map(), failures: new Set(), cleanup, bytes: 0 }
+      state = { signal: session.signal, batches: new Map(), bindings: new Map(), failures: new Set(), cleanup, bytes: 0 }
       this.states.set(session.sessionID, state)
       session.signal.addEventListener('abort', cleanup, { once: true })
     }
@@ -125,5 +126,22 @@ export class StartupRecords {
   }
 
   read(sessionID: string): readonly StartupBatch[] { return Object.freeze([...(this.states.get(sessionID)?.batches.values() ?? [])]) }
+
+  bind(session: SessionSnapshot, activationID: string, messageID: string): void {
+    if (this.disposed || session.signal.aborted || session.turnSignal.aborted) fail('STARTUP_CANCELLED')
+    const state = this.states.get(session.sessionID), previous = state?.bindings.get(activationID)
+    if (!state || state.signal !== session.signal || !state.batches.has(activationID) || !id(messageID) || session.turnID !== messageID || previous !== undefined && previous !== messageID) fail('STARTUP_BINDING_INVALID')
+    state.bindings.set(activationID, messageID)
+  }
+
+  beforePrompt(sessionID: string, messageID: string): readonly StartupRecord[] {
+    const state = this.states.get(sessionID)
+    return Object.freeze([...(state?.batches.entries() ?? [])].flatMap(([id, batch]) => state?.bindings.get(id) === messageID ? batch.records : []))
+  }
+
+  unbound(sessionID: string): readonly StartupRecord[] {
+    const state = this.states.get(sessionID)
+    return Object.freeze([...(state?.batches.entries() ?? [])].flatMap(([id, batch]) => state?.bindings.has(id) ? [] : batch.records))
+  }
   dispose(): void { this.disposed = true; for (const state of this.states.values()) state.signal.removeEventListener('abort', state.cleanup); this.states.clear(); this.bytes = 0; this.batches = 0 }
 }

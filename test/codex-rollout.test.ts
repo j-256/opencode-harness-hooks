@@ -321,3 +321,20 @@ test('core Stop dispatch binds native inventory, compiles feedback and admits it
   const rows = (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
   assert.deepEqual(rows.at(-1).payload.item.fragments, [{ text: 'Inventory feedback', hookRunId: 'stop:' + scenario.ordinals[0] + ':' + sourcePath }])
 })
+
+test('startup developer context retains native hook provenance inside its owned turn', async t => {
+  const f = await fixture(t)
+  const context: CodexRolloutHistoryRecord = { timestamp, type: 'response_item', payload: { type: 'message', id: 'msg_startup', role: 'developer', content: [{ type: 'input_text', text: 'START_CONTEXT' }], internal_chat_message_metadata_passthrough: { turn_id: f.history[0]!.payload.turn_id!, create_time: Date.parse(timestamp) / 1000, content_item_kinds: ['hooks.additional_context'], content_item_metadata: [{ provenance: { type: 'harness', hook: true } }] } } }
+  const path = await f.rollout.create({ metadata: f.metadata, history: [f.history[0]!, context, ...f.history.slice(1)] })
+  const rows = (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+  assert.deepEqual(rows[2].payload, context.payload)
+  for (const change of [
+    { turn_id: 'foreign' },
+    { create_time: -1 },
+    { content_item_kinds: ['unowned'] },
+    { content_item_metadata: [{ provenance: { type: 'harness', hook: false } }] },
+  ]) {
+    const candidate = { ...context, payload: { ...context.payload, id: 'msg_invalid', internal_chat_message_metadata_passthrough: { ...(context.payload.internal_chat_message_metadata_passthrough as any), ...change } } }
+    await assert.rejects(f.rollout.appendHistory(f.threadID, [candidate]))
+  }
+})

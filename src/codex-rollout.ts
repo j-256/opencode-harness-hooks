@@ -21,6 +21,9 @@ const MAX_PENDING = 128
 const MAX_RECORDS = 20000
 const MAX_ID_BYTES = 4096
 const READ_BYTES = 64 * 1024
+const MILLISECONDS_PER_SECOND = 1000
+const MAX_TIMESTAMP_DELTA_MS = 1
+const HOOK_CONTENT_KIND = 'hooks.additional_context'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 type ObjectValue = Readonly<Record<string, JsonValue>>
 export interface CodexRolloutHistoryRecord {
@@ -97,11 +100,21 @@ function history(value: unknown, before: Projection): { frames: Frame[]; project
     const payload = item.payload
     if (item.type === 'response_item') {
       if (!projection.activeTurn) fail('CODEX_ROLLOUT_TURN_UNAVAILABLE')
+      const hookContext = payload.type === 'message' && payload.role === 'developer'
+      if (hookContext && payload.internal_chat_message_metadata_passthrough === undefined) fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
       if (payload.internal_chat_message_metadata_passthrough !== undefined) {
         const attribution = payload.internal_chat_message_metadata_passthrough
         if (!object(attribution)) fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
-        keys(attribution, ['turn_id'])
+        keys(attribution, hookContext ? ['turn_id', 'create_time', 'content_item_kinds', 'content_item_metadata'] : ['turn_id'])
         if (attribution.turn_id !== projection.activeTurn) fail('CODEX_ROLLOUT_IDENTITY_MISMATCH')
+        if (hookContext) {
+          if (typeof attribution.create_time !== 'number' || !Number.isFinite(attribution.create_time) || Math.abs(attribution.create_time * MILLISECONDS_PER_SECOND - Date.parse(item.timestamp)) > MAX_TIMESTAMP_DELTA_MS || !Array.isArray(payload.content) || !Array.isArray(attribution.content_item_kinds) || attribution.content_item_kinds.length !== payload.content.length || attribution.content_item_kinds.some(kind => kind !== HOOK_CONTENT_KIND) || !Array.isArray(attribution.content_item_metadata) || attribution.content_item_metadata.length !== payload.content.length) fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+          for (const metadata of attribution.content_item_metadata) {
+            if (!object(metadata) || !object(metadata.provenance)) fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+            keys(metadata, ['provenance']); keys(metadata.provenance, ['type', 'hook'])
+            if (metadata.provenance.type !== 'harness' || metadata.provenance.hook !== true) fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+          }
+        }
       }
       if (payload.id !== undefined) {
         if (!id(payload.id) || projection.ids.has(payload.id)) fail('CODEX_ROLLOUT_IDENTITY_MISMATCH')
@@ -109,8 +122,8 @@ function history(value: unknown, before: Projection): { frames: Frame[]; project
       }
       if (payload.type === 'message') {
         keys(payload, ['type', 'id', 'role', 'content', 'phase', 'internal_chat_message_metadata_passthrough'])
-        if (typeof payload.role !== 'string' || !['user', 'assistant'].includes(payload.role) || !Array.isArray(payload.content) || payload.phase !== undefined && payload.phase !== 'commentary' && payload.phase !== 'final_answer') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
-        for (const part of payload.content) if (!object(part) || Object.keys(part).some(key => !['type', 'text'].includes(key)) || part.type !== (payload.role === 'user' ? 'input_text' : 'output_text') || typeof part.text !== 'string') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+        if (typeof payload.role !== 'string' || !['user', 'assistant', 'developer'].includes(payload.role) || !Array.isArray(payload.content) || payload.phase !== undefined && payload.phase !== 'commentary' && payload.phase !== 'final_answer') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
+        for (const part of payload.content) if (!object(part) || Object.keys(part).some(key => !['type', 'text'].includes(key)) || part.type !== (payload.role === 'assistant' ? 'output_text' : 'input_text') || typeof part.text !== 'string') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
       } else if (payload.type === 'function_call') {
         keys(payload, ['type', 'id', 'name', 'arguments', 'call_id', 'internal_chat_message_metadata_passthrough'])
         if (!id(payload.name) || !id(payload.call_id) || typeof payload.arguments !== 'string') fail('CODEX_ROLLOUT_HISTORY_UNSUPPORTED')
