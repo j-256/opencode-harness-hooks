@@ -128,3 +128,16 @@ test('inspection bounds options and rejects pipes without waiting for a writer',
   assert.equal(sourcePipe.status, 1)
   assert.equal(sourcePipe.stderr, 'SOURCE_READ: pipe\n')
 })
+
+test('inspection recognizes the default V1 startup binding while V2 still reports its missing binding', async t => {
+  const f = await fixture(t)
+  const text = JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: ':' }] }] } })
+  await writeFile(join(f.directory, 'startup.json'), text)
+  const path = join(f.directory, 'startup-options.json')
+  await writeFile(path, JSON.stringify({ sources: [{ id: 'startup', dialect: 'claude-code', path: 'startup.json' }], reviewedDigests: {} }))
+  for (const host of ['v1', 'v2']) {
+    const result = await invoke(['inspect', '--host', host, '--directory', f.directory, path])
+    assert.equal(result.status, 0, result.stderr)
+    assert.deepEqual(JSON.parse(result.stdout).sources[0].unwiredEvents, host === 'v1' ? [] : ['SessionStart'])
+  }
+})

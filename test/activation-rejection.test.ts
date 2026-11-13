@@ -11,16 +11,17 @@ for (const host of ['v1', 'v2'] as const) for (const scenario of ['review', 'eve
     const directory = await mkdtemp(join(tmpdir(), 'harness-activation-rejection-'))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const path = join(directory, 'hooks.json')
-    const source = JSON.stringify({ hooks: { [scenario === 'event' ? 'SessionStart' : 'PreToolUse']: [{ hooks: [{ type: 'command', command: 'PRIVATE_HOOK_BODY' }] }] } })
+    const source = JSON.stringify({ hooks: { [scenario === 'event' ? 'Stop' : 'PreToolUse']: [{ hooks: [{ type: 'command', command: 'PRIVATE_HOOK_BODY' }] }] } })
     if (scenario !== 'missing') await writeFile(path, scenario === 'malformed' ? '{PRIVATE_MALFORMED_BODY' : source)
     const options = { sources: [{ id: 'incompatible', dialect, path }], reviewedDigests: { incompatible: scenario === 'review' ? '0'.repeat(64) : createHash('sha256').update(source).digest('hex') } }
-    const code = scenario === 'review' ? 'SOURCE_REVIEW_MISMATCH' : scenario === 'event' ? 'HOST_EVENT_UNAVAILABLE' : scenario === 'missing' ? 'SOURCE_READ' : 'SOURCE_PARSE'
+    const code = scenario === 'review' ? 'SOURCE_REVIEW_MISMATCH' : scenario === 'event' ? 'HOST_STOP_UNSUPPORTED' : scenario === 'missing' ? 'SOURCE_READ' : 'SOURCE_PARSE'
     if (host === 'v1') {
       const guards = await definition.server({ directory }, options)
       t.after(() => guards.dispose())
       await assert.rejects(guards.config({}), { code })
       await assert.rejects(guards['chat.message']({ sessionID: 'session' }, { message: { id: 'turn' } }), { code })
       await assert.rejects(guards['tool.execute.before']({ sessionID: 'session', callID: 'call', tool: 'bash' }, { args: {} }), { code })
+      await assert.rejects(guards['shell.env']({ sessionID: 'session' }, { env: {} }), { code })
     } else {
       const callbacks: (() => Promise<void>)[] = []
       const hook = async (_name: string, callback: (event: any) => Promise<void>) => { const invoke = () => callback({}); callbacks.push(invoke); return { dispose: () => {} } }

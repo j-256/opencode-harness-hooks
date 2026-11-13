@@ -27,7 +27,9 @@ export interface CodexTranscriptView { readonly sessionID: string; readonly turn
 export interface CodexTranscriptService {
   prepareStart?(event: SessionStartEvent, session: SessionSnapshot, signal: AbortSignal): Promise<Omit<CodexTranscriptView, 'turnID'>>
   rememberStart?(session: SessionSnapshot, activationID: string, contexts: readonly string[]): void
+  revokeStart?(session: SessionSnapshot, activationID: string): void
   bindStart?(session: SessionSnapshot, activationID: string, messageID: string): void
+  unbindStart?(session: SessionSnapshot, activationID: string, messageID: string): void
   observe(event: HostToolEvent, session: SessionSnapshot): void
   prepare(event: HostToolEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView>
   dispose(): Promise<void>
@@ -162,6 +164,25 @@ export class CodexTranscript implements CodexTranscriptService {
     startup.messageID = messageID
   }
 
+  revokeStart(session: SessionSnapshot, activationID: string): void {
+    const state = this.starts.get(session.sessionID)
+    if (!state) return
+    const startup = state.batches.get(activationID)
+    if (state.signal !== session.signal || startup?.messageID !== undefined) fail('CODEX_STARTUP_BINDING_INVALID')
+    if (!startup) return
+    const bytes = Buffer.byteLength(JSON.stringify([session.sessionID, activationID, startup.contexts]))
+    state.batches.delete(activationID); state.bytes -= bytes; this.startupBytes -= bytes; this.startupBatches--
+    if (!state.batches.size) { this.starts.delete(session.sessionID); session.signal.removeEventListener('abort', state.cleanup) }
+  }
+
+  unbindStart(session: SessionSnapshot, activationID: string, messageID: string): void {
+    const state = this.starts.get(session.sessionID)
+    if (!state) return
+    const startup = state.batches.get(activationID)
+    if (state.signal !== session.signal || startup?.messageID !== messageID) fail('CODEX_STARTUP_BINDING_INVALID')
+    delete startup.messageID
+  }
+
   dispose(): Promise<void> {
     this.lifetime.abort()
     for (const state of this.starts.values()) state.signal.removeEventListener('abort', state.cleanup)
@@ -173,7 +194,7 @@ export class CodexTranscript implements CodexTranscriptService {
     return this.disposing
   }
 
-  inspect() { return Object.freeze({ ...this.rollout.inspect(), pendingTranscripts: this.pending, originalCalls: this.originals.size, originalBytes: this.originalBytes }) }
+  inspect() { return Object.freeze({ ...this.rollout.inspect(), pendingTranscripts: this.pending, originalCalls: this.originals.size, originalBytes: this.originalBytes, startupBatches: this.startupBatches, startupBytes: this.startupBytes, startupBindings: [...this.starts.values()].reduce((count, state) => count + [...state.batches.values()].filter(batch => batch.messageID !== undefined).length, 0) }) }
 
   private async publish(hostSessionID: string, history: CodexTranscriptHistory, frames: readonly CodexRolloutHistoryRecord[], signal: AbortSignal): Promise<Omit<CodexTranscriptView, 'turnID'>> {
     const keys = frameKeys(frames), structure = layout(history)

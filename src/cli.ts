@@ -88,7 +88,7 @@ async function main(): Promise<void> {
     if (error && typeof error === 'object' && 'code' in error && error.code === 'ERR_MODULE_NOT_FOUND') throw new InspectError('DEPENDENCY_UNAVAILABLE: package dependencies', 3)
     throw error
   })
-  const { report } = await inspectSources(host as HostVersion, directory, options).catch((error: unknown) => {
+  const { report } = await inspectSources(host as HostVersion, directory, options, host === 'v1' ? ['SessionStart'] : []).catch((error: unknown) => {
     if (error instanceof SourceError) throw new InspectError(error.message, error.code === 'SOURCE_READ' ? 1 : 2)
     if (error instanceof HostHookError) throw new InspectError(error.code, 2)
     throw error

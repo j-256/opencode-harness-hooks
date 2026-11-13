@@ -1,12 +1,12 @@
-# Bounded V1 compatibility and gaps
+# V1 compatibility and implementation status
 
-The delivery target is a useful OpenCode V1 plugin without host changes. Success means verified behavior for the documented profile, explicit rejection of incompatible configurations, and an honest gap register. Full native equivalence is a separate target, not a prerequisite for delivering this profile. `equivalent: false`, `nativeConformant: false`, and the complete-profile runner's exit status remain truthful measures of the broader target; they do not mean that the supported subset cannot be used.
+The target is every native hook behavior that can be implemented through stock V1 APIs. Only demonstrated missing host capabilities are terminal gaps. Supported subsets can be used while the remaining implementation and proof proceeds; missing default services, mappings or tests are pending work. `equivalent: false`, `nativeConformant: false` and complete-profile failures retain their broader meaning.
 
 The profile covers explicitly selected foreground command hooks and the documented Claude HTTP subset on the prompt and tool paths below. Use the pinned versions in the [compatibility contract](compatibility.md), review source digests, and select supported events using the [stock-host configuration guide](stock-hosts.md). An arbitrary complete native configuration is not automatically compatible. Selected unsupported events fail activation rather than disappearing silently. Live activation, private migration acceptance, publication, and V2 integration remain separate review steps.
 
 ## Capability and gap register
 
-`Supported` identifies a usable bounded behavior with controlled evidence, not exhaustive native conformance. `Partial` identifies an implemented subset and its boundary. `Not wired` identifies missing default-plugin bindings or services. `Unverified` identifies missing proof and must not be interpreted as impossible. `Host limitation` is reserved for a demonstrated unavailable host capability. The register records the disposition of each gap; it does not turn diagnostic coverage into native equivalence.
+`Supported` identifies a usable bounded behavior with controlled evidence, not exhaustive native conformance. `Partial` identifies an implemented subset and its boundary. `Pending` identifies missing default-plugin bindings, services or proof that must still be implemented. `Unverified` identifies missing proof and must not be interpreted as impossible. `Host limitation` is reserved for a demonstrated unavailable host capability. The register records the disposition of each gap; it does not turn diagnostic coverage into native equivalence.
 
 | Capability | V1 status and evidence | Remaining gap and disposition |
 | --- | --- | --- |
@@ -24,57 +24,57 @@ The profile covers explicitly selected foreground command hooks and the document
 | Claude and Codex transcripts | Partial; [Claude projections](transcripts.md) and [Codex tool transcripts](codex-transcripts.md) | Selected fresh text/tool history only; attachments, compaction, resumed reconstruction, exact native records and automatic awaited V1 teardown remain gaps |
 | Post-tool failures | Partial; [completed nonzero V1 shell calls](runtime.md#v1-completed-shell-failures) deliver Claude failure/error/context and Codex post-tool raw output/replacement, with native comparisons and mixed-source tests | Unknown/non-shell failures, interrupted calls, V2 routing, exact error envelopes, stderr ordering and full artifacts remain unverified; unclassified matching Codex failures retain `HOST_POST_FAILURE_UNVERIFIED` |
 | HTTP handlers | Partial; [Claude HTTP tool comparisons and installed prompt context](http-hooks.md) | Codex HTTP is absent from the pinned native format. HTTP prompt failure artifacts fail explicitly; broad policies, rendering, authentication and V2 effects remain gaps |
-| Prompt, agent and MCP hook services | Not wired in the default profile; engine service interfaces exist | Native skip behavior is retained where applicable; required absent services report unsupported. A missing binding is future integration work, not a proven host impossibility |
-| Background, rewake, conditions and environment persistence | Not wired or incomplete default services; [lifecycle](lifecycle.md) and engine implementations document their seams | Retain explicit unsupported outcomes where a required service is absent; source-native timing, ownership and persistence need separate integration |
-| Startup and other lifecycle events | Not wired in the default plugin; [startup assessment](v1-startup-assessment.md) separates reusable core code from missing admission, metadata, replay and resume integration | Keep selected-event load rejection. Awaited first-prompt admission is a candidate boundary; no coherent startup subset has been certified. Other event mappings need individual evidence |
+| Prompt, agent and MCP hook services | Pending in the default profile; engine service interfaces exist | Native skip behavior is retained where applicable; required absent services report unsupported. A missing binding is future integration work, not a proven host impossibility |
+| Background, rewake, conditions and environment persistence | Pending or incomplete default services; [lifecycle](lifecycle.md) and engine implementations document their seams | Retain explicit unsupported outcomes where a required service is absent; source-native timing, ownership and persistence need separate integration |
+| Startup and other lifecycle events | Fresh startup subset supported; [startup guide](v1-startup-assessment.md) documents actual native/V1 comparisons and cancellation/ownership checks | Cold history reconstruction, remaining effects, source transitions and other events are pending implementation |
 | Enabled selected `Stop` | Host limitation; V1 lacks an awaited completion decision. Both dialects have actual fatal-load rejection evidence | Configurations remain incompatible with V1. Keep prominent config/event/capability failure; do not skip Stop or approximate it with idle |
-| Full native rendering, trust, source reload, resume, synthetic/subagent lifetimes and all platform/provider combinations | Unverified or outside the profile; [conformance inventory](../conformance/README.md) preserves the broader obligations | Document and retain their separate status; these gaps do not block the bounded V1 delivery |
+| Full native rendering, trust, source reload, resume, synthetic/subagent lifetimes and all platform/provider combinations | Unverified or outside the profile; [conformance inventory](../conformance/README.md) preserves the broader obligations | Document and retain their separate status; these are pending implementation and proof |
 | V2 native hook integration and Stop parity | Separate track; shared engine and V2 entrypoint remain available | V2 default capability gaps and retained integration work do not require a V1 host change or block this V1 profile |
 
 A missing default binding is not the same as a host limitation. New direct mappings can be added when their event, metadata, effect and lifecycle contracts can be verified. A broad unsupported or unverified requirement does not force the profile to wait indefinitely for upstream changes.
 
 ## Pinned event coverage
 
-The following table inventories every event in the pinned source catalogs. `Partial` refers to the supported/profile boundaries above. `Not wired` means selecting the event prevents default-plugin activation; it does not establish that a future binding is impossible. `n/a` means the event is absent from that dialect's pinned catalog.
+The following table inventories every event in the pinned source catalogs. `Partial` refers to the supported/profile boundaries above. `Pending` means selecting the event prevents default-plugin activation; it does not establish that a future binding is impossible. `n/a` means the event is absent from that dialect's pinned catalog.
 
 | Native event | Claude Code on V1 | Codex on V1 |
 | --- | --- | --- |
-| `SessionStart` | Not wired | Not wired |
-| `Setup` | Not wired | n/a |
-| `InstructionsLoaded` | Not wired | n/a |
+| `SessionStart` | Partial; fresh context/artifacts/environment | Partial; fresh context/journal |
+| `Setup` | Pending | n/a |
+| `InstructionsLoaded` | Pending | n/a |
 | `UserPromptSubmit` | Partial; documented profile | Partial; documented profile |
-| `UserPromptExpansion` | Not wired | n/a |
-| `MessageDisplay` | Not wired | n/a |
+| `UserPromptExpansion` | Pending | n/a |
+| `MessageDisplay` | Pending | n/a |
 | `PreToolUse` | Partial; documented profile | Partial; documented profile |
-| `PermissionRequest` | Not wired | Not wired |
+| `PermissionRequest` | Pending | Pending |
 | `PostToolUse` | Partial; documented profile | Partial; documented profile |
 | `PostToolUseFailure` | Partial; documented profile | n/a |
-| `PostToolBatch` | Not wired | n/a |
-| `PermissionDenied` | Not wired | n/a |
-| `Notification` | Not wired | n/a |
-| `SubagentStart` | Not wired | Not wired |
-| `SubagentStop` | Not wired | Not wired |
-| `TaskCreated` | Not wired | n/a |
-| `TaskCompleted` | Not wired | n/a |
+| `PostToolBatch` | Pending | n/a |
+| `PermissionDenied` | Pending | n/a |
+| `Notification` | Pending | n/a |
+| `SubagentStart` | Pending | Pending |
+| `SubagentStop` | Pending | Pending |
+| `TaskCreated` | Pending | n/a |
+| `TaskCompleted` | Pending | n/a |
 | `Stop` | Host limitation; fatal load rejection | Host limitation; fatal load rejection |
-| `StopFailure` | Not wired | n/a |
-| `TeammateIdle` | Not wired | n/a |
-| `ConfigChange` | Not wired | n/a |
-| `CwdChanged` | Not wired | n/a |
-| `DirectoryAdded` | Not wired | n/a |
-| `FileChanged` | Not wired | n/a |
-| `WorktreeCreate` | Not wired | n/a |
-| `WorktreeRemove` | Not wired | n/a |
-| `PreCompact` | Not wired | Not wired |
-| `PostCompact` | Not wired | Not wired |
-| `PreModelSwitch` | Not wired | n/a |
-| `PostModelSwitch` | Not wired | n/a |
-| `SessionEnd` | Not wired | Not wired |
-| `Elicitation` | Not wired | n/a |
-| `ElicitationResult` | Not wired | n/a |
-| `PreModelRequest` | n/a | Not wired |
-| `PostModelRequest` | n/a | Not wired |
-| `Interrupt` | n/a | Not wired |
+| `StopFailure` | Pending | n/a |
+| `TeammateIdle` | Pending | n/a |
+| `ConfigChange` | Pending | n/a |
+| `CwdChanged` | Pending | n/a |
+| `DirectoryAdded` | Pending | n/a |
+| `FileChanged` | Pending | n/a |
+| `WorktreeCreate` | Pending | n/a |
+| `WorktreeRemove` | Pending | n/a |
+| `PreCompact` | Pending | Pending |
+| `PostCompact` | Pending | Pending |
+| `PreModelSwitch` | Pending | n/a |
+| `PostModelSwitch` | Pending | n/a |
+| `SessionEnd` | Pending | Pending |
+| `Elicitation` | Pending | n/a |
+| `ElicitationResult` | Pending | n/a |
+| `PreModelRequest` | n/a | Pending |
+| `PostModelRequest` | n/a | Pending |
+| `Interrupt` | n/a | Pending |
 
 ## Delivery checks
 

@@ -52,7 +52,7 @@ async function submit(runtime: Awaited<ReturnType<typeof createRuntime>>, contex
   contexts.remember(runtime.sessions.get(event.sessionID), text, effects.context)
 }
 function guarded<A extends unknown[], T>(runtime: Awaited<ReturnType<typeof createRuntime>>, phase: PromptDiagnostic['phase'], operation: (...args: A) => Promise<T>, identity: (...args: A) => { readonly sessionID?: string; readonly messageID?: string }) {
-  return (...args: A) => runtime.hasPromptHooks ? runtime.promptOperation(phase, identity(...args), () => operation(...args)) : operation(...args)
+  return (...args: A) => runtime.hasPromptHooks || runtime.hasStartHooks ? runtime.promptOperation(phase, identity(...args), () => operation(...args)) : operation(...args)
 }
 
 function history(info: unknown, messages: unknown): TranscriptHistory {

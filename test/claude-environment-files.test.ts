@@ -283,3 +283,15 @@ test('an empty selection creates no durable state and does not prevent later reg
   const selected = await store.prepare('session', registrations())
   assert.equal(selected.files.length, 2)
 })
+
+test('an empty resumed selection exposes the retained environment directory without rewriting it', async t => {
+  const { ClaudeEnvironmentFiles } = await import('../src/claude-environment-files.js')
+  const { root, directory } = await fixture(t)
+  const store = new ClaudeEnvironmentFiles(fileOptions(directory))
+  const first = await store.prepare('session', registrations())
+  await writeFile(first.files[0]!.path, 'export RETAINED=yes\n')
+  const resumed = await store.prepare('session', [])
+  assert.equal(resumed.directory, dirname(first.files[0]!.path))
+  assert.equal(await readFile(join(resumed.directory!, 'sessionstart-hook-0.sh'), 'utf8'), 'export RETAINED=yes\n')
+  assert.notEqual(resumed.directory, root)
+})

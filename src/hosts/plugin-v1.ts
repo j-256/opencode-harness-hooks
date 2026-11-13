@@ -10,10 +10,12 @@ import { CallApprovals } from './permissions.js'
 import type { HostToolEvent } from '../tool-types.js'
 import { PromptContexts, PROMPT_REQUEST_HEADER } from '../prompt-contexts.js'
 import { record, unavailable, protocol, partsText, layout, submit, guarded, history } from './plugin-shared.js'
+import { V1Startups } from './startup-v1.js'
 
 export interface V1Input {
   readonly directory: string
   readonly client?: {
+    readonly config?: { readonly get: (options: { readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }> }
     readonly session: {
       readonly get: (options: { readonly path: { readonly id: string }; readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }>
       readonly messages: (options: { readonly path: { readonly id: string }; readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }>
@@ -43,7 +45,6 @@ function auxiliary(prompt: Prompt & { readonly message: UserMessage }): boolean 
 }
 
 export async function createHarnessHooks(input: V1Input, options: unknown, services: V1Services = {}) {
-  if (services.sessionStart) throw new HostHookError('HOST_SESSION_START_HOST_UNAVAILABLE', 'unsupported')
   services = { ...services }
   const readHistory = async (event: { readonly sessionID: string }, signal: AbortSignal) => {
     if (!input.client) throw new HostHookError('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE', 'unsupported')
@@ -59,7 +60,10 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     const snapshot = await readHistory(event, signal)
     return codexHistoryV1(snapshot.info, snapshot.messages)
   } })
-  const runtime = await createRuntime('v1', input.directory, options, { ...services, transcripts, codexTranscripts })
+  const startup = new V1Startups(input, transcripts, codexTranscripts, services)
+  const runtime = await createRuntime('v1', input.directory, options, { ...services, transcripts, codexTranscripts, sessionStart: startup.service })
+  startup.attach(runtime)
+  const hasContextHooks = runtime.hasPromptHooks || runtime.hasStartHooks
   const approvals = new CallApprovals({ diagnostic: runtime.tools.diagnostic })
   const contexts = new PromptContexts()
   const wrappers = new Map<string, typeof fetch>()
@@ -83,14 +87,16 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     if (id === managed?.providerID) managedWrappers.add(wrapped)
     return wrapped
   }
-  if (runtime.hasPromptHooks && managed) managed.attach(original => wrap(managed.providerID, original))
+  if (hasContextHooks && managed) managed.attach(original => wrap(managed.providerID, original))
   const protocols = new Map<string, { readonly turnID: string; readonly providerID: string; readonly protocol: PromptProtocol }>()
   const reply = input.client?.postSessionIdPermissionsPermissionId?.bind(input.client)
   const tools = createV1Hooks({ ...runtime.tools, ...(!runtime.tools.preapprove && reply ? { preapprove: async (event: HostToolEvent) => approvals.remember(event, runtime.sessions.get(event.sessionID)) } : {}) })
+  const disposeSession = async (sessionID: string) => { runtime.sessions.close(sessionID); protocols.delete(sessionID); await tools.disposeSession(sessionID) }
   const hooks = {
     ...tools,
-    config: async (config: { provider?: Record<string, { options?: Record<string, unknown> }>; model?: string }) => {
-      if (!runtime.hasPromptHooks) return
+    config: async (config: { provider?: Record<string, { options?: Record<string, unknown> }>; model?: string; shell?: string }) => {
+      await startup.configure(config)
+      if (!hasContextHooks) return
       config.provider ??= {}
       if (config.model?.includes('/')) config.provider[config.model.split('/')[0]!] ??= {}
       for (const [id, provider] of Object.entries(config.provider)) {
@@ -110,18 +116,20 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     },
     'chat.message': async (prompt: Prompt, output: { readonly message: UserMessage; readonly parts?: readonly unknown[] }) => {
       runtime.sessions.prompt(prompt.sessionID, output.message.id, prompt.model?.modelID ?? output.message.model?.modelID)
-      if (!runtime.hasPromptHooks) return
+      if (!hasContextHooks) return
       const provider = prompt.model?.providerID ?? output.message.model?.providerID
       if (!provider || rejectedTransports.has(provider) || !wrappers.has(provider) && provider !== managed?.providerID) unavailable('HOST_PROMPT_TRANSPORT_UNAVAILABLE')
       const text = partsText(output.parts)
       const session = runtime.sessions.get(prompt.sessionID)
+      await startup.ensure(session)
       await submit(runtime, contexts, { host: 'v1', event: 'UserPromptSubmit', sessionID: prompt.sessionID, messageID: output.message.id, prompt: text.join('\n'), signal: session.turnSignal }, text, services)
+      startup.bind(session, contexts)
     },
     'chat.params': async (prompt: Prompt & { readonly message: UserMessage; readonly provider?: { readonly id?: string; readonly info?: { readonly id: string }; readonly options: Record<string, unknown> } }) => {
       if (auxiliary(prompt)) return
       const model = prompt.message.model?.modelID ?? prompt.model?.modelID
       if (model) runtime.sessions.model(prompt.sessionID, model, prompt.message.id)
-      if (!runtime.hasPromptHooks) return
+      if (!hasContextHooks) return
       const provider = prompt.provider
       const id = provider?.id ?? provider?.info?.id
       const owned = id === managed?.providerID
@@ -131,7 +139,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       protocols.set(prompt.sessionID, { turnID: prompt.message.id, providerID: id, protocol: protocol(prompt.model?.api?.npm) })
     },
     'experimental.chat.messages.transform': async (_input: unknown, output: { readonly messages: readonly unknown[] }) => {
-      if (!runtime.hasPromptHooks) return
+      if (!hasContextHooks) return
       const users = output.messages.filter((message: unknown) => record(message) && record(message.info) && message.info.role === 'user')
       const last = users.at(-1)
       if (!record(last) || !record(last.info) || typeof last.info.sessionID !== 'string') unavailable('HOST_PROMPT_LAYOUT_UNAVAILABLE')
@@ -139,11 +147,12 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     },
     'chat.headers': async (prompt: Prompt & { readonly message: UserMessage }, output: { readonly headers: Record<string, string> }) => {
       if (auxiliary(prompt)) return
-      if (!runtime.hasPromptHooks && !runtime.needsModelArtifacts) return
+      if (!hasContextHooks && !runtime.needsModelArtifacts) return
       const session = runtime.sessions.get(prompt.sessionID)
       if (session.turnID !== prompt.message.id) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
       runtime.observeModel({ host: 'v1', sessionID: prompt.sessionID, messageID: prompt.message.id, signal: session.turnSignal })
-      if (!runtime.hasPromptHooks) return
+      await startup.model(session)
+      if (!hasContextHooks) return
       const provider = prompt.model?.providerID ?? prompt.message.model?.providerID
       const selected = protocols.get(prompt.sessionID)
       if (!selected || selected.turnID !== prompt.message.id || selected.providerID !== provider) unavailable('HOST_PROMPT_PROVIDER_UNAVAILABLE')
@@ -151,15 +160,36 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       if (token) output.headers[PROMPT_REQUEST_HEADER] = token
     },
     event: async ({ event }: { readonly event: { readonly type: string; readonly properties?: unknown } }) => {
+      startup.event(event.type, event.properties)
+      if (event.type === 'session.created' && record(event.properties)) {
+        const info = record(event.properties.info) ? event.properties.info : undefined
+        const id = typeof event.properties.sessionID === 'string' ? event.properties.sessionID : info?.id
+        if (typeof id === 'string' && id && (info?.id === undefined || info.id === id)) {
+          try { await startup.begin(id) } catch { console.error(JSON.stringify({ component: 'opencode-harness-hooks', host: 'v1', event: 'SessionStart', phase: 'session-created', sessionID: id, code: 'HOST_STARTUP_ACTIVATION_FAILED' })) }
+        }
+        return
+      }
+      if (event.type === 'session.deleted' && record(event.properties)) {
+        const info = record(event.properties.info) ? event.properties.info : undefined
+        const id = typeof event.properties.sessionID === 'string' ? event.properties.sessionID : info?.id
+        if (typeof id === 'string' && id && (info?.id === undefined || info.id === id)) {
+          try { await disposeSession(id) } catch { console.error(JSON.stringify({ component: 'opencode-harness-hooks', host: 'v1', phase: 'session-deleted', sessionID: id, code: 'HOST_SESSION_CLEANUP_FAILED' })) }
+        }
+        return
+      }
       if (event.type !== 'permission.asked' || !reply) return
       await approvals.replyV1(event.properties, async request => {
         const result = await reply({ path: { id: request.sessionID, permissionID: request.requestID }, body: { response: 'once' }, signal: request.signal })
         if (result.error || result.data !== true) throw new HostHookError('HOST_PERMISSION_REPLY_FAILED', 'failed')
       })
     },
+    'shell.env': async (input: { readonly sessionID?: string }, output: { readonly env: Record<string, string> }) => {
+      if (!input.sessionID) return
+      Object.assign(output.env, await startup.shellEnvironment(runtime.sessions.get(input.sessionID)))
+    },
     inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect() }),
-    disposeSession: async (sessionID: string) => { runtime.sessions.close(sessionID); protocols.delete(sessionID); await tools.disposeSession(sessionID) },
-    dispose: async () => { runtime.sessions.dispose(); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await tools.dispose(); await approvals.dispose(); await runtime.dispose() },
+    disposeSession,
+    dispose: async () => { runtime.sessions.dispose(); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await startup.dispose(); await tools.dispose(); await approvals.dispose(); await runtime.dispose() },
   }
   return {
     ...hooks,

@@ -58,3 +58,21 @@ test('Codex startup context occupies a developer message before the original use
     contexts.dispose(); sessions.dispose()
   }
 })
+
+test('withdrawing an unsaved prompt preserves earlier context and frees its layout position', () => {
+  const sessions = new Sessions(), contexts = new PromptContexts()
+  sessions.prompt('session', 'old', 'fixture')
+  contexts.remember(sessions.get('session'), ['Old'], [])
+  contexts.rememberStartup(sessions.get('session'), { claude: [START], codex: [] })
+  const retained = contexts.inspect().bytes
+  sessions.prompt('session', 'unsaved', 'fixture')
+  contexts.remember(sessions.get('session'), ['Unsaved'], [])
+  contexts.withdraw(sessions.get('session'))
+  assert.equal(contexts.inspect().bytes, retained)
+  assert.equal(contexts.inspect().prompts, 1)
+  sessions.prompt('session', 'accepted', 'fixture')
+  contexts.remember(sessions.get('session'), ['Accepted'], [])
+  contexts.layout(sessions.get('session'), [{ id: 'old', text: ['Old'] }, { id: 'accepted', text: ['Accepted'] }])
+  assert.ok(contexts.issue(sessions.get('session')))
+  contexts.dispose(); sessions.dispose()
+})

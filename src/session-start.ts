@@ -181,7 +181,7 @@ export class SessionStarts {
       let phase: SessionStartDiagnostic['phase'] = 'environment'
       let dispatchID: string | undefined
       const work = (async () => {
-        const environment = environmentCommands.length ? await runService(this.serviceTimeout, signal, current => this.environments!.prepare(event.sessionID, environmentCommands, current)) : undefined
+        const environment = this.environments ? await runService(this.serviceTimeout, signal, current => this.environments!.prepare(event.sessionID, environmentCommands, current)) : undefined
         if (signal.aborted) fail('HOST_SESSION_START_CANCELLED', 'cancelled')
         phase = 'dispatch'
         const dispatch = this.options.observe(await dispatchEvent(this.sources, event, { ...this.hostServices, ...(environment ? { registrationContext: environment.registrationContext } : {}), captureCommandArtifacts: true, signal, sessionSignal: session.signal }))

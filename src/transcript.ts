@@ -42,7 +42,9 @@ export interface TranscriptHistory {
 }
 export interface TranscriptService {
   admitStart?(delivery: SessionStartDelivery): StartupBatch
+  revokeStart?(session: SessionSnapshot, activationID: string): void
   bindStart?(session: SessionSnapshot, activationID: string, messageID: string): void
+  unbindStart?(session: SessionSnapshot, activationID: string, messageID: string): void
   observeModel?(event: HostModelEvent, session: SessionSnapshot): void
   admitPrompt?(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void
   admitStop?(delivery: StopDelivery): readonly string[]
@@ -193,6 +195,8 @@ export class ClaudeTranscript implements TranscriptService {
   }
 
   bindStart(session: SessionSnapshot, activationID: string, messageID: string): void { this.starts.bind(session, activationID, messageID) }
+  unbindStart(session: SessionSnapshot, activationID: string, messageID: string): void { this.starts.unbind(session, activationID, messageID) }
+  revokeStart(session: SessionSnapshot, activationID: string): void { this.starts.revoke(session, activationID) }
 
   admitStop(delivery: StopDelivery): readonly string[] {
     this.stopHost(delivery)

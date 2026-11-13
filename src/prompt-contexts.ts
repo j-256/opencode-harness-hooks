@@ -70,6 +70,15 @@ export class PromptContexts {
     this.retain(session, session.turnID, text, contexts, 'prompt')
   }
 
+  withdraw(session: SessionSnapshot): void {
+    const state = this.sessions.get(session.sessionID), entry = session.turnID ? state?.entries.get(session.turnID) : undefined
+    if (!state || !entry) return
+    if (state.signal !== session.signal || entry.turnSignal !== session.turnSignal || entry.kind !== 'prompt') fail('HOST_PROMPT_CONTEXT_UNAVAILABLE')
+    this.invalidate(state)
+    state.entries.delete(entry.turnID); this.bytes -= entry.bytes; this.prompts--
+    if (!state.entries.size && !state.reservations.size && !state.retired.size) state.cleanup()
+  }
+
   rememberContinuation(session: SessionSnapshot, messageID: string, text: readonly string[], projection?: readonly string[]): void {
     this.retain(session, messageID, text, [], 'continuation', projection)
   }

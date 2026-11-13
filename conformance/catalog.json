@@ -532,6 +532,18 @@
       "event": "PreToolUse",
       "area": "effects",
       "summary": "Selected HTTP status, malformed-body, streaming-timeout and redirect failures retain native nonblocking disposition without delivering the response body or following redirects"
+    },
+    {
+      "id": "claude-code.sessionstart.context",
+      "dialect": "claude-code",
+      "area": "effects",
+      "summary": "Deliver owned fresh startup context before the first user and preserve native startup metadata and opaque shell environment code"
+    },
+    {
+      "id": "codex.sessionstart.context",
+      "dialect": "codex",
+      "area": "effects",
+      "summary": "Deliver owned fresh startup context before the first user and preserve native startup metadata"
     }
   ],
   "evidence": [
@@ -1308,6 +1320,44 @@
         "HTTP request count and redirect absence",
         "source/endpoint program digests and adapter fingerprint",
         "safe failed receipts and explicit incomplete profile"
+      ]
+    },
+    {
+      "id": "claude.sessionstart.context",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.sessionstart.context"
+      ],
+      "description": "Independent native and V1 fresh startup context, metadata and shell controls using identical source bytes",
+      "observables": [
+        "Owned startup invocation and source",
+        "Native pre-user transcript timing and identity",
+        "Exact model context role, text and order",
+        "Startup context retained after a tool turn",
+        "Allowed and denied tool side effects with an opaque environment function",
+        "Unchanged source and executed hook bytes"
+      ]
+    },
+    {
+      "id": "codex.sessionstart.context",
+      "dialect": "codex",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "codex.sessionstart.context"
+      ],
+      "description": "Independent native and V1 fresh startup context, metadata and shell controls using identical source bytes",
+      "observables": [
+        "Owned startup invocation and source",
+        "Native pre-user transcript timing and identity",
+        "Exact model context role, text and order",
+        "Startup context retained after a tool turn",
+        "Allowed and denied tool side effects",
+        "Unchanged source and executed hook bytes"
       ]
     }
   ],

@@ -239,6 +239,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     waitForStart: (sessionID: string) => starts ? starts.wait(sessionID) : Promise.resolve(undefined),
     hasPromptHooks: sources.some(source => source.registrations.some(registration => registration.event === 'UserPromptSubmit')),
     hasStopHooks: stops !== undefined,
+    hasStartHooks: starts !== undefined,
     inspect: () => Object.freeze({ activeDispatches: active.size, observerFailures, sessions: sessions.inspect(), ...(starts ? { sessionStarts: starts.inspect() } : {}), ...(stops ? { stops: stops.inspect() } : {}) }),
     async dispose() {
       sessions.dispose()

@@ -23,6 +23,7 @@ interface Options {
 }
 
 export interface ClaudeEnvironmentPlan {
+  readonly directory?: string
   readonly files: readonly { readonly registrationID: string; readonly path: string }[]
   readonly registrationContext: Readonly<Record<string, RegistrationContext>>
 }
@@ -156,7 +157,7 @@ export class ClaudeEnvironmentFiles {
       const files = selected.map((registrationID, index) => Object.freeze({ registrationID, path: join(directory, `sessionstart-hook-${index}.sh`) }))
       const context: Record<string, RegistrationContext> = Object.create(null) as Record<string, RegistrationContext>
       for (const file of files) context[file.registrationID] = Object.freeze({ envFile: file.path })
-      const plan = Object.freeze({ files: Object.freeze(files), registrationContext: Object.freeze(context) })
+      const plan = Object.freeze({ directory, files: Object.freeze(files), registrationContext: Object.freeze(context) })
       if (!files.length) return plan
       const manifest = JSON.stringify({ version: MANIFEST_VERSION, layout: this.revision }) + '\n'
       await privateDirectory(this.directory, true)

@@ -1,6 +1,6 @@
 # Session lifecycle reference
 
-The default package rejects selected `SessionStart` registrations with `HOST_EVENT_UNAVAILABLE`. The core API supplies explicit startup coordination and shared file ownership. Default host dispatch, startup artifacts/context, executable shell replay and resume reconstruction remain required integration work. The native fixture below supplies an independent reference; it does not activate those registrations or establish bridge parity. The [V1 startup assessment](v1-startup-assessment.md) separates reusable core behavior, candidate admission boundaries and missing integration/proof.
+The default V1 binding delivers the documented [startup context, artifacts and environment subset](v1-startup-assessment.md). Its session-created observer is joined by awaited prompt/tool/model barriers. The V2 factory still requires separate lifecycle integration. Cold reconstruction, additional events and remaining native effects are pending implementation; the native fixtures below remain independent reference evidence for those branches.
 
 ## Core startup coordination
 
@@ -14,7 +14,7 @@ The opaque `activationID` identifies one delivered occurrence. Repeated delivery
 
 Retained receipts contain identity, dispatch correlation and outcome counts rather than raw dispatch output. Failed admission remains terminal for that occurrence and cannot silently replay command side effects. Input and receipt retention have explicit bridge limits; `maxActivations` controls retained occurrences. `serviceTimeoutMs` bounds environment-file preparation and host admission without replacing native handler deadlines. Diagnostics identify phase, activation, dispatch and missing source/registration fields without commands, outputs, native payloads or local paths. Observer failures are counted separately from native execution.
 
-This explicit core integration does not connect the default host factories. `createHarnessHooks` and `setupHarnessHooks` reject a supplied core startup service with `HOST_SESSION_START_HOST_UNAVAILABLE` until their host adapters are implemented. Cold source classification, precise startup timing, native artifact/context projection, shell capture/replay, background/reset lifetimes and migration equivalence remain required gates.
+V1 supplies the default admission and shell binding described in the startup guide and accepts an explicit core startup service when the consumer owns admission. V2 retains `HOST_SESSION_START_HOST_UNAVAILABLE` until its factory binding is implemented. Cold source classification, precise timing across all activation paths, native artifact/context reconstruction and durable host-side application remain acceptance work.
 
 ## Environment-file ownership
 

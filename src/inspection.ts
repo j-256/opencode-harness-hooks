@@ -45,7 +45,7 @@ function optionsCopy(value: unknown, directory: string): RuntimeOptions {
   return { sources, reviewedDigests: { ...value.reviewedDigests } as Record<string, string>, ...(typeof value.permissionMode === 'string' ? { permissionMode: value.permissionMode } : {}) }
 }
 
-export async function inspectSources(host: HostVersion, directory: string, inputOptions: unknown) {
+export async function inspectSources(host: HostVersion, directory: string, inputOptions: unknown, availableEvents: readonly string[] = []) {
   if (!Object.hasOwn(HOST_VERSIONS, host) || typeof directory !== 'string' || !directory) throw new HostHookError('HOST_INPUT_INVALID', 'failed')
   directory = resolve(directory)
   const options = optionsCopy(inputOptions, directory)
@@ -56,7 +56,7 @@ export async function inspectSources(host: HostVersion, directory: string, input
       id: source.id, dialect: source.dialect, digest: source.digest, reviewed: Object.hasOwn(options.reviewedDigests, source.id) && options.reviewedDigests[source.id] === source.digest, enabled: source.enabled,
       ...(source.codexConfig ? { codexConfig: Object.freeze({ ...source.codexConfig, layers: Object.freeze(source.codexConfig.layers.map(({ path: _path, ...layer }) => Object.freeze(layer))) }) } : {}),
       events: Object.freeze([...new Set(source.registrations.map(registration => registration.event))]),
-      unwiredEvents: Object.freeze([...new Set(source.registrations.map(registration => registration.event).filter(event => !WIRED_EVENTS.has(event)))]),
+      unwiredEvents: Object.freeze([...new Set(source.registrations.map(registration => registration.event).filter(event => !WIRED_EVENTS.has(event) && !availableEvents.includes(event)))]),
       selected: Object.freeze(source.registrations.map(registration => Object.freeze({ id: registration.id, event: registration.event, type: registration.handler.type }))),
       excluded: source.excluded,
     }))),

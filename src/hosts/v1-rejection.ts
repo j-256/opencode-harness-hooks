@@ -38,6 +38,7 @@ export function rejectV1Activation(input: Input, error: HostHookError): Hooks {
     'chat.headers': refuse,
     'experimental.chat.messages.transform': refuse,
     'tool.execute.before': refuse,
+    'shell.env': refuse,
     'tool.execute.after': refuse,
     event: async () => {},
     inspect: () => { throw error },

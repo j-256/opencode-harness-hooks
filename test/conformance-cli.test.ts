@@ -108,6 +108,19 @@ test('Codex binary option forms enforce the pinned native version', { skip: proc
   }
 })
 
+test('startup cases appear in help and retain host and binary boundaries', { skip: process.platform === 'win32' }, async () => {
+  const help = await invoke(['--help'], { PATH: '' })
+  for (const prefix of ['claude', 'codex']) {
+    const name = prefix + '.sessionstart.context'
+    assert.ok(help.stdout.includes(name))
+    const missing = await invoke(['-c', name, '-C', '/missing/claude', '-X', '/missing/codex'])
+    assert.equal(missing.status, 3)
+    assert.match(missing.stderr, new RegExp('DEPENDENCY_UNAVAILABLE: ' + prefix))
+    const wrongHost = await invoke(['-c', name, '-H', 'v2'], { PATH: '' })
+    assert.equal(wrongHost.status, 2)
+  }
+})
+
 test('input-rewrite cases appear in help and check only their own conditional native binary', { skip: process.platform === 'win32' }, async () => {
   const help = await invoke(['--help'], { PATH: '' })
   for (const prefix of ['claude', 'codex']) {

@@ -433,13 +433,15 @@ test('an undrained startup admission retains overlap protection after timeout', 
   assert.equal(await readFile(calls, 'utf8'), 'called\ncalled\n')
 })
 
-for (const host of ['v1', 'v2'] as const) test(`default host factory rejects core startup services until its host adapter is connected (${host})`, async t => {
+for (const host of ['v1', 'v2'] as const) test(`default host factory ${host === 'v1' ? 'accepts explicit' : 'rejects unwired'} startup services (${host})`, async t => {
   const { createHarnessHooks, setupHarnessHooks } = await import('../src/plugin.js')
   const f = await fixture(t)
   await f.add('codex', { SessionStart: [{ hooks: [{ type: 'command', command: ':' }] }] })
   const services: RuntimeServices = { ...quiet, sessionStart: { admit: async () => {} } }
   if (host === 'v1') {
-    await assert.rejects(async () => { const hooks = await createHarnessHooks({ directory: f.directory }, f.options, services); await hooks.dispose() }, { code: 'HOST_SESSION_START_HOST_UNAVAILABLE' })
+    const hooks = await createHarnessHooks({ directory: f.directory }, f.options, services)
+    assert.equal(hooks.inspect().runtime.sessionStarts?.retained, 0)
+    await hooks.dispose()
   } else {
     const hook = async () => ({ dispose: () => {} })
     await assert.rejects(async () => { const dispose = await setupHarnessHooks({ location: { directory: f.directory }, options: f.options, session: { hook }, tool: { hook } }, services); await dispose() }, { code: 'HOST_SESSION_START_HOST_UNAVAILABLE' })

@@ -14,7 +14,8 @@ The default package targets OpenCode V1 1.19.5 and V2 2.2.5 without host patches
 | Completed nonzero V1 shell calls | Claude failure hooks and Codex post-tool hooks, with selected context/feedback/replacement delivery | Other failures, interruption, exact native envelopes and V2 routing remain gaps; see [failure boundaries](runtime.md#v1-completed-shell-failures) |
 | Claude HTTP | Selected pre-tool denial/allow, post-tool effects and prompt additional context | Tool fault dispositions have native comparisons; prompt failure artifacts and broader HTTP policies remain gaps; Codex HTTP is not a supported native handler |
 | Stop | Prominent incompatible-configuration error and fatal admission/execution guards | Enabled selected Stop is incompatible with both default entrypoints; V1 rejection is an accepted host limitation and V2 completion remains a separate track |
-| Other events and services | Explicit unsupported diagnostics for unavailable events/services | Startup, native environment persistence, complete model/agent/MCP/background delivery and native extensions remain integration gates |
+| Startup | Fresh startup context/artifacts and Claude opaque shell replay through public V1 APIs | See [startup delivery](v1-startup-assessment.md) for timing, transport and pending cold-resume/native-effect coverage |
+| Other events and services | Explicit unsupported diagnostics for unavailable events/services | Remaining lifecycle, model/agent/MCP/background delivery and native extensions are pending implementation |
 
 The actual-host fixtures use controlled shell commands and a declared permission mode. Their results do not certify arbitrary source scripts or all host tools. File-operation translation between patch and Edit/Write algorithms requires its own evidence. POSIX/macOS execution does not establish Windows support.
 
