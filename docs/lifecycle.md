@@ -1,6 +1,6 @@
 # Session lifecycle reference
 
-The default package rejects selected `SessionStart` registrations with `HOST_EVENT_UNAVAILABLE`. The core API supplies explicit startup coordination and shared file ownership. Default host dispatch, startup artifacts/context, executable shell replay and resume reconstruction remain required integration work. The native fixture below supplies an independent reference; it does not activate those registrations or establish bridge parity.
+The default package rejects selected `SessionStart` registrations with `HOST_EVENT_UNAVAILABLE`. The core API supplies explicit startup coordination and shared file ownership. Default host dispatch, startup artifacts/context, executable shell replay and resume reconstruction remain required integration work. The native fixture below supplies an independent reference; it does not activate those registrations or establish bridge parity. The [V1 startup assessment](v1-startup-assessment.md) separates reusable core behavior, candidate admission boundaries and missing integration/proof.
 
 ## Core startup coordination
 

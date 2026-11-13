@@ -6,14 +6,14 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import definition from '../src/index.js'
 
-for (const host of ['v1', 'v2'] as const) for (const scenario of ['review', 'event', 'missing', 'malformed'] as const) {
-  test(`${host} default activation retains fatal guards after ${scenario} rejection`, async t => {
+for (const host of ['v1', 'v2'] as const) for (const scenario of ['review', 'event', 'missing', 'malformed'] as const) for (const dialect of scenario === 'event' ? ['claude-code', 'codex'] : ['codex']) {
+  test(`${host} ${dialect} default activation retains fatal guards after ${scenario} rejection`, async t => {
     const directory = await mkdtemp(join(tmpdir(), 'harness-activation-rejection-'))
     t.after(() => rm(directory, { recursive: true, force: true }))
     const path = join(directory, 'hooks.json')
     const source = JSON.stringify({ hooks: { [scenario === 'event' ? 'SessionStart' : 'PreToolUse']: [{ hooks: [{ type: 'command', command: 'PRIVATE_HOOK_BODY' }] }] } })
     if (scenario !== 'missing') await writeFile(path, scenario === 'malformed' ? '{PRIVATE_MALFORMED_BODY' : source)
-    const options = { sources: [{ id: 'incompatible', dialect: 'codex', path }], reviewedDigests: { incompatible: scenario === 'review' ? '0'.repeat(64) : createHash('sha256').update(source).digest('hex') } }
+    const options = { sources: [{ id: 'incompatible', dialect, path }], reviewedDigests: { incompatible: scenario === 'review' ? '0'.repeat(64) : createHash('sha256').update(source).digest('hex') } }
     const code = scenario === 'review' ? 'SOURCE_REVIEW_MISMATCH' : scenario === 'event' ? 'HOST_EVENT_UNAVAILABLE' : scenario === 'missing' ? 'SOURCE_READ' : 'SOURCE_PARSE'
     if (host === 'v1') {
       const guards = await definition.server({ directory }, options)
