@@ -82,6 +82,8 @@ test('a timed-out rejection probe cleans up its host process group', { skip: pro
   for (const file of ['package.json', 'package-lock.json']) await writeFile(join(root, file), '{}')
   await writeFile(join(root, 'dist/index.js'), 'export {}')
   await writeFile(join(root, 'scripts/verify-plugin.mjs'), await readFile(new URL('../scripts/verify-plugin.mjs', import.meta.url)))
+  await mkdir(join(root, 'scripts/lib'))
+  await writeFile(join(root, 'scripts/lib/permission-denial.mjs'), await readFile(new URL('../scripts/lib/permission-denial.mjs', import.meta.url)))
   await writeFile(binary, '#!' + process.execPath + '\nif(process.argv.includes("--version")){console.log("1.19.5")}else{const fs=require("node:fs");fs.writeFileSync(' + JSON.stringify(pidFile) + ',JSON.stringify({pid:process.pid,fixtureTemp:process.env.TMPDIR,fixtureCreated:fs.existsSync(process.env.TMPDIR)}));process.on("SIGTERM",()=>{});setInterval(()=>{},1000)}\n')
   await chmod(binary, 0o700)
   await assert.rejects(runStopRejection({ catalog: await catalog(), packageRoot: root, dialect: 'codex', opencodeBinary: binary, limits: { durationMs: 1500, graceMs: 50, maxBytes: 65536 } }), /CONFORMANCE_STOP_PROBE_FAILED/)

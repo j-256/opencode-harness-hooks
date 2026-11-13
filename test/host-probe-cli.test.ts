@@ -96,6 +96,7 @@ test('package probe help and invalid host/options require no executable and pres
     assert.match(result.stdout, /--dialect/)
     assert.match(result.stdout, /mixed/)
     assert.match(result.stdout, /--preapproval/)
+    assert.match(result.stdout, /--deny-precedence/)
     assert.match(result.stdout, /--prompts/)
     assert.match(result.stdout, /--auth-composition/)
     assert.match(result.stdout, /--stop-rejection/)
@@ -111,6 +112,22 @@ test('package probe help and invalid host/options require no executable and pres
   const unsupported = await invoke(['--host=v2', '--auth-composition'], { PATH: '' }, packageProbe)
   assert.equal(unsupported.status, 2)
   assert.match(unsupported.stderr, /USAGE_AUTH_COMPOSITION/)
+})
+
+test('deny-precedence probe accepts its short form and rejects incompatible modes before dependencies', async () => {
+  const help = await invoke(['-dh'], { PATH: '' }, packageProbe)
+  assert.equal(help.status, 0)
+  assert.match(help.stdout, /--deny-precedence/)
+  for (const args of [['--host=v2'], ['--host=v1', '--preapproval', '--dialect=mixed'], ['--host=v1', '--prompts'], ['--host=v1', '--stop-rejection'], ['--host=v1', '--review-rejection'], ['--host=v1', '--auth-composition']]) {
+    const result = await invoke([...args, '-d'], { PATH: '' }, packageProbe)
+    assert.equal(result.status, 2)
+    assert.match(result.stderr, /USAGE_DENY_PRECEDENCE/)
+  }
+  for (const flag of ['-d', '--deny-precedence']) {
+    const result = await invoke(['--host=v1', flag, '-b', process.execPath], process.env, packageProbe)
+    assert.equal(result.status, 2)
+    assert.match(result.stderr, /HOST_VERSION_MISMATCH/)
+  }
 })
 
 test('package probe honors literal binary forms and the selected host environment', async () => {

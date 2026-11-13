@@ -89,3 +89,11 @@ npm run test:host:plugin -- --host v2 --dialect mixed --review-rejection --binar
 ```
 
 Use `--dialect claude-code` or `--dialect codex` to exercise each source separately. Omit `--preapproval` for Codex: its allow-with-replacement contract does not request Claude-style preapproval. Prompt mode checks blocked admission before provider calls, every selected dispatch, native context roles, observed Claude completion order, Codex configuration order, retained context and private-header removal. A timed-out child may expire before recording startup; timeout outcomes and native artifacts remain checked. Rejection modes check actionable diagnostics and absent model/hook execution. Successful JSON reports retain `equivalent: false` because these checks cover only the documented subset. Package privacy and isolated-consumer checks are available through `npm run test:package`.
+
+## Configured denial control
+
+```sh
+node scripts/verify-plugin.mjs --host v1 --dialect mixed --deny-precedence
+```
+
+This stock V1 control requires a configured command denial to remain authoritative over native allow/input rewriting. It checks absent original/replacement filesystem effects, independent source invocations and an owned model-visible denial. Select either individual dialect for the corresponding control. The existing `--preapproval` probe separately verifies execution under host `ask`. These controls do not certify full native permission precedence, forced ask or deferred resumption.

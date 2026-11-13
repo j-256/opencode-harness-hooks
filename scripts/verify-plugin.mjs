@@ -8,6 +8,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { parseArgs, promisify } from 'node:util'
+import { isConfiguredCommandDenial } from './lib/permission-denial.mjs'
 
 const VERSIONS = Object.freeze({ v1: '1.19.5', v2: '2.2.5' })
 const DIALECTS = new Set(['codex', 'claude-code', 'mixed'])
@@ -28,7 +29,7 @@ const TITLE_TEXT = 'PACKAGE_FIXTURE_TITLE'
 const TITLE_WAIT_MS = 5000
 const run = promisify(execFile)
 const INHERIT_PROCESS_GROUP = process.env.HARNESS_PROBE_INHERIT_PROCESS_GROUP === '1'
-const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval] [--prompts] [--auth-composition] [-s|-r]
+const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval|-d] [--prompts] [--auth-composition] [-s|-r]
 
 Verify the built package's default entrypoint, native options and tool enforcement
 against a pinned OpenCode host. Requires npm run build, Node.js 22+, Git and the
@@ -41,6 +42,8 @@ Options:
                      then opencode)
       --dialect NAME Native source: codex (default), claude-code, or mixed (both)
       --preapproval  Exercise Claude allow with host permissions set to ask
+  -d, --deny-precedence  V1: require a configured command denial to override hook
+                         allow/input rewriting; exclusive with other probe modes
       --prompts      Check prompt blocking, context roles and retained history
       --auth-composition  V1: compose an authentication-fetch provider and require
                           credential transformation on every provider request
@@ -81,7 +84,7 @@ async function stop(child, done) {
   } finally { signal('SIGKILL') }
 }
 
-async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRejection, reviewRejection, authComposition) {
+async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRejection, reviewRejection, authComposition, denyPrecedence) {
   const loadRejection = stopRejection || reviewRejection
   const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
   if (version !== VERSIONS[hostVersion]) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + VERSIONS[hostVersion], 2)
@@ -165,7 +168,7 @@ if (!codex) {
 fs.appendFileSync(${JSON.stringify(capture)}, JSON.stringify({ ...input, transcriptValidated, promptArtifactIDs, promptContextOrder, nativeDialect: codex ? 'codex' : 'claude-code' }) + '\n')
 const decision = input.tool_input.command.includes('forbidden')
   ? { permissionDecision: 'deny', permissionDecisionReason: 'PACKAGE_FIXTURE_DENIED' }
-  : { ...(codex || ${preapproval} ? { permissionDecision: 'allow' } : {}), updatedInput: { command: ${JSON.stringify(replacementCommand)}, description: 'Rewritten fixture' } }
+  : { ...(codex || ${preapproval || denyPrecedence} ? { permissionDecision: 'allow' } : {}), updatedInput: { command: ${JSON.stringify(replacementCommand)}, description: 'Rewritten fixture' } }
 console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', ...decision } }))
 `)
     await run(process.execPath, ['--check', script], { env, timeout: STARTUP_MS, maxBuffer: MAX_BYTES })
@@ -177,8 +180,8 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
     const digest = createHash('sha256').update(source).digest('hex')
     const rejectionValues = reviewRejection ? ['SOURCE_REVIEW_MISMATCH', sources[0].id] : ['HOST_STOP_UNSUPPORTED', hostVersion.toUpperCase(), 'Stop', 'awaited-completion-decision', sourcePath, ...sources.map(source => source.id)]
     const rejectionReport = { host: hostVersion, hostVersion: VERSIONS[hostVersion], dialect, defaultEntrypoint: !authComposition, ...(authComposition ? { explicitV1ProviderComposition: true } : {}), nativeOptions: true, expectedLoadRejection: true, rejectionReason: reviewRejection ? 'review-mismatch' : 'stop', ...(stopRejection ? { expectedStopLoadRejection: true, incompatibleConfigsIdentified: true, unsupportedCapabilityIdentified: true } : {}), noModelOrHookExecution: true, equivalent: false }
-    const permissionMode = preapproval ? 'default' : 'bypassPermissions'
-    const hostPermission = preapproval ? 'ask' : 'allow'
+    const permissionMode = preapproval || denyPrecedence ? 'default' : 'bypassPermissions'
+    const hostPermission = denyPrecedence ? { '*': 'allow', bash: { '*': 'allow', 'printf*': 'deny' } } : preapproval ? 'ask' : 'allow'
     const options = { sources, reviewedDigests: Object.fromEntries(sources.map(source => [source.id, reviewRejection ? '0'.repeat(64) : digest])), permissionMode }
     const requests = []
     const auxiliaryRequests = []
@@ -358,6 +361,24 @@ export default async function fixture(input, options) {
     }
     stage = 'denied-side-effect'
     await assert.rejects(access(denied))
+    if (denyPrecedence) {
+      stage = 'configured-deny-precedence'
+      await assert.rejects(access(rewritten))
+      const rows = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+      const pre = rows.filter(row => row.hook_event_name === 'PreToolUse')
+      assert.equal(pre.length, CONTROLLED_TOOL_CALLS * sources.length)
+      assert.ok(pre.every(row => row.permission_mode === 'default'))
+      assert.deepEqual(pre.filter(row => row.tool_use_id === 'call_2').map(row => row.nativeDialect).sort(), [...selectedDialects].sort())
+      assert.ok(pre.filter(row => row.tool_use_id === 'call_2').every(row => row.tool_input.command === originalCommand))
+      assert.equal(rows.filter(row => row.hook_event_name === 'PostToolUse').length, 0)
+      const results = requests.at(-1)?.messages.filter(row => row.role === 'tool' && row.tool_call_id === 'call_2') ?? []
+      assert.equal(results.length, 1)
+      const content = typeof results[0].content === 'string' ? results[0].content : results[0].content?.filter(row => row.type === 'text' && typeof row.text === 'string').map(row => row.text).join('\n')
+      assert.equal(isConfiguredCommandDenial(content), true)
+      assert.equal(content.includes('PACKAGE_FIXTURE_DENIED'), false)
+      assert.ok(JSON.stringify(answer).includes('PACKAGE_FIXTURE_DONE'))
+      return { host: version, dialect, defaultPackageEntrypoint: true, nativeOptions: true, configuredCommandDenyPreserved: true, originalAndReplacementEffectsAbsent: true, nativeAllowOrRewriteObserved: true, ownedDenialResult: true, ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), nativePermissionDifferential: false, equivalent: false }
+    }
     stage = 'replacement-side-effect'
     assert.equal(await readFile(rewritten, 'utf8'), 'rewritten')
     stage = 'native-payloads'
@@ -446,11 +467,13 @@ export default async function fixture(input, options) {
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, prompts: { type: 'boolean' }, 'auth-composition': { type: 'boolean' }, 'stop-rejection': { type: 'boolean', short: 's' }, 'review-rejection': { type: 'boolean', short: 'r' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, 'deny-precedence': { type: 'boolean', short: 'd' }, prompts: { type: 'boolean' }, 'auth-composition': { type: 'boolean' }, 'stop-rejection': { type: 'boolean', short: 's' }, 'review-rejection': { type: 'boolean', short: 'r' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const host = parsed.values.host
     if (!Object.hasOwn(VERSIONS, host ?? '')) throw new ProbeError('USAGE_HOST: expected v1 or v2', 2)
+    const denyPrecedence = parsed.values['deny-precedence'] ?? false
+    if (denyPrecedence && (host !== 'v1' || parsed.values.preapproval || parsed.values.prompts || parsed.values['stop-rejection'] || parsed.values['review-rejection'] || parsed.values['auth-composition'])) throw new ProbeError('USAGE_DENY_PRECEDENCE: V1 without other probe modes', 2)
     if (parsed.values['auth-composition'] && host !== 'v1') throw new ProbeError('USAGE_AUTH_COMPOSITION: V1 only', 2)
     const dialect = parsed.values.dialect ?? 'codex'
     if (!DIALECTS.has(dialect)) throw new ProbeError('USAGE_DIALECT: expected codex, claude-code or mixed', 2)
@@ -462,7 +485,7 @@ try {
     if (stopRejection && (preapproval || parsed.values.prompts)) throw new ProbeError('USAGE_STOP_REJECTION: without --preapproval or --prompts', 2)
     const binary = parsed.values.binary ?? process.env[host === 'v1' ? 'OPENCODE_V1_BINARY' : 'OPENCODE_V2_BINARY'] ?? 'opencode'
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false, stopRejection, reviewRejection, parsed.values['auth-composition'] ?? false)) + '\n')
+    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false, stopRejection, reviewRejection, parsed.values['auth-composition'] ?? false, denyPrecedence)) + '\n')
   }
 } catch (error) {
   process.stderr.write((error instanceof ProbeError ? error.message : 'PACKAGE_PROBE_FAILED') + '\n')
