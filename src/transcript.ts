@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { mkdtemp, open, rename, rm } from 'node:fs/promises'
+import { lstat, mkdtemp, open, readdir, rename, rm, rmdir, unlink } from 'node:fs/promises'
+import type { Stats } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { isAbsolute, join } from 'node:path'
 import { CONTRACT_VERSIONS } from './contracts.js'
@@ -30,6 +31,7 @@ const MAX_BYTES = 32 * 1024 * 1024
 const MAX_CALLS = 20000
 const MAX_ORIGINAL_BYTES = 64 * 1024 * 1024
 const MAX_PENDING = 1024
+const MAX_DELETED_SESSIONS = 1024
 const TRANSCRIPT_NAMESPACE = Buffer.from('6ba7b8119dad11d180b400c04fd430c8', 'hex')
 const V1_BOOKKEEPING = new Set(['step-start', 'step-finish'])
 const V2_BOOKKEEPING = new Set(['agent-switched', 'model-switched', 'idle'])
@@ -43,6 +45,7 @@ export interface TranscriptHistory {
   readonly messages: readonly unknown[]
 }
 export interface TranscriptService {
+  removeSession?(sessionID: string): Promise<void>
   pendingStarts?(sessionID: string): readonly StartupBatch[]
   admitStart?(delivery: SessionStartDelivery): StartupBatch
   revokeStart?(session: SessionSnapshot, activationID: string): void
@@ -163,6 +166,8 @@ export class ClaudeTranscript implements TranscriptService {
   private readonly originals = new OriginalInputs({ maxCalls: MAX_CALLS, maxBytes: MAX_ORIGINAL_BYTES, limitCode: 'TRANSCRIPT_CALL_LIMIT', bytesCode: 'TRANSCRIPT_MEMORY_LIMIT', reusedCode: 'TRANSCRIPT_CALL_ID_REUSED' })
   private readonly serial = new Map<string, Promise<unknown>>()
   private readonly published = new Set<string>()
+  private readonly deleted = new Set<string>()
+  private readonly files = new Map<string, { readonly path: string; readonly stat: Stats }>()
   private readonly prompts = new PromptAttachments()
   private readonly starts = new StartupRecords()
   private readonly stops = new StopRecords()
@@ -170,6 +175,7 @@ export class ClaudeTranscript implements TranscriptService {
   private readonly lifetime = new AbortController()
   private directory: Promise<string> | undefined
   private directoryPath: string | undefined
+  private directoryOwnership: Stats | undefined
   private disposing: Promise<void> | undefined
   private pendingCount = 0
 
@@ -281,6 +287,7 @@ export class ClaudeTranscript implements TranscriptService {
   prepare(event: TranscriptEvent, session: SessionSnapshot, parent: AbortSignal): Promise<string> {
     if (event.host !== this.options.host) return Promise.reject(new HostHookError('TRANSCRIPT_HOST_MISMATCH', 'unsupported'))
     if (event.sessionID !== session.sessionID) return Promise.reject(new HostHookError('TRANSCRIPT_SESSION_MISMATCH', 'unsupported'))
+    if (this.deleted.has(event.sessionID)) return Promise.reject(new HostHookError('TRANSCRIPT_SESSION_DELETED', 'cancelled'))
     if (event.event === 'Stop') {
       if (this.options.host !== 'v2') return Promise.reject(new HostHookError('TRANSCRIPT_STOP_HOST_UNSUPPORTED', 'unsupported'))
       if (event.cwd !== this.options.directory) return Promise.reject(new HostHookError('TRANSCRIPT_STOP_CWD_UNAVAILABLE', 'unsupported'))
@@ -293,6 +300,7 @@ export class ClaudeTranscript implements TranscriptService {
     const previous = this.serial.get(event.sessionID) ?? Promise.resolve()
     const pending = previous.catch(() => {}).then(async () => {
       if (signal.aborted) fail('TRANSCRIPT_CANCELLED')
+      if (this.deleted.has(event.sessionID)) fail('TRANSCRIPT_SESSION_DELETED')
       const history = snapshot(await runService(HISTORY_MS, signal, signal => this.options.history(event, signal)))
       if (history.id !== event.sessionID) fail('TRANSCRIPT_SESSION_MISMATCH')
       if (history.parentID !== undefined && (typeof history.parentID !== 'string' || !history.parentID)) fail('TRANSCRIPT_SCHEMA_INVALID')
@@ -304,7 +312,7 @@ export class ClaudeTranscript implements TranscriptService {
       const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
       if (Buffer.byteLength(text) > MAX_BYTES) fail('TRANSCRIPT_SIZE_LIMIT')
       if (signal.aborted) fail('TRANSCRIPT_CANCELLED')
-      this.directory ??= mkdtemp(join(this.options.temporaryParent ?? tmpdir(), 'opencode-harness-transcripts-'))
+      this.directory ??= mkdtemp(join(this.options.temporaryParent ?? tmpdir(), 'opencode-harness-transcripts-')).then(async path => { this.directoryOwnership = await lstat(path); return path })
       const directory = await this.directory
       this.directoryPath = directory
       const path = join(directory, createHash('sha256').update(event.sessionID).digest('hex') + '.jsonl')
@@ -317,7 +325,12 @@ export class ClaudeTranscript implements TranscriptService {
         const file = await open(temporary, 'wx', 0o600)
         try { await file.writeFile(text) } finally { await file.close() }
         if (signal.aborted) fail('TRANSCRIPT_CANCELLED')
+        await this.verifyDirectory()
+        const previousFile = this.files.get(event.sessionID)
+        if (previousFile) await this.verifyFile(previousFile)
+        else if (await lstat(path).catch(error => { if (error && typeof error === 'object' && 'code' in error && error.code === 'ENOENT') return undefined; throw error })) fail('TRANSCRIPT_FILE_CHANGED')
         await rename(temporary, path)
+        this.files.set(event.sessionID, { path, stat: await lstat(path) })
         if (event.event === 'Stop') this.stops.prepare(event, session, completionSignature(entries.at(-1)!))
         this.published.add(event.sessionID)
         return path
@@ -333,6 +346,29 @@ export class ClaudeTranscript implements TranscriptService {
     return pending
   }
 
+  removeSession(sessionID: string): Promise<void> {
+    if (typeof sessionID !== 'string' || !sessionID || sessionID.includes('\0')) return Promise.reject(new HostHookError('TRANSCRIPT_SESSION_MISMATCH', 'unsupported'))
+    if (!this.deleted.has(sessionID) && this.deleted.size >= MAX_DELETED_SESSIONS) return Promise.reject(new HostHookError('TRANSCRIPT_PENDING_LIMIT', 'unsupported'))
+    this.deleted.add(sessionID)
+    const pending = (this.serial.get(sessionID) ?? Promise.resolve()).catch(() => {}).then(async () => {
+      const file = this.files.get(sessionID)
+      if (file) { await this.verifyDirectory(); await this.verifyFile(file); await unlink(file.path); this.files.delete(sessionID) }
+      this.published.delete(sessionID)
+    }).catch(error => { if (error instanceof HostHookError) throw error; fail('TRANSCRIPT_DISPOSE_FAILED') })
+    this.serial.set(sessionID, pending)
+    void pending.finally(() => { if (this.serial.get(sessionID) === pending) this.serial.delete(sessionID) }).catch(() => {})
+    return pending
+  }
+
+  private async verifyDirectory(): Promise<void> {
+    const info = this.directoryPath ? await lstat(this.directoryPath).catch(() => undefined) : undefined, saved = this.directoryOwnership
+    if (!info?.isDirectory() || !saved || info.dev !== saved.dev || info.ino !== saved.ino || process.getuid && info.uid !== process.getuid() || (info.mode & 0o077) !== 0) fail('TRANSCRIPT_DIRECTORY_CHANGED')
+  }
+  private async verifyFile(file: { readonly path: string; readonly stat: Stats }): Promise<void> {
+    const info = await lstat(file.path).catch(() => undefined), saved = file.stat
+    if (!info?.isFile() || info.dev !== saved.dev || info.ino !== saved.ino || info.nlink !== 1 || info.uid !== saved.uid || (info.mode & 0o077) !== 0 || info.size !== saved.size || info.mtimeMs !== saved.mtimeMs) fail('TRANSCRIPT_FILE_CHANGED')
+  }
+
   dispose(): Promise<void> {
     this.lifetime.abort()
     this.prompts.dispose()
@@ -341,7 +377,17 @@ export class ClaudeTranscript implements TranscriptService {
     this.models.dispose()
     this.disposing ??= (async () => {
       await Promise.allSettled([...this.serial.values()])
-      try { if (this.directoryPath) await rm(this.directoryPath, { recursive: true, force: true }) } catch { throw new HostHookError('TRANSCRIPT_DISPOSE_FAILED', 'failed') }
+      try {
+        if (this.directoryPath) {
+          await this.verifyDirectory()
+          const owned = new Set([...this.files.values()].map(file => file.path))
+          if ((await readdir(this.directoryPath)).some(name => !owned.has(join(this.directoryPath!, name)))) fail('TRANSCRIPT_DIRECTORY_CHANGED')
+          for (const file of this.files.values()) await this.verifyFile(file)
+          for (const [id, file] of this.files) { await this.verifyFile(file); await unlink(file.path); this.files.delete(id) }
+          await this.verifyDirectory(); await rmdir(this.directoryPath)
+          this.directoryPath = undefined; this.directoryOwnership = undefined
+        }
+      } catch (error) { if (error instanceof HostHookError) throw error; throw new HostHookError('TRANSCRIPT_DISPOSE_FAILED', 'failed') }
     })().finally(() => {
       this.originals.dispose()
       this.published.clear()

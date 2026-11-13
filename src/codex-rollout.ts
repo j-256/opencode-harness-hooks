@@ -165,6 +165,7 @@ function encode(frames: readonly Frame[], ordinal: number, limit: number): Buffe
 
 export class CodexRollout {
   private readonly states = new Map<string, State>()
+  private readonly deleted = new Set<string>()
   private readonly serial = new Map<string, Promise<unknown>>()
   private readonly active = new Set<Promise<unknown>>()
   private readonly handles = new Set<FileHandle>()
@@ -204,6 +205,7 @@ export class CodexRollout {
       const threadID = meta.id as string
       return this.schedule(threadID, async () => {
         this.check(signal)
+        if (this.deleted.has(threadID)) fail('CODEX_ROLLOUT_SESSION_DELETED')
         if (this.creationFailed) fail('CODEX_ROLLOUT_RECOVERY_REQUIRED')
         if (this.states.has(threadID)) fail('CODEX_ROLLOUT_SESSION_CONFLICT')
         if (this.states.size + this.reservedSessions >= this.sessionCountLimit) fail('CODEX_ROLLOUT_LIMIT')
@@ -299,6 +301,23 @@ export class CodexRollout {
       state.ids.add(messageID)
       return state.path
     }))
+  }
+
+  removeSession(threadID: string): Promise<void> {
+    if (!id(threadID) || !UUID.test(threadID)) return Promise.reject(new HostHookError('CODEX_ROLLOUT_IDENTITY_MISMATCH', 'unsupported'))
+    if (!this.deleted.has(threadID) && this.deleted.size >= this.sessionCountLimit) return Promise.reject(new HostHookError('CODEX_ROLLOUT_LIMIT', 'unsupported'))
+    this.deleted.add(threadID)
+    const pending = this.schedule(threadID, async () => {
+      const state = this.states.get(threadID)
+      if (!state) return
+      await this.readback(state.path, state)
+      await this.verifyName(state.path, state)
+      await unlink(state.path)
+      this.states.delete(threadID); this.bytes -= state.bytes + state.failureBytes
+    }).catch(error => { if (error instanceof HostHookError) throw error; fail('CODEX_ROLLOUT_IO_FAILED') })
+    this.active.add(pending)
+    void pending.finally(() => this.active.delete(pending)).catch(() => {})
+    return pending
   }
 
   dispose(): Promise<void> {

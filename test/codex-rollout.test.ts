@@ -50,6 +50,30 @@ test('tool journals preserve call identity and reject orphan, duplicate or forei
   assert.deepEqual(rows.slice(-2).map(row => row.payload), [call.payload, output.payload])
 })
 
+test('session removal reclaims only its owned journal and fences recreation', async t => {
+  const f = await fixture(t), secondID = '6b6f5c1c-c750-41b7-9b7a-721979106baa'
+  const first = await f.rollout.create({ metadata: f.metadata, history: f.history })
+  const second = await f.rollout.create({ metadata: { ...f.metadata, id: secondID, session_id: secondID }, history: f.history })
+  const retained = await readFile(second, 'utf8')
+  await f.rollout.removeSession(f.threadID)
+  await assert.rejects(readFile(first), { code: 'ENOENT' })
+  assert.equal(await readFile(second, 'utf8'), retained)
+  assert.equal(f.rollout.inspect().sessions, 1)
+  await f.rollout.removeSession(f.threadID)
+  await assert.rejects(f.rollout.create({ metadata: f.metadata, history: f.history }), { code: 'CODEX_ROLLOUT_SESSION_DELETED' })
+})
+
+test('session removal preserves a replaced journal and its recovery receipt', async t => {
+  const f = await fixture(t), path = await f.rollout.create({ metadata: f.metadata, history: f.history })
+  const moved = path + '.retained'
+  await rename(path, moved); await writeFile(path, 'replacement')
+  await assert.rejects(f.rollout.removeSession(f.threadID), { code: 'CODEX_ROLLOUT_FILE_CHANGED' })
+  assert.equal(await readFile(path, 'utf8'), 'replacement')
+  assert.equal(f.rollout.inspect().sessions, 1)
+  await rm(path); await rename(moved, path)
+  await f.rollout.removeSession(f.threadID)
+})
+
 test('persists native rollout metadata and Stop envelopes with stable inode and exact payloads', async t => {
   const f = await fixture(t), path = await f.rollout.create({ metadata: f.metadata, history: f.history })
   const before = await stat(path)

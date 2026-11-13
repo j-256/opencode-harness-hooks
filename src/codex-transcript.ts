@@ -18,6 +18,7 @@ const MAX_BYTES = 32 * 1024 * 1024
 const MAX_CALLS = 20000
 const MAX_MESSAGES = 10000
 const MAX_PENDING = 128
+const MAX_DELETED_SESSIONS = 1024
 const MAX_ID_BYTES = 4096
 const HISTORY_MS = 5000
 const SHELL_TOOLS = new Set(['bash', 'shell'])
@@ -27,6 +28,7 @@ export interface CodexTranscriptMessage { readonly id: string; readonly turnID: 
 export interface CodexTranscriptHistory { readonly id: string; readonly messages: readonly CodexTranscriptMessage[] }
 export interface CodexTranscriptView { readonly sessionID: string; readonly turnID: string; readonly transcriptPath: string }
 export interface CodexTranscriptService {
+  removeSession?(sessionID: string): Promise<void>
   hasStart?(sessionID: string, activationID: string): boolean
   prepareStart?(event: SessionStartEvent, session: SessionSnapshot, signal: AbortSignal): Promise<Omit<CodexTranscriptView, 'turnID'>>
   rememberStart?(session: SessionSnapshot, activationID: string, contexts: readonly string[]): void
@@ -70,6 +72,7 @@ export class CodexTranscript implements CodexTranscriptService {
   private readonly rollout: CodexRollout
   private readonly originals = new OriginalInputs({ maxCalls: MAX_CALLS, maxBytes: MAX_BYTES, limitCode: 'CODEX_TRANSCRIPT_INPUT_LIMIT', bytesCode: 'CODEX_TRANSCRIPT_INPUT_LIMIT', reusedCode: 'CODEX_TRANSCRIPT_CALL_ID_REUSED' })
   private readonly published = new Map<string, Published>()
+  private readonly deleted = new Set<string>()
   private readonly starts = new Map<string, Startups>()
   private readonly serial = new Map<string, Promise<unknown>>()
   private readonly lifetime = new AbortController()
@@ -232,6 +235,15 @@ export class CodexTranscript implements CodexTranscriptService {
     delete startup.messageID
   }
 
+  async removeSession(sessionID: string): Promise<void> {
+    if (typeof sessionID !== 'string' || !sessionID || sessionID.includes('\0')) fail('CODEX_TRANSCRIPT_SESSION_MISMATCH')
+    if (!this.deleted.has(sessionID) && this.deleted.size >= MAX_DELETED_SESSIONS) fail('CODEX_TRANSCRIPT_INPUT_LIMIT')
+    this.deleted.add(sessionID)
+    await this.serial.get(sessionID)?.catch(() => {})
+    await this.rollout.removeSession(identity(this.options.directory, sessionID))
+    this.published.delete(sessionID)
+  }
+
   dispose(): Promise<void> {
     this.lifetime.abort()
     for (const state of this.starts.values()) state.signal.removeEventListener('abort', state.cleanup)
@@ -261,6 +273,7 @@ export class CodexTranscript implements CodexTranscriptService {
     if (this.lifetime.signal.aborted) fail('CODEX_TRANSCRIPT_CANCELLED')
     if (event.host !== this.options.host) fail('CODEX_TRANSCRIPT_HOST_MISMATCH')
     if (event.sessionID !== session.sessionID) fail('CODEX_TRANSCRIPT_SESSION_MISMATCH')
+    if (this.deleted.has(event.sessionID)) fail('CODEX_TRANSCRIPT_SESSION_DELETED')
   }
 
   private project(event: HostToolEvent | SessionStartEvent, session: SessionSnapshot, history: CodexTranscriptHistory, requireCurrent = true): CodexRolloutHistoryRecord[] {
