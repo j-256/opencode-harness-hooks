@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { chmod, link, lstat, mkdtemp, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { test } from 'node:test'
@@ -10,6 +10,47 @@ import type { LoadedSource, NativeEvent, Registration } from '../src/types.js'
 
 const execute = promisify(execFile)
 const DIGEST = 'a'.repeat(64)
+
+test('environment deletion recognizes retained native files after source selection changes', async t => {
+  const { ClaudeEnvironmentFiles } = await import('../src/claude-environment-files.js')
+  const f = await fixture(t), selected = registrations(), files = new ClaudeEnvironmentFiles({ directory: f.directory, sources: [source(selected)] })
+  const first = await files.prepare('first', selected), second = await files.prepare('second', selected)
+  await writeFile(first.files[0]!.path, 'PRIVATE_ENV', { mode: 0o600 })
+  const changed = new ClaudeEnvironmentFiles({ directory: f.directory, sources: [] })
+  await changed.removeSession('first')
+  await assert.rejects(lstat(first.directory!), { code: 'ENOENT' })
+  assert.ok((await lstat(second.directory!)).isDirectory())
+  await changed.removeSession('first')
+  await assert.rejects(changed.prepare('first', []), { code: 'ENVIRONMENT_SESSION_DELETED' })
+})
+
+test('environment deletion preserves a replaced session directory and permits restoration retry', async t => {
+  const { ClaudeEnvironmentFiles } = await import('../src/claude-environment-files.js')
+  const f = await fixture(t), selected = registrations(), files = new ClaudeEnvironmentFiles({ directory: f.directory, sources: [source(selected)] })
+  const plan = await files.prepare('session', selected), saved = plan.directory + '.owned'
+  await rename(plan.directory!, saved); await mkdir(plan.directory!, { mode: 0o700 })
+  const keep = join(plan.directory!, 'keep.txt'); await writeFile(keep, 'replacement')
+  await assert.rejects(files.removeSession('session'), { code: 'ENVIRONMENT_DIRECTORY_UNSAFE' })
+  assert.equal(await readFile(keep, 'utf8'), 'replacement')
+  await rm(plan.directory!, { recursive: true }); await rename(saved, plan.directory!)
+  await files.removeSession('session')
+})
+
+for (const unsafe of ['unknown', 'symlink', 'hardlink'] as const) test(`environment deletion validates every entry before mutation (${unsafe})`, async t => {
+  const { ClaudeEnvironmentFiles } = await import('../src/claude-environment-files.js')
+  const f = await fixture(t), selected = registrations(), files = new ClaudeEnvironmentFiles({ directory: f.directory, sources: [source(selected)] })
+  const plan = await files.prepare('session', selected), outside = join(f.root, 'outside')
+  await writeFile(outside, 'outside', { mode: 0o600 }); await writeFile(plan.files[0]!.path, 'owned', { mode: 0o600 })
+  const path = unsafe === 'unknown' ? join(plan.directory!, 'keep.txt') : plan.files[1]!.path
+  if (unsafe === 'unknown') await writeFile(path, 'keep')
+  else if (unsafe === 'symlink') await symlink(outside, path)
+  else await link(outside, path)
+  await assert.rejects(files.removeSession('session'), { code: unsafe === 'unknown' ? 'ENVIRONMENT_LAYOUT_UNSUPPORTED' : 'ENVIRONMENT_FILE_UNSAFE' })
+  assert.equal(await readFile(plan.files[0]!.path, 'utf8'), 'owned')
+  assert.equal(await readFile(outside, 'utf8'), 'outside')
+  await rm(path)
+  await files.removeSession('session')
+})
 
 async function fixture(t: TestContext) {
   const root = await mkdtemp(join(tmpdir(), 'harness-environment-'))

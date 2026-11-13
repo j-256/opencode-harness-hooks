@@ -1,9 +1,9 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { test } from 'node:test'
 import { promisify } from 'node:util'
 import { V1ShellReplay } from '../src/hosts/shell-replay.js'
@@ -81,4 +81,53 @@ test('zero selected resume hooks still replay retained native files', async t =>
   f.replay.admit(f.sessions.get('session'), 'resume', { directory: f.files, files: [], registrationContext: {} })
   const executable = await f.replay.configure('/bin/bash')
   assert.equal((await run(executable, ['-c', 'printf %s "$VALUE"'], { env: { PATH: process.env.PATH, HOME: f.root, ...await f.replay.environment(f.sessions.get('session')) }, timeout: 5000 })).stdout, 'retained-zero')
+})
+
+test('session deletion reclaims closed-session shell snapshots and releases their byte quota', async t => {
+  const f = await fixture(t)
+  await writeFile(f.path(0), 'export VALUE=private\n')
+  f.replay.admit(f.sessions.get('session'), 'activation', f.plan)
+  const environment = await f.replay.environment(f.sessions.get('session')), path = environment.OPENCODE_HARNESS_ENV_SNAPSHOT!
+  assert.ok(f.replay.inspect().retainedBytes > 0)
+  f.sessions.close('session')
+  assert.ok(await readFile(path, 'utf8'))
+  await f.replay.removeSession('session')
+  await assert.rejects(readFile(path), { code: 'ENOENT' })
+  assert.equal(f.replay.inspect().retainedBytes, 0)
+  await f.replay.removeSession('session')
+})
+
+test('shell snapshot deletion preserves a replacement and can retry after the owned inode is restored', async t => {
+  const f = await fixture(t)
+  await writeFile(f.path(0), 'export VALUE=private\n')
+  f.replay.admit(f.sessions.get('session'), 'activation', f.plan)
+  const path = (await f.replay.environment(f.sessions.get('session'))).OPENCODE_HARNESS_ENV_SNAPSHOT!
+  await rename(path, path + '.owned'); await writeFile(path, 'replacement')
+  await assert.rejects(f.replay.removeSession('session'), { code: 'HOST_ENVIRONMENT_FILE_CHANGED' })
+  assert.equal(await readFile(path, 'utf8'), 'replacement')
+  await rm(path); await rename(path + '.owned', path)
+  await f.replay.removeSession('session')
+  assert.equal(f.replay.inspect().retainedBytes, 0)
+})
+
+test('whole replay disposal preserves unowned files and retained snapshots until recovery', async t => {
+  const f = await fixture(t)
+  await writeFile(f.path(0), 'export VALUE=private\n')
+  f.replay.admit(f.sessions.get('session'), 'activation', f.plan)
+  await f.replay.configure('/bin/bash')
+  const path = (await f.replay.environment(f.sessions.get('session'))).OPENCODE_HARNESS_ENV_SNAPSHOT!, unknown = join(dirname(path), 'keep.txt')
+  await writeFile(unknown, 'keep')
+  await assert.rejects(f.replay.dispose(), { code: 'HOST_ENVIRONMENT_FILE_CHANGED' })
+  assert.equal(await readFile(unknown, 'utf8'), 'keep')
+  assert.match(await readFile(path, 'utf8'), /VALUE=private/)
+  await rm(unknown)
+  await f.replay.dispose()
+})
+
+test('concurrent replay disposal shares cleanup without racing owned deletions', async t => {
+  const f = await fixture(t)
+  await writeFile(f.path(0), 'export VALUE=private\n')
+  f.replay.admit(f.sessions.get('session'), 'activation', f.plan)
+  await f.replay.configure('/bin/bash'); await f.replay.environment(f.sessions.get('session'))
+  await Promise.all([f.replay.dispose(), f.replay.dispose()])
 })

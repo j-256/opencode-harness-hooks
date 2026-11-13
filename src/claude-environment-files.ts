@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
 import type { Stats } from 'node:fs'
-import { link, lstat, mkdir, open, unlink } from 'node:fs/promises'
+import { link, lstat, mkdir, open, readdir, rmdir, unlink } from 'node:fs/promises'
 import { isAbsolute, join } from 'node:path'
 import type { RegistrationContext } from './host-services.js'
 import type { LoadedSource, Registration } from './types.js'
@@ -15,6 +15,8 @@ const MAX_MANIFEST_BYTES = 1024
 const PRIVATE_DIRECTORY_MODE = 0o700
 const PRIVATE_FILE_MODE = 0o600
 const MANIFEST_VERSION = 2
+const MAX_SESSIONS = 1024
+const HOOK_FILE = /^sessionstart-hook-(0|[1-9]\d*)\.sh$/
 
 interface Options {
   readonly directory: string
@@ -61,7 +63,7 @@ async function validateHookFile(path: string): Promise<void> {
   if (info && (!info.isFile() || !owned(info) || info.nlink !== 1)) fail('ENVIRONMENT_FILE_UNSAFE')
 }
 
-async function validateManifest(path: string, expected: string): Promise<void> {
+async function validateManifest(path: string, expected?: string): Promise<Stats> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch(error => {
     if (errno(error, 'ELOOP')) fail('ENVIRONMENT_FILE_UNSAFE')
     throw error
@@ -77,7 +79,16 @@ async function validateManifest(path: string, expected: string): Promise<void> {
       if (bytesRead === 0) break
       length += bytesRead
     }
-    if (!buffer.subarray(0, length).equals(Buffer.from(expected))) fail('ENVIRONMENT_LAYOUT_UNSUPPORTED')
+    const text = buffer.subarray(0, length).toString('utf8')
+    if (expected !== undefined) { if (!Buffer.from(text).equals(Buffer.from(expected))) fail('ENVIRONMENT_LAYOUT_UNSUPPORTED') }
+    else {
+      let manifest
+      try { manifest = JSON.parse(text) } catch { fail('ENVIRONMENT_LAYOUT_UNSUPPORTED') }
+      if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest) || Object.keys(manifest).sort().join(',') !== 'layout,version' || manifest.version !== MANIFEST_VERSION || typeof manifest.layout !== 'string' || !/^[a-f0-9]{64}$/.test(manifest.layout) || info.nlink !== 1) fail('ENVIRONMENT_LAYOUT_UNSUPPORTED')
+    }
+    const after = await file.stat()
+    if (after.size !== length || after.size !== info.size || after.mtimeMs !== info.mtimeMs || after.ctimeMs !== info.ctimeMs) fail('ENVIRONMENT_FILE_UNSAFE')
+    return info
   } finally { await file.close() }
 }
 
@@ -101,6 +112,10 @@ async function reserveManifest(directory: string, text: string, signal?: AbortSi
 }
 
 export class ClaudeEnvironmentFiles {
+  private readonly serial = new Map<string, Promise<unknown>>()
+  private readonly deleted = new Set<string>()
+  private readonly directories = new Map<string, Stats>()
+  private rootOwnership?: Stats
   private readonly directory: string
   private readonly limit: number
   private readonly revision: string
@@ -133,10 +148,19 @@ export class ClaudeEnvironmentFiles {
     this.limit = limit
   }
 
-  async prepare(sessionID: string, registrations: readonly Registration[], signal?: AbortSignal): Promise<ClaudeEnvironmentPlan> {
+  prepare(sessionID: string, registrations: readonly Registration[], signal?: AbortSignal): Promise<ClaudeEnvironmentPlan> {
+    try {
+      if (!Array.isArray(registrations) || registrations.length > this.limit) fail('ENVIRONMENT_REGISTRATION_LIMIT')
+      const selected = structuredClone(registrations)
+      return this.schedule(sessionID, () => this.prepareSession(sessionID, selected, signal))
+    } catch (error) { return Promise.reject(error instanceof ClaudeEnvironmentError ? error : new ClaudeEnvironmentError('ENVIRONMENT_REGISTRATION_INVALID')) }
+  }
+
+  private async prepareSession(sessionID: string, registrations: readonly Registration[], signal?: AbortSignal): Promise<ClaudeEnvironmentPlan> {
     try {
       if (process.platform === 'win32') fail('ENVIRONMENT_PLATFORM_UNSUPPORTED')
       if (!validID(sessionID)) fail('ENVIRONMENT_SESSION_INVALID')
+      if (this.deleted.has(sessionID)) fail('ENVIRONMENT_SESSION_DELETED')
       if (registrations.length > this.limit) fail('ENVIRONMENT_REGISTRATION_LIMIT')
       const ids = new Set<string>()
       let previousOrder = -1
@@ -161,8 +185,10 @@ export class ClaudeEnvironmentFiles {
       if (!files.length) return plan
       const manifest = JSON.stringify({ version: MANIFEST_VERSION, layout: this.revision }) + '\n'
       await privateDirectory(this.directory, true)
+      await this.verifyDirectory(this.directory)
       cancelled(signal)
       await privateDirectory(directory)
+      await this.verifyDirectory(directory, sessionID)
       await reserveManifest(directory, manifest, signal)
       for (const file of files) await validateHookFile(file.path)
       cancelled(signal)
@@ -171,5 +197,53 @@ export class ClaudeEnvironmentFiles {
       if (error instanceof ClaudeEnvironmentError) throw error
       fail('ENVIRONMENT_STORAGE_FAILED')
     }
+  }
+
+  removeSession(sessionID: string): Promise<void> {
+    if (!validID(sessionID)) return Promise.reject(new ClaudeEnvironmentError('ENVIRONMENT_SESSION_INVALID'))
+    if (!this.deleted.has(sessionID) && this.deleted.size >= MAX_SESSIONS) return Promise.reject(new ClaudeEnvironmentError('ENVIRONMENT_SNAPSHOT_LIMIT'))
+    this.deleted.add(sessionID)
+    return this.schedule(sessionID, async () => {
+      try {
+        const directory = join(this.directory, hash(sessionID))
+        if (!await lstat(this.directory).catch(error => { if (errno(error, 'ENOENT')) return undefined; throw error })) return
+        await this.verifyDirectory(this.directory)
+        if (!await lstat(directory).catch(error => { if (errno(error, 'ENOENT')) return undefined; throw error })) return
+        await this.verifyDirectory(directory, sessionID)
+        const names = await readdir(directory)
+        if (names.length > DEFAULT_REGISTRATION_LIMIT + 1 || names.some(name => name !== 'manifest.json' && (!HOOK_FILE.test(name) || Number(HOOK_FILE.exec(name)![1]) >= DEFAULT_REGISTRATION_LIMIT))) fail('ENVIRONMENT_LAYOUT_UNSUPPORTED')
+        if (names.length && !names.includes('manifest.json')) fail('ENVIRONMENT_LAYOUT_UNSUPPORTED')
+        const entries: { path: string; stat: Stats }[] = []
+        for (const name of names.filter(name => name !== 'manifest.json')) {
+          const path = join(directory, name), stat = await lstat(path)
+          if (!stat.isFile() || !owned(stat) || stat.nlink !== 1 || (stat.mode & 0o022) !== 0) fail('ENVIRONMENT_FILE_UNSAFE')
+          entries.push({ path, stat })
+        }
+        if (names.includes('manifest.json')) entries.push({ path: join(directory, 'manifest.json'), stat: await validateManifest(join(directory, 'manifest.json')) })
+        for (const entry of entries) {
+          await this.verifyDirectory(this.directory); await this.verifyDirectory(directory, sessionID)
+          const stat = await lstat(entry.path)
+          if (!stat.isFile() || stat.dev !== entry.stat.dev || stat.ino !== entry.stat.ino || stat.nlink !== 1 || !owned(stat) || stat.size !== entry.stat.size || stat.mtimeMs !== entry.stat.mtimeMs) fail('ENVIRONMENT_FILE_UNSAFE')
+          await unlink(entry.path)
+        }
+        await this.verifyDirectory(this.directory); await this.verifyDirectory(directory, sessionID)
+        await rmdir(directory); this.directories.delete(sessionID)
+      } catch (error) { if (error instanceof ClaudeEnvironmentError) throw error; fail('ENVIRONMENT_STORAGE_FAILED') }
+    })
+  }
+
+  private async verifyDirectory(path: string, sessionID?: string): Promise<void> {
+    const stat = await lstat(path), previous = sessionID === undefined ? this.rootOwnership : this.directories.get(sessionID)
+    if (!stat.isDirectory() || !owned(stat) || (stat.mode & 0o077) !== 0 || previous && (previous.dev !== stat.dev || previous.ino !== stat.ino)) fail('ENVIRONMENT_DIRECTORY_UNSAFE')
+    if (sessionID === undefined) this.rootOwnership ??= stat
+    else { if (!previous && this.directories.size >= MAX_SESSIONS) fail('ENVIRONMENT_SNAPSHOT_LIMIT'); this.directories.set(sessionID, stat) }
+  }
+  private schedule<T>(sessionID: string, operation: () => Promise<T>): Promise<T> {
+    if (!validID(sessionID)) return Promise.reject(new ClaudeEnvironmentError('ENVIRONMENT_SESSION_INVALID'))
+    if (this.serial.size >= MAX_SESSIONS && !this.serial.has(sessionID)) return Promise.reject(new ClaudeEnvironmentError('ENVIRONMENT_SNAPSHOT_LIMIT'))
+    const pending = (this.serial.get(sessionID) ?? Promise.resolve()).catch(() => {}).then(operation)
+    this.serial.set(sessionID, pending)
+    void pending.finally(() => { if (this.serial.get(sessionID) === pending) this.serial.delete(sessionID) }).catch(() => {})
+    return pending
   }
 }
