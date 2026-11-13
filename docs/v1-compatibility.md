@@ -80,4 +80,4 @@ The following table inventories every event in the pinned source catalogs. `Part
 
 Use focused implementation checks and the controlled native/host cases for the supported behavior being changed. Preserve the inspector's exclusions and unsupported diagnostics, run the documented package and installed-host checks, and keep the gap register synchronized with behavior changes. A passing bounded profile does not justify changing full-equivalence flags or promoting untested catalog rows.
 
-Configuration migration still needs its own intended-source review and project trial. The profile's compatibility boundary does not authorize editing native hooks, live settings, installing host patches, or publication.
+Configuration migration still needs its own [intended-source review and isolated project trial](migration-trial.md). The profile's compatibility boundary does not authorize editing native hooks, live settings, installing host patches, or publication.

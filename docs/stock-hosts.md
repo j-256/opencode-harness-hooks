@@ -76,6 +76,8 @@ Selected enabled Stop registrations fail with `HOST_STOP_UNSUPPORTED`. The messa
 
 The explicit core idle prototype and isolated host-patch experiments are separate from this stock-host contract. Full V2 Stop parity remains required for the original complete compatibility objective.
 
+Before replacing an existing policy plugin, follow the [isolated migration trial](migration-trial.md) procedure. Source-specific exceptions, file-tool translations and lifecycle ownership require their own comparisons even when the bounded package controls pass.
+
 ## Reproduce the default-package subset
 
 From a source checkout, the package probe uses isolated HOME/config/state, temporary Git repositories and a loopback provider. It installs no host and changes no live settings. Build first and supply the pinned stock binaries:
