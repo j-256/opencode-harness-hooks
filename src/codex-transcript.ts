@@ -11,6 +11,8 @@ import type { HostToolEvent } from './tool-types.js'
 import type { SessionSnapshot } from './sessions.js'
 import type { JsonValue } from './types.js'
 import type { SessionStartEvent } from './session-start.js'
+import { OriginalInputs } from './original-inputs.js'
+import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
 
 const MAX_BYTES = 32 * 1024 * 1024
 const MAX_CALLS = 20000
@@ -35,8 +37,7 @@ export interface CodexTranscriptService {
   dispose(): Promise<void>
 }
 interface Options { readonly host: HostVersion; readonly directory: string; readonly temporaryParent?: string; readonly history: (event: HostToolEvent | SessionStartEvent, signal: AbortSignal) => Promise<CodexTranscriptHistory> }
-interface Original { readonly tool: string; readonly input: Readonly<Record<string, JsonValue>> }
-interface Published { readonly path: string; readonly fingerprints: ReadonlyMap<string, string>; readonly layout: readonly string[] }
+interface Published { readonly path?: string; readonly created: string; readonly fingerprints: ReadonlyMap<string, string>; readonly layout: readonly string[] }
 interface Startup { readonly contexts: readonly string[]; readonly created: number; messageID?: string }
 interface Startups { readonly signal: AbortSignal; readonly batches: Map<string, Startup>; readonly cleanup: () => void; bytes: number }
 function fail(code: string): never { throw new HostHookError(code, code === 'CODEX_TRANSCRIPT_CANCELLED' ? 'cancelled' : 'unsupported') }
@@ -47,7 +48,6 @@ function identity(...parts: string[]): string {
   const hex = bytes.toString('hex')
   return [hex.slice(0, 8), hex.slice(8, 12), hex.slice(12, 16), hex.slice(16, 20), hex.slice(20)].join('-')
 }
-function key(session: string, turn: string, call: string): string { return JSON.stringify([session, turn, call]) }
 function iso(value: number): string { if (!Number.isFinite(value) || Number.isNaN(new Date(value).getTime())) fail('CODEX_TRANSCRIPT_HISTORY_INVALID'); return new Date(value).toISOString() }
 function layout(history: CodexTranscriptHistory): readonly string[] {
   return history.messages.flatMap(message => [JSON.stringify(['message', message.id, message.turnID, message.role, message.created]), ...message.content.map((part, index) => JSON.stringify(typeof part === 'string' ? ['text', message.id, index, part] : ['tool', message.id, index, part.id, part.name]))])
@@ -67,12 +67,11 @@ function frameKeys(frames: readonly CodexRolloutHistoryRecord[]): readonly strin
 export class CodexTranscript implements CodexTranscriptService {
   private readonly options: Options
   private readonly rollout: CodexRollout
-  private readonly originals = new Map<string, Original>()
+  private readonly originals = new OriginalInputs({ maxCalls: MAX_CALLS, maxBytes: MAX_BYTES, limitCode: 'CODEX_TRANSCRIPT_INPUT_LIMIT', bytesCode: 'CODEX_TRANSCRIPT_INPUT_LIMIT', reusedCode: 'CODEX_TRANSCRIPT_CALL_ID_REUSED' })
   private readonly published = new Map<string, Published>()
   private readonly starts = new Map<string, Startups>()
   private readonly serial = new Map<string, Promise<unknown>>()
   private readonly lifetime = new AbortController()
-  private originalBytes = 0
   private startupBytes = 0
   private startupBatches = 0
   private pending = 0
@@ -88,14 +87,7 @@ export class CodexTranscript implements CodexTranscriptService {
     this.owner(event, session)
     if (event.event !== 'PreToolUse') return
     if (!session.turnID) fail('CODEX_TRANSCRIPT_TURN_UNAVAILABLE')
-    const id = key(event.sessionID, session.turnID, event.callID), value = copy({ tool: event.tool, input: event.toolInput })
-    const previous = this.originals.get(id)
-    if (previous && JSON.stringify(previous) !== JSON.stringify(value)) fail('CODEX_TRANSCRIPT_CALL_ID_REUSED')
-    if (!previous) {
-      const bytes = Buffer.byteLength(JSON.stringify(value)) + Buffer.byteLength(id)
-      if (this.originals.size >= MAX_CALLS || this.originalBytes + bytes > MAX_BYTES) fail('CODEX_TRANSCRIPT_INPUT_LIMIT')
-      this.originals.set(id, value); this.originalBytes += bytes
-    }
+    this.originals.remember(session, event.callID, event.tool, event.toolInput)
   }
 
   prepare(inputEvent: HostToolEvent, inputSession: SessionSnapshot, parent: AbortSignal): Promise<CodexTranscriptView> {
@@ -148,13 +140,60 @@ export class CodexTranscript implements CodexTranscriptService {
     const contexts = Object.freeze([...input]), bytes = Buffer.byteLength(JSON.stringify([session.sessionID, activationID, contexts]))
     if (this.startupBytes + bytes > MAX_BYTES || this.startupBatches >= MAX_MESSAGES || !state && this.starts.size >= MAX_MESSAGES) fail('CODEX_TRANSCRIPT_INPUT_LIMIT')
     if (!state) {
-      const cleanup = () => { const current = this.starts.get(session.sessionID); if (!current) return; this.startupBytes -= current.bytes; this.startupBatches -= current.batches.size; this.starts.delete(session.sessionID); session.signal.removeEventListener('abort', cleanup) }
-      state = { signal: session.signal, batches: new Map(), cleanup, bytes: 0 }
-      this.starts.set(session.sessionID, state)
-      session.signal.addEventListener('abort', cleanup, { once: true })
+      state = this.createStartups(session)
     }
     state.batches.set(activationID, { contexts, created: Date.now() }); state.bytes += bytes
     this.startupBytes += bytes; this.startupBatches++
+  }
+
+  snapshotV1(sessionID: string) {
+    if (this.options.host !== 'v1') fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
+    const published = this.published.get(sessionID)
+    return snapshotCopy({ kind: 'codex-transcript-v1', version: SESSION_SNAPSHOT_VERSION, sessionID, directory: this.options.directory, originals: this.originals.snapshot(sessionID), starts: [...(this.starts.get(sessionID)?.batches ?? [])].map(([activationID, batch]) => ({ activationID, contexts: batch.contexts, created: batch.created, messageID: batch.messageID ?? null })), published: published ? { created: published.created, fingerprints: [...published.fingerprints].map(([id, digest]) => ({ id, digest })), layout: published.layout } : null })
+  }
+
+  restoreV1(session: SessionSnapshot, value: unknown): () => void {
+    if (this.options.host !== 'v1') fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
+    if (this.lifetime.signal.aborted) fail('CODEX_TRANSCRIPT_CANCELLED')
+    const input = sessionSnapshot('codex-transcript-v1', value, session, ['directory', 'originals', 'starts', 'published'])
+    if (input.directory !== this.options.directory) fail('SESSION_SNAPSHOT_OWNER_MISMATCH')
+    if (this.starts.has(session.sessionID) || this.published.has(session.sessionID) || this.serial.has(session.sessionID)) fail('SESSION_SNAPSHOT_STATE_CONFLICT')
+    if (!Array.isArray(input.starts)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
+    const starts = new Map<string, Startup>(); let bytes = 0
+    for (const raw of input.starts) {
+      const row = snapshotObject(raw, ['activationID', 'contexts', 'created', 'messageID'])
+      if (!snapshotID(row.activationID) || starts.has(row.activationID) || !Array.isArray(row.contexts) || !row.contexts.every(text => typeof text === 'string') || typeof row.created !== 'number' || !Number.isFinite(row.created) || Number.isNaN(new Date(row.created).getTime()) || row.messageID !== null && !snapshotID(row.messageID)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
+      starts.set(row.activationID, { contexts: row.contexts as string[], created: row.created, ...(row.messageID === null ? {} : { messageID: row.messageID }) })
+      bytes += Buffer.byteLength(JSON.stringify([session.sessionID, row.activationID, row.contexts]))
+    }
+    if (this.startupBytes + bytes > MAX_BYTES || this.startupBatches + starts.size > MAX_MESSAGES || starts.size && this.starts.size >= MAX_MESSAGES) fail('CODEX_TRANSCRIPT_INPUT_LIMIT')
+    let published: Published | undefined
+    if (input.published !== null) {
+      const row = snapshotObject(input.published, ['created', 'fingerprints', 'layout']), fingerprints = new Map<string, string>()
+      if (typeof row.created !== 'string' || !Number.isFinite(Date.parse(row.created)) || new Date(row.created).toISOString() !== row.created || !Array.isArray(row.layout) || !row.layout.every(item => typeof item === 'string') || !Array.isArray(row.fingerprints)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
+      for (const raw of row.fingerprints) {
+        const value = snapshotObject(raw, ['id', 'digest'])
+        if (typeof value.id !== 'string' || !value.id || fingerprints.has(value.id) || typeof value.digest !== 'string' || !/^[a-f0-9]{64}$/.test(value.digest)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
+        fingerprints.set(value.id, value.digest)
+      }
+      published = { created: row.created, fingerprints, layout: row.layout as string[] }
+    }
+    const undo = this.originals.restore(session, input.originals)
+    let state: Startups | undefined
+    if (starts.size) {
+      state = this.createStartups(session)
+      for (const [id, batch] of starts) state.batches.set(id, batch)
+      state.bytes = bytes; this.startupBytes += bytes; this.startupBatches += starts.size
+    }
+    if (published) this.published.set(session.sessionID, published)
+    return () => { undo(); if (state && this.starts.get(session.sessionID) === state) state.cleanup(); if (this.published.get(session.sessionID) === published) this.published.delete(session.sessionID) }
+  }
+
+  private createStartups(session: SessionSnapshot): Startups {
+    const cleanup = () => { const current = this.starts.get(session.sessionID); if (!current) return; this.startupBytes -= current.bytes; this.startupBatches -= current.batches.size; this.starts.delete(session.sessionID); session.signal.removeEventListener('abort', cleanup) }
+    const state: Startups = { signal: session.signal, batches: new Map(), cleanup, bytes: 0 }
+    this.starts.set(session.sessionID, state); session.signal.addEventListener('abort', cleanup, { once: true })
+    return state
   }
 
   bindStart(session: SessionSnapshot, activationID: string, messageID: string): void {
@@ -189,21 +228,22 @@ export class CodexTranscript implements CodexTranscriptService {
     this.starts.clear(); this.startupBytes = 0; this.startupBatches = 0
     this.disposing ??= (async () => {
       await Promise.allSettled([...this.serial.values()])
-      try { await this.rollout.dispose() } finally { this.originals.clear(); this.published.clear(); this.originalBytes = 0 }
+      try { await this.rollout.dispose() } finally { this.originals.dispose(); this.published.clear() }
     })().finally(() => { this.disposing = undefined })
     return this.disposing
   }
 
-  inspect() { return Object.freeze({ ...this.rollout.inspect(), pendingTranscripts: this.pending, originalCalls: this.originals.size, originalBytes: this.originalBytes, startupBatches: this.startupBatches, startupBytes: this.startupBytes, startupBindings: [...this.starts.values()].reduce((count, state) => count + [...state.batches.values()].filter(batch => batch.messageID !== undefined).length, 0) }) }
+  inspect() { return Object.freeze({ ...this.rollout.inspect(), pendingTranscripts: this.pending, originalCalls: this.originals.inspect().calls, originalBytes: this.originals.inspect().bytes, startupBatches: this.startupBatches, startupBytes: this.startupBytes, startupBindings: [...this.starts.values()].reduce((count, state) => count + [...state.batches.values()].filter(batch => batch.messageID !== undefined).length, 0) }) }
 
   private async publish(hostSessionID: string, history: CodexTranscriptHistory, frames: readonly CodexRolloutHistoryRecord[], signal: AbortSignal): Promise<Omit<CodexTranscriptView, 'turnID'>> {
     const keys = frameKeys(frames), structure = layout(history)
     const fingerprints = new Map(frames.map((row, index) => [keys[index]!, createHash('sha256').update(JSON.stringify(row)).digest('hex')]))
     const published = this.published.get(hostSessionID), sessionID = identity(this.options.directory, hostSessionID)
     if (keys.length !== fingerprints.size || published && (structure.length < published.layout.length || published.layout.some((value, index) => value !== structure[index]) || [...published.fingerprints].some(([id, value]) => value !== fingerprints.get(id)))) fail('CODEX_TRANSCRIPT_HISTORY_RESET_UNVERIFIED')
-    const path = published ? await this.rollout.appendHistory(sessionID, frames.filter((_row, index) => !published.fingerprints.has(keys[index]!)), signal) : await this.rollout.create({ metadata: { id: sessionID, session_id: sessionID, timestamp: frames[0]?.timestamp ?? new Date().toISOString(), cwd: this.options.directory, originator: 'opencode-harness-hooks', cli_version: HOST_VERSIONS[this.options.host], source: 'unknown', history_mode: 'legacy', thread_source: 'user' }, history: frames }, signal)
+    const created = published?.created ?? frames[0]?.timestamp ?? new Date().toISOString()
+    const path = published?.path ? await this.rollout.appendHistory(sessionID, frames.filter((_row, index) => !published.fingerprints.has(keys[index]!)), signal) : await this.rollout.create({ metadata: { id: sessionID, session_id: sessionID, timestamp: created, cwd: this.options.directory, originator: 'opencode-harness-hooks', cli_version: HOST_VERSIONS[this.options.host], source: 'unknown', history_mode: 'legacy', thread_source: 'user' }, history: frames }, signal)
     if (signal.aborted) fail('CODEX_TRANSCRIPT_CANCELLED')
-    this.published.set(hostSessionID, { path, fingerprints, layout: structure })
+    this.published.set(hostSessionID, { path, created, fingerprints, layout: structure })
     return { sessionID, transcriptPath: path }
   }
 
@@ -241,7 +281,7 @@ export class CodexTranscript implements CodexTranscriptService {
       for (const [index, part] of message.content.entries()) {
         if (typeof part === 'string') { if (part) appendText(part, index); continue }
         if (!part.id || !part.name || !['pending', 'running', 'completed', 'error'].includes(part.status)) fail('CODEX_TRANSCRIPT_HISTORY_INVALID')
-        const original = this.originals.get(key(event.sessionID, message.turnID, part.id))
+        const original = this.originals.get(event.sessionID, message.turnID, part.id)
         if (!original && (!('callID' in event) || part.id !== event.callID) && message.turnID === session.turnID && ['pending', 'running'].includes(part.status)) continue
         if (!original || original.tool !== part.name) fail('CODEX_TRANSCRIPT_ORIGINAL_INPUT_UNAVAILABLE')
         const shell = SHELL_TOOLS.has(original.tool)

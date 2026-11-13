@@ -132,7 +132,7 @@ export class StartupRecords {
     return snapshotCopy({ kind: SNAPSHOT_KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, batches: [...(state?.batches ?? [])].map(([activationID, batch]) => ({ batch, binding: state?.bindings.get(activationID) ?? null, failures: state?.failureBatches.get(activationID) ?? [] })) })
   }
 
-  restore(session: SessionSnapshot, value: unknown): void {
+  restore(session: SessionSnapshot, value: unknown): () => void {
     const input = sessionSnapshot(SNAPSHOT_KIND, value, session, ['batches'])
     if (this.disposed) fail('STARTUP_CANCELLED')
     if (this.states.has(session.sessionID)) throw new HostHookError('SESSION_SNAPSHOT_STATE_CONFLICT', 'unsupported')
@@ -155,12 +155,13 @@ export class StartupRecords {
       failures.set(batch.activationID, [...row.failures] as string[])
     }
     if (session.signal.aborted) throw new HostHookError('SESSION_SNAPSHOT_CANCELLED', 'cancelled')
-    if (!batches.size) return
+    if (!batches.size) return () => {}
     const state = this.createState(session)
     for (const [id, batch] of batches) state.batches.set(id, batch)
     for (const [id, binding] of bindings) state.bindings.set(id, binding)
     for (const [id, hashes] of failures) { state.failureBatches.set(id, hashes); for (const hash of hashes) state.failures.add(hash) }
     state.bytes = bytes; this.bytes += bytes; this.batches += batches.size
+    return () => { if (this.states.get(session.sessionID) === state) state.cleanup() }
   }
 
   pending(sessionID: string): readonly StartupBatch[] {

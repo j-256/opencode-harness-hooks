@@ -21,6 +21,8 @@ import type { SessionStartDelivery, SessionStartEvent } from './session-start.js
 import type { StopDelivery, StopEvent } from './stop.js'
 import { StopRecords } from './stop-records.js'
 import type { StopModelBlocks, StopContinuationOptions, StopInterruptionReceipt, StopInterruptedModel, StopAbortedAssistant } from './stop-records.js'
+import { OriginalInputs } from './original-inputs.js'
+import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy } from './session-snapshot.js'
 
 const HISTORY_MS = 5000
 const MAX_MESSAGES = 10000
@@ -86,7 +88,6 @@ function object(value: unknown): Record<string, unknown> { return record(value) 
 function string(value: unknown): string { return typeof value === 'string' ? value : fail('TRANSCRIPT_SCHEMA_INVALID') }
 function array(value: unknown): readonly unknown[] { return Array.isArray(value) ? value : fail('TRANSCRIPT_SCHEMA_INVALID') }
 function millis(value: unknown): number { return typeof value === 'number' && Number.isFinite(value) && !Number.isNaN(new Date(value).getTime()) ? value : fail('TRANSCRIPT_SCHEMA_INVALID') }
-function key(sessionID: string, turnID: string, callID: string): string { return JSON.stringify([sessionID, turnID, callID]) }
 function completionSignature(message: Message): string { return createHash('sha256').update(JSON.stringify(message)).digest('hex') }
 function uuid(value: string): string {
   const bytes = createHash('sha1').update(TRANSCRIPT_NAMESPACE).update(value).digest().subarray(0, 16)
@@ -158,7 +159,7 @@ function messages(host: HostVersion, sessionID: string, input: readonly unknown[
 
 export class ClaudeTranscript implements TranscriptService {
   private readonly options: Options
-  private readonly originals = new Map<string, Readonly<Record<string, JsonValue>>>()
+  private readonly originals = new OriginalInputs({ maxCalls: MAX_CALLS, maxBytes: MAX_ORIGINAL_BYTES, limitCode: 'TRANSCRIPT_CALL_LIMIT', bytesCode: 'TRANSCRIPT_MEMORY_LIMIT', reusedCode: 'TRANSCRIPT_CALL_ID_REUSED' })
   private readonly serial = new Map<string, Promise<unknown>>()
   private readonly published = new Set<string>()
   private readonly prompts = new PromptAttachments()
@@ -169,7 +170,6 @@ export class ClaudeTranscript implements TranscriptService {
   private directory: Promise<string> | undefined
   private directoryPath: string | undefined
   private disposing: Promise<void> | undefined
-  private originalBytes = 0
   private pendingCount = 0
 
   constructor(options: Options) {
@@ -197,6 +197,31 @@ export class ClaudeTranscript implements TranscriptService {
   bindStart(session: SessionSnapshot, activationID: string, messageID: string): void { this.starts.bind(session, activationID, messageID) }
   unbindStart(session: SessionSnapshot, activationID: string, messageID: string): void { this.starts.unbind(session, activationID, messageID) }
   revokeStart(session: SessionSnapshot, activationID: string): void { this.starts.revoke(session, activationID) }
+  pendingStarts(sessionID: string): readonly StartupBatch[] { return this.starts.pending(sessionID) }
+
+  snapshotV1(sessionID: string) {
+    if (this.options.host !== 'v1') fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
+    return snapshotCopy({ kind: 'claude-transcript-v1', version: SESSION_SNAPSHOT_VERSION, sessionID, directory: this.options.directory, originals: this.originals.snapshot(sessionID), prompts: this.prompts.snapshot(sessionID), starts: this.starts.snapshot(sessionID), models: this.models.snapshot(sessionID), published: this.published.has(sessionID) })
+  }
+
+  restoreV1(session: SessionSnapshot, value: unknown): () => void {
+    if (this.options.host !== 'v1') fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
+    if (this.lifetime.signal.aborted) fail('TRANSCRIPT_CANCELLED')
+    const input = sessionSnapshot('claude-transcript-v1', value, session, ['directory', 'originals', 'prompts', 'starts', 'models', 'published'])
+    if (input.directory !== this.options.directory) fail('SESSION_SNAPSHOT_OWNER_MISMATCH')
+    if (typeof input.published !== 'boolean') fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
+    if (this.published.has(session.sessionID) || this.serial.has(session.sessionID)) fail('SESSION_SNAPSHOT_STATE_CONFLICT')
+    const undo: (() => void)[] = []
+    const rollback = () => { for (const action of [...undo].reverse()) action() }
+    try {
+      undo.push(this.originals.restore(session, input.originals))
+      undo.push(this.prompts.restore(session, input.prompts))
+      undo.push(this.starts.restore(session, input.starts))
+      undo.push(this.models.restore(session, input.models))
+      if (input.published) { this.published.add(session.sessionID); undo.push(() => { this.published.delete(session.sessionID) }) }
+      return rollback
+    } catch (error) { rollback(); throw error }
+  }
 
   admitStop(delivery: StopDelivery): readonly string[] {
     this.stopHost(delivery)
@@ -243,15 +268,7 @@ export class ClaudeTranscript implements TranscriptService {
     if (event.event !== 'PreToolUse') return
     if (this.lifetime.signal.aborted) fail('TRANSCRIPT_CANCELLED')
     if (!session.turnID) return
-    const id = key(event.sessionID, session.turnID, event.callID)
-    const input = snapshot(nativeToolInput(event.host, event.tool, event.toolInput))
-    const previous = this.originals.get(id)
-    if (previous && JSON.stringify(previous) !== JSON.stringify(input)) fail('TRANSCRIPT_CALL_ID_REUSED')
-    if (!previous && this.originals.size >= MAX_CALLS) fail('TRANSCRIPT_CALL_LIMIT')
-    const bytes = previous ? 0 : Buffer.byteLength(JSON.stringify(input)) + Buffer.byteLength(id)
-    if (this.originalBytes + bytes > MAX_ORIGINAL_BYTES) fail('TRANSCRIPT_MEMORY_LIMIT')
-    this.originalBytes += bytes
-    this.originals.set(id, input)
+    this.originals.remember(session, event.callID, event.tool, nativeToolInput(event.host, event.tool, event.toolInput))
   }
 
   prepare(event: TranscriptEvent, session: SessionSnapshot, parent: AbortSignal): Promise<string> {
@@ -319,15 +336,14 @@ export class ClaudeTranscript implements TranscriptService {
       await Promise.allSettled([...this.serial.values()])
       try { if (this.directoryPath) await rm(this.directoryPath, { recursive: true, force: true }) } catch { throw new HostHookError('TRANSCRIPT_DISPOSE_FAILED', 'failed') }
     })().finally(() => {
-      this.originals.clear()
+      this.originals.dispose()
       this.published.clear()
-      this.originalBytes = 0
       this.disposing = undefined
     })
     return this.disposing
   }
 
-  inspect() { return Object.freeze({ created: this.directoryPath !== undefined, disposed: this.lifetime.signal.aborted, originals: this.originals.size, originalBytes: this.originalBytes, pending: this.pendingCount, ...this.prompts.inspect(), ...this.stops.inspect(), ...this.models.inspect() }) }
+  inspect() { return Object.freeze({ created: this.directoryPath !== undefined, disposed: this.lifetime.signal.aborted, originals: this.originals.inspect().calls, originalBytes: this.originals.inspect().bytes, pending: this.pendingCount, ...this.prompts.inspect(), ...this.stops.inspect(), ...this.models.inspect() }) }
 
   private project(event: TranscriptEvent, history: readonly Message[], sidechain: boolean, rawContinuations: ReadonlySet<string>): readonly Record<string, JsonValue>[] {
     const rows: Record<string, JsonValue>[] = []
@@ -365,11 +381,11 @@ export class ClaudeTranscript implements TranscriptService {
       const content: JsonValue[] = []
       for (const part of entry.content) {
         if (typeof part === 'string') { content.push({ type: 'text', text: part }); continue }
-        const original = this.originals.get(key(event.sessionID, entry.turnID, part.id))
-        if (!original) fail('TRANSCRIPT_ORIGINAL_INPUT_UNAVAILABLE')
+        const original = this.originals.get(event.sessionID, entry.turnID, part.id)
+        if (!original || original.tool !== part.name) fail('TRANSCRIPT_ORIGINAL_INPUT_UNAVAILABLE')
         const isCurrent = (event.event === 'PreToolUse' || event.event === 'PostToolUse' || event.event === 'PostToolUseFailure') && part.id === event.callID && entry.turnID === currentTurnID
         if (isCurrent) current = true
-        content.push({ type: 'tool_use', id: part.id, name: toolName(event.host, part.name), input: original })
+        content.push({ type: 'tool_use', id: part.id, name: toolName(event.host, part.name), input: original.input })
         if (isCurrent || part.state.status === 'pending' || part.state.status === 'running') continue
         const error = part.state.status === 'error'
         let output: JsonValue

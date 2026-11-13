@@ -7,6 +7,8 @@ import type { SessionSnapshot } from './sessions.js'
 import type { StopModelBlocks } from './stop-records.js'
 import type { StartupBatch } from './startup-records.js'
 import { CLAUDE_USER_INTERRUPTION } from './stop-records.js'
+import { z } from 'zod'
+import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
 
 export const PROMPT_REQUEST_HEADER = 'x-opencode-harness-hooks-request'
 const MAX_ENTRIES = 10000
@@ -15,6 +17,7 @@ const MAX_BYTES = 32 * 1024 * 1024
 const MAX_TICKETS = 1024
 const MAX_VARIANTS = 128
 const READ_MS = 5000
+const contextSchema = z.object({ sourceID: z.string().refine(snapshotID), sourceDigest: z.string().min(1), registrationID: z.string().refine(snapshotID), dialect: z.enum(['claude-code', 'codex']), configuredOrder: z.number().int().nonnegative(), completionOrder: z.number().int().nonnegative(), action: z.object({ kind: z.literal('context'), placement: z.literal('model'), text: z.string(), channel: z.enum(['stdout', 'additionalContext', 'systemMessage']).optional() }).strict() }).strict().refine(row => row.dialect !== 'claude-code' || row.action.channel === 'stdout' || row.action.channel === 'additionalContext')
 type Context = AttributedAction<Extract<HookAction, { kind: 'context' }>>
 export type PromptProtocol = 'openai' | 'anthropic'
 export interface PromptLayout { readonly id: string; readonly text: readonly string[] }
@@ -65,6 +68,42 @@ export class PromptContexts {
   private prompts = 0
   private continuations = 0
   private bytes = 0
+
+  snapshotV1(sessionID: string) {
+    const state = this.sessions.get(sessionID)
+    if (state && (state.reservations.size || state.retired.size || [...state.entries.values()].some(row => row.kind !== 'prompt' || row.projection || row.history))) fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
+    return snapshotCopy({ kind: 'prompt-contexts-v1', version: SESSION_SNAPSHOT_VERSION, sessionID, entries: [...(state?.entries ?? [])].map(([messageID, entry]) => ({ messageID, text: entry.text, contexts: entry.contexts, startup: entry.startup ?? null })) })
+  }
+
+  restoreV1(session: SessionSnapshot, value: unknown): () => void {
+    const input = sessionSnapshot('prompt-contexts-v1', value, session, ['entries'])
+    if (this.lifetime.signal.aborted) fail('HOST_PROMPT_CANCELLED')
+    if (this.sessions.has(session.sessionID)) fail('SESSION_SNAPSHOT_STATE_CONFLICT')
+    if (!Array.isArray(input.entries)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
+    const entries = new Map<string, Entry>(); let bytes = 0
+    const strings = (value: unknown): value is readonly string[] => Array.isArray(value) && value.every(item => typeof item === 'string')
+    for (const raw of input.entries) {
+      const row = snapshotObject(raw, ['messageID', 'text', 'contexts', 'startup'])
+      if (!snapshotID(row.messageID) || entries.has(row.messageID) || !strings(row.text) || !row.text.length || !Array.isArray(row.contexts)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
+      const parsed = z.array(contextSchema).safeParse(row.contexts)
+      if (!parsed.success) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
+      const contexts = row.contexts as unknown as readonly Context[], text = row.text
+      let startup: StartupBatch['model'] | undefined
+      if (row.startup !== null) {
+        const model = snapshotObject(row.startup, ['claude', 'codex'])
+        if (!strings(model.claude) || !strings(model.codex)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
+        startup = { claude: model.claude, codex: model.codex }
+      }
+      const charge = Buffer.byteLength(JSON.stringify(['prompt', row.messageID, row.messageID, text, contexts, undefined])) + (startup ? Buffer.byteLength(JSON.stringify(startup)) : 0)
+      entries.set(row.messageID, { kind: 'prompt', turnID: row.messageID, turnSignal: AbortSignal.abort(), text, contexts, ...(startup ? { startup } : {}), bytes: charge }); bytes += charge
+    }
+    if (this.prompts + this.continuations + entries.size > MAX_ENTRIES || this.bytes + bytes > MAX_BYTES) fail('HOST_PROMPT_CONTEXT_LIMIT')
+    if (!entries.size) return () => {}
+    const state = this.createState(session)
+    for (const [id, entry] of entries) state.entries.set(id, entry)
+    this.prompts += entries.size; this.bytes += bytes
+    return () => { if (this.sessions.get(session.sessionID) === state) state.cleanup() }
+  }
 
   remember(session: SessionSnapshot, text: readonly string[], contexts: readonly Context[]): void {
     this.retain(session, session.turnID, text, contexts, 'prompt')
@@ -191,24 +230,7 @@ export class PromptContexts {
     this.capacity(state, messageID, bytes)
     const entry = { kind, turnID: session.turnID, turnSignal: session.turnSignal, text: Object.freeze([...text]), contexts: Object.freeze(structuredClone(contexts)), ...(projection ? { projection: Object.freeze([...projection]) } : {}), bytes }
     if (!state) {
-      const cleanup = () => {
-        const previous = this.sessions.get(session.sessionID)
-        if (!previous) return
-        for (const entry of [...previous.entries.values(), ...previous.reservations.values(), ...previous.retired.values()]) {
-          this.bytes -= entry.bytes
-          if (entry.kind === 'prompt') this.prompts--
-          else this.continuations--
-        }
-        this.sessions.delete(session.sessionID)
-        previous.entries.clear()
-        previous.reservations.clear()
-        previous.retired.clear()
-        previous.requests.abort()
-        session.signal.removeEventListener('abort', cleanup)
-      }
-      state = { signal: session.signal, entries: new Map(), reservations: new Map(), retired: new Map(), cleanup, requests: new AbortController() }
-      this.sessions.set(session.sessionID, state)
-      session.signal.addEventListener('abort', cleanup, { once: true })
+      state = this.createState(session)
     }
     this.invalidate(state)
     if (this.lifetime.signal.aborted || session.signal.aborted || session.turnSignal.aborted || this.sessions.get(session.sessionID) !== state) {
@@ -222,6 +244,24 @@ export class PromptContexts {
     else this.continuations++
     this.bytes += bytes
     return { state, entry }
+  }
+
+  private createState(session: SessionSnapshot): State {
+    const cleanup = () => {
+      const previous = this.sessions.get(session.sessionID)
+      if (!previous) return
+      for (const entry of [...previous.entries.values(), ...previous.reservations.values(), ...previous.retired.values()]) {
+        this.bytes -= entry.bytes
+        if (entry.kind === 'prompt') this.prompts--
+        else this.continuations--
+      }
+      this.sessions.delete(session.sessionID)
+      previous.entries.clear(); previous.reservations.clear(); previous.retired.clear(); previous.requests.abort()
+      session.signal.removeEventListener('abort', cleanup)
+    }
+    const state: State = { signal: session.signal, entries: new Map(), reservations: new Map(), retired: new Map(), cleanup, requests: new AbortController() }
+    this.sessions.set(session.sessionID, state); session.signal.addEventListener('abort', cleanup, { once: true })
+    return state
   }
 
   private invalidate(state: State): void {

@@ -157,7 +157,9 @@ test('V1 provider bridge preserves both cleanup failures and disposes the harnes
   const failures = [new Error('harness cleanup'), new Error('provider cleanup')]
   const order: string[] = []
   const transcripts = new ClaudeTranscript({ host: 'v1', directory: f.input.directory, history: async () => ({ id: 'session', messages: [] }) })
-  t.mock.method(transcripts, 'dispose', async () => { order.push('harness'); throw failures[0] })
+  const originalDispose = transcripts.dispose
+  transcripts.dispose = async () => { order.push('harness'); throw failures[0] }
+  t.after(() => { transcripts.dispose = originalDispose })
   const hooks = await composeV1Provider(f.input, f.options, { auth: { provider: 'fixture', methods: [], loader: async () => ({}) }, dispose: async () => { order.push('provider'); throw failures[1] } }, { ...services, transcripts })
   await assert.rejects(hooks.dispose(), (error: unknown) => error instanceof AggregateError && assert.deepEqual(error.errors, failures) === undefined)
   assert.deepEqual(order, ['harness', 'provider'])
@@ -185,7 +187,9 @@ test('V1 provider bridge retains fatal admission guards when its authentication 
 test('V1 provider bridge supports API-key-only loaders without changing their credential', async t => {
   const f = await fixture(t)
   const requests: Request[] = []
-  t.mock.method(globalThis, 'fetch', async (input: RequestInfo | URL, init?: RequestInit) => { requests.push(new Request(input, init)); return new Response('{}') })
+  const originalFetch = globalThis.fetch
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit) => { requests.push(new Request(input, init)); return new Response('{}') }
+  t.after(() => { globalThis.fetch = originalFetch })
   const provider = { auth: { provider: 'fixture', methods: [], loader: async () => ({ apiKey: 'fixture-api-key' }) } }
   const hooks = await composeV1Provider(f.input, f.options, provider, services)
   t.after(() => hooks.dispose())

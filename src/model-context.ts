@@ -63,7 +63,7 @@ export class ModelContext {
     return snapshotCopy({ kind: SNAPSHOT_KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, date: state?.date ?? null, lastTurnID: state?.lastTurnID ?? null, turns: [...(state?.turns ?? [])].map(([turnID, receipt]) => ({ turnID, date: receipt.date })) })
   }
 
-  restore(session: SessionSnapshot, value: unknown): void {
+  restore(session: SessionSnapshot, value: unknown): () => void {
     const input = sessionSnapshot(SNAPSHOT_KIND, value, session, ['date', 'lastTurnID', 'turns'])
     if (this.disposed) fail('TRANSCRIPT_MODEL_CANCELLED')
     if (this.states.has(session.sessionID)) throw new HostHookError('SESSION_SNAPSHOT_STATE_CONFLICT', 'unsupported')
@@ -86,11 +86,12 @@ export class ModelContext {
     if (input.date !== (date ?? null) || input.lastTurnID !== (lastTurnID ?? null)) throw new HostHookError('SESSION_SNAPSHOT_SCHEMA_INVALID', 'unsupported')
     if (this.turns + restored.size > MAX_TURNS || this.bytes + bytes > MAX_BYTES || restored.size && this.states.size >= MAX_SESSIONS) fail('TRANSCRIPT_MODEL_LIMIT')
     if (session.signal.aborted) throw new HostHookError('SESSION_SNAPSHOT_CANCELLED', 'cancelled')
-    if (!restored.size) return
+    if (!restored.size) return () => {}
     const state = this.createState(session)
     for (const [turnID, receipt] of restored) state.turns.set(turnID, receipt)
     state.date = date!; state.lastTurnID = lastTurnID!
     this.turns += restored.size; this.dates += dates; this.bytes += bytes
+    return () => { if (this.states.get(session.sessionID) === state) state.cleanup() }
   }
 
   private createState(session: SessionSnapshot): State {

@@ -117,7 +117,7 @@ export class PromptAttachments {
     return snapshotCopy({ kind: SNAPSHOT_KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, initialized: state !== undefined, turns: [...(state?.turns ?? [])].map(([messageID, turn]) => ({ messageID, promptHash: turn.promptHash, attachments: turn.attachments })) })
   }
 
-  restore(session: SessionSnapshot, value: unknown): void {
+  restore(session: SessionSnapshot, value: unknown): () => void {
     const input = sessionSnapshot(SNAPSHOT_KIND, value, session, ['initialized', 'turns'])
     if (this.disposed) fail('TRANSCRIPT_PROMPT_CANCELLED')
     if (this.states.has(session.sessionID)) throw new HostHookError('SESSION_SNAPSHOT_STATE_CONFLICT', 'unsupported')
@@ -136,10 +136,11 @@ export class PromptAttachments {
       turns.set(row.messageID, { promptHash: row.promptHash, attachments: Object.freeze(records), bytes: charge })
     }
     if (session.signal.aborted) throw new HostHookError('SESSION_SNAPSHOT_CANCELLED', 'cancelled')
-    if (!input.initialized) return
+    if (!input.initialized) return () => {}
     const state = this.state(session)
     for (const [id, turn] of turns) state.turns.set(id, turn)
     this.bytes += bytes; this.turns += turns.size; this.attachments += attachments
+    return () => { if (this.states.get(session.sessionID) === state) state.cleanup() }
   }
 
   dispose(): void { this.disposed = true; for (const state of this.states.values()) state.cleanup() }
