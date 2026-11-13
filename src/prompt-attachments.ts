@@ -6,8 +6,10 @@ import type { SessionSnapshot } from './sessions.js'
 import type { JsonValue } from './types.js'
 import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
 import { nativeHookRecord } from './hook-record-snapshot.js'
+import { PROMPT_MODEL_KIND, PROMPT_MODEL_STATUS } from './model-artifact.js'
 
 const SNAPSHOT_KIND = 'prompt-attachments'
+const MODEL_VALIDATION_ERROR = 'JSON validation failed'
 const DIGEST = /^[a-f0-9]{64}$/
 const MAX_SESSIONS = 1024
 const MAX_TURNS = 10000
@@ -50,6 +52,16 @@ export class PromptAttachments {
       if (result.status !== 'success' && result.status !== 'failed') fail('TRANSCRIPT_HOOK_RESULT_UNSUPPORTED')
       const command = 'commandArtifact' in result ? result.commandArtifact : undefined
       const http = result.httpArtifact
+      const model = result.modelArtifact
+      if (model) {
+        if (command || http || model.kind !== PROMPT_MODEL_KIND || typeof model.prompt !== 'string' || typeof model.stdout !== 'string' || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime()) || result.actions.length) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+        if (model.status === PROMPT_MODEL_STATUS.SUCCESS && result.status === 'success' && result.code === 'MODEL_EVALUATED' && !model.stdout) continue
+        if (model.status === PROMPT_MODEL_STATUS.TIMEOUT && result.status === 'failed' && result.code === 'EXECUTION_TIMEOUT' && !model.stdout) continue
+        const apiError = model.status === PROMPT_MODEL_STATUS.API_ERROR && result.status === 'failed' && result.code === 'MODEL_REQUEST_FAILED' && !model.stdout && typeof model.stderr === 'string'
+        if (!apiError && (model.status !== PROMPT_MODEL_STATUS.INVALID || result.status !== 'failed' || result.code !== 'MODEL_OUTPUT_INVALID' || model.stderr !== undefined)) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+        attachments.push({ id: randomUUID(), created: model.completedAt, body: { type: 'attachment', attachment: { type: 'hook_non_blocking_error', hookName: event.event, toolUseID, hookEvent: event.event, stderr: apiError ? model.stderr! : MODEL_VALIDATION_ERROR, stdout: model.stdout, exitCode: 1, command: model.prompt, durationMs: model.durationMs } } })
+        continue
+      }
       let exitCode: number | null | undefined
       if (http) {
         if (command || result.status !== 'success' || http.kind !== 'http' || !Number.isFinite(http.durationMs) || http.durationMs < 0 || !Number.isFinite(http.completedAt) || Number.isNaN(new Date(http.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')

@@ -4,6 +4,8 @@ import { record } from './protocols/shared.js'
 import { EXECUTION_LIMITS } from './runner.js'
 import { HookServiceError, runService, UnsupportedServiceError } from './service-execution.js'
 import { handlerTimeoutMs } from './timeouts.js'
+import { snapshotJsonObject } from './bounded-json.js'
+import { ModelOutputError } from './model-artifact.js'
 import type { JsonValue, NativeEvent, Registration } from './types.js'
 
 const AGENT_MAX_TURNS = 50
@@ -11,6 +13,7 @@ const STOP_EVENTS = new Set(['Stop', 'SubagentStop'])
 const NO_DECISION_EVENTS = new Set(['PermissionRequest', 'PermissionDenied'])
 const ALWAYS_FEEDBACK_EVENTS = new Set(['PostToolUseFailure', 'TaskCreated'])
 const END_TURN_EVENTS = new Set(['PostToolBatch', 'UserPromptSubmit', 'UserPromptExpansion'])
+const OUTPUT_WRAPPER_BYTES = Buffer.byteLength('{"value":}')
 
 function renderPrompt(template: string, input: string): string {
   let substituted = false
@@ -48,14 +51,17 @@ export async function runModel(registration: Registration, event: NativeEvent, p
   if (!Number.isSafeInteger(inputLimit) || inputLimit < 1 || !Number.isSafeInteger(outputLimit) || outputLimit < 1) throw new HookServiceError('EXECUTION_INVALID_INVOCATION')
   const prompt = renderPrompt(String(registration.handler.prompt), input)
   if (Buffer.byteLength(prompt) > inputLimit) throw new HookServiceError('EXECUTION_INPUT_LIMIT')
-  const response = await runService(handlerTimeoutMs(registration, host), host.signal, async signal => {
+  const output = await runService(handlerTimeoutMs(registration, host), host.signal, async signal => {
     const request: ModelHookRequest = {
       prompt, sessionID: event.sessionID, cwd: event.cwd, signal,
       ...(typeof registration.handler.model === 'string' ? { model: registration.handler.model } : {}),
     }
     return agent ? host.runAgent!({ ...request, maxTurns: AGENT_MAX_TURNS }) : host.evaluatePrompt!(request)
   })
-  if (!record(response) || typeof response.ok !== 'boolean' || (response.reason !== undefined && typeof response.reason !== 'string') || (response.ok === false && typeof response.reason !== 'string') || (!agent && response.impossible !== undefined && typeof response.impossible !== 'boolean')) throw new HookServiceError('MODEL_OUTPUT_INVALID')
+  const copied = snapshotJsonObject({ value: output === undefined ? null : output }, outputLimit + OUTPUT_WRAPPER_BYTES, kind => { throw kind === 'size' ? new HookServiceError('EXECUTION_OUTPUT_LIMIT') : new ModelOutputError('') })
+  const response = copied.value.value
+  const stdout = output === undefined ? '' : typeof response === 'string' ? response : JSON.stringify(response)
   if (Buffer.byteLength(JSON.stringify(response)) > outputLimit) throw new HookServiceError('EXECUTION_OUTPUT_LIMIT')
+  if (!record(response) || typeof response.ok !== 'boolean' || (response.reason !== undefined && typeof response.reason !== 'string') || (response.ok === false && typeof response.reason !== 'string') || (!agent && response.impossible !== undefined && typeof response.impossible !== 'boolean')) throw new ModelOutputError(stdout)
   return { status: 'success', code: 'MODEL_EVALUATED', actions: response.ok ? [] : blockedActions(registration, event, String(response.reason), !agent && response.impossible === true) }
 }

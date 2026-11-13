@@ -11,7 +11,8 @@ import { snapshotCommandContexts } from './host-services.js'
 import { buildPayload, PayloadError } from './payload.js'
 import { interpretOutput } from './protocol.js'
 import { claudeBlock, claudeFailureBlocks } from './protocols/claude.js'
-import { runCommand } from './runner.js'
+import { ModelApiError, ModelOutputError, PROMPT_MODEL_KIND, PROMPT_MODEL_STATUS } from './model-artifact.js'
+import { EXECUTION_LIMITS, runCommand } from './runner.js'
 import type { NativeEvent, Registration } from './types.js'
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied'])
@@ -96,7 +97,8 @@ export async function executeRegistration(registration: Registration, inputEvent
     }
     if (registration.handler.type === 'prompt' || registration.handler.type === 'agent') {
       const output = await runModel(registration, event, payload, host)
-      return result(registration, output.status, output.code, started, output.actions)
+      const effect = result(registration, output.status, output.code, started, output.actions)
+      return host.captureModelArtifacts && registration.handler.type === 'prompt' && effect.status === 'success' ? { ...effect, modelArtifact: { kind: PROMPT_MODEL_KIND, status: PROMPT_MODEL_STATUS.SUCCESS, prompt: String(registration.handler.prompt), stdout: '', completedAt: Date.now(), durationMs: effect.diagnostic.durationMs } } : effect
     }
     if (registration.handler.type === 'http') {
       const execution = await runHttp(registration, payload, host)
@@ -121,7 +123,10 @@ export async function executeRegistration(registration: Registration, inputEvent
     return host.captureCommandArtifacts ? { ...effect, commandArtifact: { ...execution, completedAt, timeoutMs: invocation.timeoutMs, command: [invocation.command, ...(invocation.args ?? [])].join(' ') } } : effect
   } catch (error) {
     if (error instanceof UnsupportedServiceError || (error instanceof CommandContextError && error.code.startsWith('HOST_'))) return result(registration, 'unsupported', error.code, started)
+    if (error instanceof ModelOutputError && Buffer.byteLength(error.stdout) > (host.maxOutputBytes ?? EXECUTION_LIMITS.outputBytes)) return fail('EXECUTION_OUTPUT_LIMIT')
+    if (error instanceof ModelApiError && Buffer.byteLength(error.stderr) > (host.maxOutputBytes ?? EXECUTION_LIMITS.outputBytes)) return fail('EXECUTION_OUTPUT_LIMIT')
     const code = error instanceof CommandContextError || error instanceof HookServiceError ? error.code : error instanceof PayloadError ? 'HANDLER_PAYLOAD_INVALID' : 'HANDLER_FAILED'
-    return fail(code)
+    const effect = fail(code)
+    return host.captureModelArtifacts && registration.handler.type === 'prompt' && effect.status === 'failed' && (error instanceof ModelOutputError || error instanceof ModelApiError || code === 'EXECUTION_TIMEOUT') ? { ...effect, modelArtifact: { kind: PROMPT_MODEL_KIND, status: error instanceof ModelOutputError ? PROMPT_MODEL_STATUS.INVALID : error instanceof ModelApiError ? PROMPT_MODEL_STATUS.API_ERROR : PROMPT_MODEL_STATUS.TIMEOUT, prompt: String(registration.handler.prompt), stdout: error instanceof ModelOutputError ? error.stdout : '', ...(error instanceof ModelApiError ? { stderr: error.stderr } : {}), completedAt: Date.now(), durationMs: effect.diagnostic.durationMs } } : effect
   }
 }

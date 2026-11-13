@@ -1,6 +1,7 @@
 import type { Dialect } from './contracts.js'
 import type { JsonValue } from './types.js'
 import type { ExecutionResult } from './runner.js'
+import type { PromptModelArtifact } from './model-artifact.js'
 
 export interface CommandArtifact extends ExecutionResult {
   readonly command: string
@@ -47,6 +48,7 @@ export interface InterpretedOutput {
 export interface HookEffect extends InterpretedOutput {
   readonly commandArtifact?: CommandArtifact
   readonly httpArtifact?: HttpArtifact
+  readonly modelArtifact?: PromptModelArtifact
   readonly nativeFailureArtifact?: NativeFailureArtifact
   readonly diagnostic: {
     readonly sourceID: string
