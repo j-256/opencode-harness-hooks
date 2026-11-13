@@ -168,3 +168,12 @@ test('failed-shell receipts require literal failure payload evidence without pro
     assert.equal(report.requirements.find((row: any) => row.id === dialect + '.event.PostToolUse.outputs').targets.v1.status, 'unverified')
   }
 })
+
+test('HTTP post-tool comparisons cannot certify a broken transport with otherwise matching effects', async () => {
+  const { evaluatePosttoolObservations } = await library()
+  const native = trace(), host = trace()
+  for (const value of [native, host]) for (const row of value.controls) row.httpTransportValid = true
+  assert.equal(evaluatePosttoolObservations(native, host, 'claude-code', { http: true }).status, 'passed')
+  host.controls[0].httpTransportValid = false
+  assert.equal(evaluatePosttoolObservations(native, host, 'claude-code', { http: true }).status, 'failed')
+})

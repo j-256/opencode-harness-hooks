@@ -10,6 +10,7 @@ import { runNativeProcess } from './native-process.mjs'
 import { inspectCodexTranscript, verifyCodexTranscriptReader } from './conformance-transcript.mjs'
 import { createRewriteFixture, evaluateRewriteObservations, observeRewrite, REWRITE_CASES, rewriteToolResult } from './conformance-rewrite.mjs'
 import { createPosttoolFixture, evaluatePosttoolObservations, observePosttool, posttoolModelView } from './conformance-posttool.mjs'
+import { startHttpHook, httpSource, HTTP_FAILURE_MODES } from './conformance-http.mjs'
 
 const MODEL = 'claude-sonnet-4-6'
 const REASON = 'CONFORMANCE_OWNED_DENIAL_REASON'
@@ -102,6 +103,7 @@ export function controlToolResult(messages, transport, toolUseID) {
   const text = typeof content === 'string' ? content : Array.isArray(content) ? content.filter(part => ['text', 'input_text'].includes(part?.type) && typeof part.text === 'string').map(part => part.text).join('\n') : ''
   return { resultOwned: true, reasonDelivered: text.includes(REASON) }
 }
+export const httpFailureBodyAbsent = body => !JSON.stringify(body).includes(REASON)
 export async function stopHost(child, done) {
   if (!child || !done) return
   const signal = name => { try { if (child.pid) process.kill(-child.pid, name) } catch (error) { if (error.code !== 'ESRCH') throw error } }
@@ -117,8 +119,19 @@ export const runPretoolControl = options => runToolComparison({ ...options, rewr
 export const runInputRewrite = options => runToolComparison({ ...options, rewriteInput: true, posttoolEffects: false })
 export const runPosttoolEffects = options => runToolComparison({ ...options, rewriteInput: false, posttoolEffects: true })
 export const runToolFailures = options => runToolComparison({ ...options, rewriteInput: false, posttoolEffects: true, toolFailures: true })
-async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, opencodeBinary, rewriteInput, posttoolEffects, toolFailures = false }) {
+export const runHttpPretool = options => runToolComparison({ ...options, rewriteInput: false, posttoolEffects: false, httpHooks: true })
+export const runHttpPosttool = options => runToolComparison({ ...options, rewriteInput: false, posttoolEffects: true, httpHooks: true })
+export async function runHttpFailures(options) {
+  const modes = []
+  for (const mode of HTTP_FAILURE_MODES) modes.push({ mode, ...await runToolComparison({ ...options, rewriteInput: false, posttoolEffects: false, httpHooks: true, httpFailureMode: mode }) })
+  const first = modes[0]
+  ensure(modes.every(row => row.adapterBuildSha256 === first.adapterBuildSha256), 'CONFORMANCE_BUILD_CHANGED')
+  const match = modes.every(row => row.status === 'passed')
+  return { caseID: 'claude.pretooluse.http-failures', host: 'v1', nativeVersion: first.nativeVersion, hostVersion: first.hostVersion, adapterBuildSha256: first.adapterBuildSha256, status: match ? 'passed' : 'failed', comparison: { match, modes }, platform: process.platform, architecture: process.arch, limits: ['Selected nonblocking HTTP failure dispositions only; complete native HTTP, artifacts and V2 remain unverified'] }
+}
+async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, opencodeBinary, rewriteInput, posttoolEffects, toolFailures = false, httpHooks = false, httpFailureMode }) {
   ensure(['claude-code', 'codex'].includes(dialect), 'CONFORMANCE_DIALECT_INVALID')
+  ensure(!httpHooks || dialect === 'claude-code', 'CONFORMANCE_HTTP_DIALECT_UNSUPPORTED')
   const codex = dialect === 'codex'
   if (process.platform === 'win32') throw new ConformanceError('PLATFORM_UNAVAILABLE: POSIX process groups', 2)
   const nativeVersion = await verifyPinnedVersion(nativeBinary, codex ? 'codex' : 'claude', catalog.versions.native[dialect])
@@ -127,7 +140,7 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
   try { await access(entrypoint) } catch { throw new ConformanceError('DEPENDENCY_UNAVAILABLE: built adapter', 3) }
   const adapterBuildSha256 = await fingerprintAdapter(packageRoot)
   const root = await realpath(await mkdtemp(join(tmpdir(), 'hook-conformance-')))
-  let gateway, child, done, stage = 'setup'
+  let gateway, httpHook, child, done, stage = 'setup'
   const traffic = new Map(), gatewayErrors = [], hostCodes = new Set()
   let auxiliaryRequests = 0, totalRequests = 0, nativeHelloRequests = 0
   try {
@@ -141,7 +154,8 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
     const cases = posttool?.cases ?? (rewrite ? REWRITE_CASES : CONTROL_CASES)
     const hookText = posttool?.hookText ?? rewrite?.hookText ?? `const fs=require('node:fs');const p=JSON.parse(fs.readFileSync(0,'utf8'));const transcriptExists=typeof p.transcript_path==='string'&&fs.existsSync(p.transcript_path);let transcriptContentValid;if(${codex}){transcriptContentValid=false;try{if(transcriptExists&&fs.statSync(p.transcript_path).size<=${MAX_BYTES}){const rows=fs.readFileSync(p.transcript_path,'utf8').trim().split('\\n').map(line=>JSON.parse(line));const inspect=${inspectCodexTranscript.toString()};transcriptContentValid=inspect(rows,p,'CONFORMANCE_CASE:'+(p.tool_input.command.includes('CONFORMANCE_DENY')?'deny':'allow'))}}catch{}}fs.appendFileSync(${JSON.stringify(trace)},JSON.stringify({input:p,transcriptExists,transcriptContentValid})+'\\n');if(p.tool_input.command.includes('CONFORMANCE_DENY'))console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',permissionDecision:'deny',permissionDecisionReason:${JSON.stringify(REASON)}}}));`
     await writeFile(hook, hookText)
-    const sourceText = posttool?.sourceText ?? rewrite?.sourceText ?? JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: [process.execPath, hook].map(quote).join(' '), timeout: HOOK_TIMEOUT_SECONDS }] }] } })
+    let sourceText = posttool?.sourceText ?? rewrite?.sourceText ?? JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: [process.execPath, hook].map(quote).join(' '), timeout: HOOK_TIMEOUT_SECONDS }] }] } })
+    if (httpHooks) { httpHook = await startHttpHook({ hook, project, mode: httpFailureMode ?? 'ok', reason: REASON }); sourceText = httpSource(sourceText, httpHook.url) }
     await writeFile(source, sourceText)
     const sourceDigest = sha(sourceText), hookDigest = sha(hookText)
     const marker = id => join(project, id + '.marker')
@@ -169,6 +183,7 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
         ensure(id, 'GATEWAY_CASE_MISSING')
         const backend = native ? 'native' : 'host', key = backend + ':' + id
         const state = traffic.get(key) ?? { count: 0, reasonDelivered: false }
+        if (httpFailureMode) state.httpFailureBodyAbsent = state.httpFailureBodyAbsent !== false && httpFailureBodyAbsent(body)
         state.count++
         ensure(state.count <= (posttool ? 3 : 2), 'GATEWAY_PRIMARY_LIMIT')
         const transport = responses ? 'responses' : native ? 'anthropic' : 'chat'
@@ -197,15 +212,17 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
     const observe = async (backend, id) => {
       const lines = (await readFile(trace, 'utf8')).trim().split('\n').filter(Boolean).map(line => JSON.parse(line))
       const row = lines[0], input = row?.input, requests = traffic.get(backend + ':' + id)
-      if (posttool) return observePosttool({ fixture: posttool, id, lines, requests, project, dialect, toolIDs: ['first', 'next'].map(phase => toolID(backend, id, phase)) })
+      const transport = httpHook?.inspect()
+      const httpEvidence = transport ? { httpTransportValid: transport.requests === (posttool ? 2 : 1) && transport.redirectsFollowed === 0 && transport.errors === 0, ...(httpFailureMode ? { httpFailureBodyAbsent: requests?.httpFailureBodyAbsent === true } : {}) } : {}
+      if (posttool) return { ...await observePosttool({ fixture: posttool, id, lines, requests, project, dialect, toolIDs: ['first', 'next'].map(phase => toolID(backend, id, phase)) }), ...httpEvidence }
       if (rewrite) return observeRewrite({ fixture: rewrite, lines, requests, dialect, toolUseID: toolID(backend, id), project, id })
       let content = null
       try { content = await readFile(marker(id), 'utf8') } catch (error) { if (error.code !== 'ENOENT') throw error }
       if (content !== null) ensure(content === (id === 'deny' ? 'CONFORMANCE_DENY' : 'CONFORMANCE_ALLOW'), 'CONFORMANCE_SIDE_EFFECT_CONTENT')
       const artifact = codex ? { transcriptContentValid: row?.transcriptContentValid === true, nativeReaderAccepted: row?.transcriptExists === true && await verifyCodexTranscriptReader({ binary: nativeBinary, root, project, input, prompt: 'CONFORMANCE_CASE:' + id, fixtureID: backend + '-' + id, ...(backend === 'native' ? { nativeHome: nativeConfig } : {}) }) } : {}
-      return { id, hookInvocations: lines.length, event: input?.hook_event_name ?? null, tool: input?.tool_name ?? null, cwdMatches: input?.cwd === project, commandMatches: input?.tool_input?.command === command(id), identityValid: controlIdentityValid(input, dialect, toolID(backend, id)), transcriptExists: row?.transcriptExists === true, resultOwned: requests?.resultOwned === true, reasonDelivered: requests?.reasonDelivered === true, sideEffect: content !== null, primaryModelCalls: requests?.count ?? 0, ...artifact }
+      return { id, hookInvocations: lines.length, event: input?.hook_event_name ?? null, tool: input?.tool_name ?? null, cwdMatches: input?.cwd === project, commandMatches: input?.tool_input?.command === command(id), identityValid: controlIdentityValid(input, dialect, toolID(backend, id)), transcriptExists: row?.transcriptExists === true, resultOwned: requests?.resultOwned === true, reasonDelivered: requests?.reasonDelivered === true, sideEffect: content !== null, primaryModelCalls: requests?.count ?? 0, ...artifact, ...httpEvidence }
     }
-    const prepare = async id => { await writeFile(trace, ''); await Promise.all((posttool ? Object.values(posttool.records(id)).map(row => row.path) : rewrite ? Object.values(rewrite.markerPaths) : [marker(id)]).map(path => rm(path, { force: true }))) }
+    const prepare = async id => { httpHook?.reset(); await writeFile(trace, ''); await Promise.all((posttool ? Object.values(posttool.records(id)).map(row => row.path) : rewrite ? Object.values(rewrite.markerPaths) : [marker(id)]).map(path => rm(path, { force: true }))) }
     const nativeControls = []
     for (const id of cases) {
       stage = 'native-' + id
@@ -236,7 +253,7 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
     }), STARTUP_MS, 'HOST_STARTUP_TIMEOUT')
     const post = async (path, body) => {
       const response = await fetch(hostAddress + path + '?directory=' + encodeURIComponent(project), { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Basic ' + Buffer.from('opencode:' + password).toString('base64') }, body: JSON.stringify(body), signal: AbortSignal.timeout(DURATION_MS) })
-      ensure(response.ok, 'HOST_API_FAILED')
+      ensure(response.ok, 'HOST_API_FAILED: ' + response.status + ' ' + stage + ' codes=' + [...hostCodes].sort().join(','))
       return response.json()
     }
     const hostControls = []
@@ -254,15 +271,15 @@ async function runToolComparison({ catalog, packageRoot, dialect, nativeBinary, 
     ensure(sha(await readFile(source)) === sourceDigest && sha(await readFile(hook)) === hookDigest, 'CONFORMANCE_SOURCE_CHANGED')
     ensure(await fingerprintAdapter(packageRoot) === adapterBuildSha256, 'CONFORMANCE_BUILD_CHANGED')
     const traces = [{ sourceDigest, hookDigest, controls: nativeControls }, { sourceDigest, hookDigest, controls: hostControls }]
-    const outcome = posttool ? evaluatePosttoolObservations({ ...traces[0], diagnostics: [] }, { ...traces[1], diagnostics: [...hostCodes].sort() }, dialect, { failedFirst: toolFailures }) : rewrite ? evaluateRewriteObservations(...traces) : evaluateControlObservations(...traces, { codexTranscript: codex })
-    return { caseID: (codex ? 'codex' : 'claude') + (toolFailures ? '.tool-failures' : posttool ? '.posttooluse.effects' : '.pretooluse.' + (rewrite ? 'input-rewrite' : 'control')), host: 'v1', nativeVersion, hostVersion, ...outcome, platform: process.platform, architecture: process.arch, adapterBuildSha256, auxiliaryRequests, nativeHelloRequests, isolation: { temporaryHomeAndConfig: true, loopbackProvider: true, sourceBytesUnchanged: true, nativePermissionBypass: true, nativeTrustVerified: false, machineManagedSettingsMayRemain: true, ...(codex ? { nativeHookTrustBypassed: true } : {}) }, limits: ['Specified observables only; full event payload and rendering remain unverified', 'No real-model or native trust conformance claim', ...(codex ? ['Native exec_command is observed independently as Bash hook input; other tool families remain unverified'] : ['Native api/hello receives 404 and is counted outside model requests']), 'V1 only; V2 is not exercised by this case'] }
+    const outcome = posttool ? evaluatePosttoolObservations({ ...traces[0], diagnostics: [] }, { ...traces[1], diagnostics: [...hostCodes].sort() }, dialect, { failedFirst: toolFailures, http: httpHooks }) : rewrite ? evaluateRewriteObservations(...traces) : evaluateControlObservations(...traces, { codexTranscript: codex, http: httpHooks, nonblockingHttpFailure: httpFailureMode !== undefined })
+    return { caseID: (codex ? 'codex' : 'claude') + (httpHooks ? (posttool ? '.posttooluse.http' : '.pretooluse.http' + (httpFailureMode ? '-' + httpFailureMode : '')) : toolFailures ? '.tool-failures' : posttool ? '.posttooluse.effects' : '.pretooluse.' + (rewrite ? 'input-rewrite' : 'control')), host: 'v1', nativeVersion, hostVersion, ...outcome, platform: process.platform, architecture: process.arch, adapterBuildSha256, auxiliaryRequests, nativeHelloRequests, isolation: { temporaryHomeAndConfig: true, loopbackProvider: true, sourceBytesUnchanged: true, nativePermissionBypass: true, nativeTrustVerified: false, machineManagedSettingsMayRemain: true, ...(codex ? { nativeHookTrustBypassed: true } : {}) }, limits: ['Specified observables only; full event payload and rendering remain unverified', 'No real-model or native trust conformance claim', ...(codex ? ['Native exec_command is observed independently as Bash hook input; other tool families remain unverified'] : ['Native api/hello receives 404 and is counted outside model requests']), 'V1 only; V2 is not exercised by this case'] }
   } catch (error) {
     if (error instanceof ConformanceError) throw error
     throw new ConformanceError('CONFORMANCE_CASE_FAILED: ' + stage)
   } finally {
     try { await stopHost(child, done) } finally {
-      if (gateway) { gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)) }
-      await rm(root, { recursive: true, force: true })
+      try { if (gateway) { gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)) } }
+      finally { try { await httpHook?.close() } finally { await rm(root, { recursive: true, force: true }) } }
     }
   }
 }

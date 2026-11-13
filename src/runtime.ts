@@ -219,7 +219,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
       for (const registration of selected) {
         try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
       }
-      return observe(await dispatchEvent(sources, nativeEvent, { ...services.host, ...(services.transcripts?.admitPrompt ? { captureCommandArtifacts: true } : {}), environment, projectRoot: directory, signal, sessionSignal: session.signal }))
+      return observe(await dispatchEvent(sources, nativeEvent, { ...services.host, ...(services.transcripts?.admitPrompt ? { captureCommandArtifacts: true, captureHttpArtifacts: true } : {}), environment, projectRoot: directory, signal, sessionSignal: session.signal }))
     })().catch((error: unknown) => {
       if (signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')
       throw error

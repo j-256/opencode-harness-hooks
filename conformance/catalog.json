@@ -511,6 +511,27 @@
       "event": "PostToolUse",
       "area": "effects",
       "summary": "Completed nonzero shell calls deliver the native event and selected error/output fields, preserve completed side effects and apply owned post-tool effects without contaminating a later successful call"
+    },
+    {
+      "id": "claude-code.pretooluse.http",
+      "dialect": "claude-code",
+      "event": "PreToolUse",
+      "area": "effects",
+      "summary": "HTTP pre-tool deny and allow controls retain native POST delivery, payload identities, completed side effects and owned results"
+    },
+    {
+      "id": "claude-code.posttooluse.http",
+      "dialect": "claude-code",
+      "event": "PostToolUse",
+      "area": "effects",
+      "summary": "HTTP post-tool effects preserve native owned-result placement, completed side effects, no-op controls and isolation from a later successful call"
+    },
+    {
+      "id": "claude-code.pretooluse.http-failures",
+      "dialect": "claude-code",
+      "event": "PreToolUse",
+      "area": "effects",
+      "summary": "Selected HTTP status, malformed-body, streaming-timeout and redirect failures retain native nonblocking disposition without delivering the response body or following redirects"
     }
   ],
   "evidence": [
@@ -1230,6 +1251,63 @@
         "primary model request count",
         "unsupported host diagnostics retained as failed evidence",
         "source/hook digests and adapter build fingerprint"
+      ]
+    },
+    {
+      "id": "claude.pretooluse.http",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.pretooluse.http"
+      ],
+      "description": "HTTP pre-tool deny and allow controls retain native POST delivery, payload identities, completed side effects and owned results",
+      "observables": [
+        "actual native HTTP POST to the unchanged endpoint",
+        "native event and payload identities",
+        "literal side-effect and owned-result expectations",
+        "HTTP request count and redirect absence",
+        "source/endpoint program digests and adapter fingerprint",
+        "safe failed receipts and explicit incomplete profile"
+      ]
+    },
+    {
+      "id": "claude.posttooluse.http",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.posttooluse.http"
+      ],
+      "description": "HTTP post-tool effects preserve native owned-result placement, completed side effects, no-op controls and isolation from a later successful call",
+      "observables": [
+        "actual native HTTP POST to the unchanged endpoint",
+        "native event and payload identities",
+        "literal side-effect and owned-result expectations",
+        "HTTP request count and redirect absence",
+        "source/endpoint program digests and adapter fingerprint",
+        "safe failed receipts and explicit incomplete profile"
+      ]
+    },
+    {
+      "id": "claude.pretooluse.http-failures",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.pretooluse.http-failures"
+      ],
+      "description": "Selected HTTP status, malformed-body, streaming-timeout and redirect failures retain native nonblocking disposition without delivering the response body or following redirects",
+      "observables": [
+        "actual native HTTP POST to the unchanged endpoint",
+        "native event and payload identities",
+        "literal side-effect and owned-result expectations",
+        "HTTP request count and redirect absence",
+        "source/endpoint program digests and adapter fingerprint",
+        "safe failed receipts and explicit incomplete profile"
       ]
     }
   ],

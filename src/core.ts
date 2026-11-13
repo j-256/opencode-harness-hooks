@@ -23,7 +23,7 @@ export type { StopModelBlocks, StopContinuationOptions, StopInterruptionReceipt,
 export { HostHookError } from './host-errors.js'
 export type { ToolCall, HostToolEvent, HostToolDiagnostic, ToolHostOptions } from './tool-types.js'
 export type { HostPromptEvent, PromptDiagnostic } from './prompt-types.js'
-export type { CommandArtifact, NativeFailureArtifact } from './effect-types.js'
+export type { CommandArtifact, HttpArtifact, NativeFailureArtifact } from './effect-types.js'
 export type { HostModelEvent, ArtifactDiagnostic } from './model-types.js'
 export type { HostServices, SourceContext, RegistrationContext } from './host-services.js'
 export type { SourceSpec, NativeEvent, LoadedSource, Registration, JsonValue } from './types.js'

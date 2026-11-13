@@ -45,30 +45,36 @@ export class PromptAttachments {
       if (result.status === 'skipped') continue
       if (result.status !== 'success' && result.status !== 'failed') fail('TRANSCRIPT_HOOK_RESULT_UNSUPPORTED')
       const command = 'commandArtifact' in result ? result.commandArtifact : undefined
-      if (!command || typeof command.command !== 'string' || typeof command.stdout !== 'string' || typeof command.stderr !== 'string' || !Number.isFinite(command.durationMs) || command.durationMs < 0 || !Number.isFinite(command.completedAt) || Number.isNaN(new Date(command.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-      if (command.status === 'timeout') {
-        if (result.status !== 'failed' || result.code !== 'EXECUTION_TIMEOUT' || result.actions.length || typeof command.timeoutMs !== 'number' || !Number.isFinite(command.timeoutMs) || command.timeoutMs <= 0) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-        attachments.push({ id: randomUUID(), created: command.completedAt, body: { type: 'attachment', attachment: {
-          type: 'hook_cancelled', hookName: event.event, toolUseID, hookEvent: event.event,
-          command: command.command, durationMs: command.durationMs, timedOut: true, timeoutMs: command.timeoutMs,
-        } } })
-        continue
-      }
-      if (command.status !== 'exited') fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-      let exitCode = command.exitCode
-      if (command.signal !== null) {
-        if (exitCode !== null || !VERIFIED_SIGNALS.has(command.signal)) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-        exitCode = SIGNAL_EXIT
-      }
-      if (typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode) || exitCode < SUCCESS_EXIT || exitCode > MAX_EXIT || exitCode === BLOCKING_EXIT) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-      if (result.status === 'failed') {
-        if (result.code !== 'COMMAND_FAILED' || exitCode === SUCCESS_EXIT || result.actions.length) fail('TRANSCRIPT_HOOK_RESULT_UNSUPPORTED')
-        attachments.push({ id: randomUUID(), created: command.completedAt, body: { type: 'attachment', attachment: {
-          type: 'hook_non_blocking_error', hookName: event.event, toolUseID, hookEvent: event.event,
-          stderr: NONBLOCKING_ERROR_PREFIX + (command.stderr.trim() || EMPTY_STDERR), stdout: command.stdout,
-          exitCode, command: command.command, durationMs: command.durationMs,
-        } } })
-        continue
+      const http = result.httpArtifact
+      let exitCode: number | null | undefined
+      if (http) {
+        if (command || result.status !== 'success' || http.kind !== 'http' || !Number.isFinite(http.durationMs) || http.durationMs < 0 || !Number.isFinite(http.completedAt) || Number.isNaN(new Date(http.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      } else {
+        if (!command || typeof command.command !== 'string' || typeof command.stdout !== 'string' || typeof command.stderr !== 'string' || !Number.isFinite(command.durationMs) || command.durationMs < 0 || !Number.isFinite(command.completedAt) || Number.isNaN(new Date(command.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+        if (command.status === 'timeout') {
+          if (result.status !== 'failed' || result.code !== 'EXECUTION_TIMEOUT' || result.actions.length || typeof command.timeoutMs !== 'number' || !Number.isFinite(command.timeoutMs) || command.timeoutMs <= 0) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+          attachments.push({ id: randomUUID(), created: command.completedAt, body: { type: 'attachment', attachment: {
+            type: 'hook_cancelled', hookName: event.event, toolUseID, hookEvent: event.event,
+            command: command.command, durationMs: command.durationMs, timedOut: true, timeoutMs: command.timeoutMs,
+          } } })
+          continue
+        }
+        if (command.status !== 'exited') fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+        exitCode = command.exitCode
+        if (command.signal !== null) {
+          if (exitCode !== null || !VERIFIED_SIGNALS.has(command.signal)) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+          exitCode = SIGNAL_EXIT
+        }
+        if (typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode) || exitCode < SUCCESS_EXIT || exitCode > MAX_EXIT || exitCode === BLOCKING_EXIT) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+        if (result.status === 'failed') {
+          if (result.code !== 'COMMAND_FAILED' || exitCode === SUCCESS_EXIT || result.actions.length) fail('TRANSCRIPT_HOOK_RESULT_UNSUPPORTED')
+          attachments.push({ id: randomUUID(), created: command.completedAt, body: { type: 'attachment', attachment: {
+            type: 'hook_non_blocking_error', hookName: event.event, toolUseID, hookEvent: event.event,
+            stderr: NONBLOCKING_ERROR_PREFIX + (command.stderr.trim() || EMPTY_STDERR), stdout: command.stdout,
+            exitCode, command: command.command, durationMs: command.durationMs,
+          } } })
+          continue
+        }
       }
       for (const action of result.actions) {
         let attachment: Record<string, JsonValue>
@@ -79,11 +85,11 @@ export class PromptAttachments {
           attachment = { type: 'hook_additional_context', content: [action.text], hookName: event.event, toolUseID: 'hook-' + randomUUID(), hookEvent: event.event }
           rendered = `<system-reminder>\n${event.event} hook additional context: ${action.text}\n</system-reminder>`
         } else if (action.kind === 'context' && action.placement === 'model' && action.channel === 'stdout') {
-          if (exitCode !== SUCCESS_EXIT) fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
+          if (!command || http || exitCode !== SUCCESS_EXIT) fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
           attachment = { type: 'hook_success', hookName: event.event, toolUseID, hookEvent: event.event, content: action.text, stdout: command.stdout, stderr: command.stderr, exitCode: command.exitCode, command: command.command, durationMs: command.durationMs }
           rendered = `<system-reminder>\n${event.event} hook success: ${action.text}\n</system-reminder>`
         } else fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
-        attachments.push({ id: randomUUID(), created: attachment.type === 'hook_additional_context' ? completedAt : command.completedAt, body: { type: 'attachment', attachment, ...(rendered === undefined ? {} : { rendered: [{ content: rendered }], renderedRole: 'system' }) } })
+        attachments.push({ id: randomUUID(), created: attachment.type === 'hook_additional_context' ? completedAt : http?.completedAt ?? command!.completedAt, body: { type: 'attachment', attachment, ...(rendered === undefined ? {} : { rendered: [{ content: rendered }], renderedRole: 'system' }) } })
       }
     }
     const bytes = Buffer.byteLength(JSON.stringify([event.sessionID, event.messageID, attachments]))

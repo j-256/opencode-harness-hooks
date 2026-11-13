@@ -100,7 +100,8 @@ export async function executeRegistration(registration: Registration, inputEvent
     }
     if (registration.handler.type === 'http') {
       const execution = await runHttp(registration, payload, host)
-      return interpretOutput(registration, event, { ...execution, durationMs: Math.round(performance.now() - started) })
+      const effect = interpretOutput(registration, event, { ...execution, durationMs: Math.round(performance.now() - started) })
+      return host.captureHttpArtifacts ? { ...effect, httpArtifact: { kind: 'http', completedAt: Date.now(), durationMs: effect.diagnostic.durationMs } } : effect
     }
     if (registration.handler.type !== 'command') return result(registration, 'unsupported', 'HOST_HANDLER_UNAVAILABLE', started)
     if (background) {

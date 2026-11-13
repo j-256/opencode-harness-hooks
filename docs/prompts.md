@@ -18,6 +18,10 @@ Claude `systemMessage` remains a warning. Warnings, feedback and extension effec
 
 Accepted prompt context is retained by session and native user-message ID for the activation's lifetime, with independent source attribution. Every subsequent model request reprojects the context at its original prompt position. Claude context follows hook completion order, as exercised by a native fixture whose handlers finish in a different order from configuration. Repeated identical prompt text does not merge identities or deduplicate sources. The bridge validates the complete retained user layout and each text segment before projection; changed, pruned, compacted, foreign and cold-resumed layouts fail instead of matching context by text alone.
 
+## HTTP additional context
+
+V1 also admits successful Claude HTTP `UserPromptSubmit` additional context with native-style attachment records and retained model context. The [HTTP guide](http-hooks.md) distinguishes installed-host proof and the native attachment reference from full native prompt conformance. HTTP failure artifacts remain unsupported in prompt transcript admission; tool fault behavior does not certify that path.
+
 ## Host transport
 
 V1 wraps the configured provider's `options.fetch` while preserving the preceding implementation and forwarding unrelated requests unchanged. It verifies the effective fetch identity before model execution. An undeclared provider or a later fetch override fails with `HOST_PROMPT_TRANSPORT_UNAVAILABLE`. The adapter accepts the direct provider metadata shape exercised by the installed pin and the nested shape declared by its published plugin type; conflicting identities fail.

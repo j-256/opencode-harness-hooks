@@ -97,6 +97,7 @@ test('package probe help and invalid host/options require no executable and pres
     assert.match(result.stdout, /mixed/)
     assert.match(result.stdout, /--preapproval/)
     assert.match(result.stdout, /--deny-precedence/)
+    assert.match(result.stdout, /--http-prompt/)
     assert.match(result.stdout, /--prompts/)
     assert.match(result.stdout, /--auth-composition/)
     assert.match(result.stdout, /--stop-rejection/)
@@ -128,6 +129,20 @@ test('deny-precedence probe accepts its short form and rejects incompatible mode
     assert.equal(result.status, 2)
     assert.match(result.stderr, /HOST_VERSION_MISMATCH/)
   }
+})
+
+test('HTTP prompt probe requires its bounded V1 Claude prompt mode and preserves conditional dependency checks', async () => {
+  const help = await invoke(['-ih'], { PATH: '' }, packageProbe)
+  assert.equal(help.status, 0)
+  assert.match(help.stdout, /--http-prompt/)
+  for (const args of [['--host=v1'], ['--host=v2', '--dialect=claude-code', '--prompts'], ['--host=v1', '--dialect=codex', '--prompts'], ['--host=v1', '--dialect=claude-code', '--prompts', '--preapproval']]) {
+    const result = await invoke([...args, '-i'], { PATH: '' }, packageProbe)
+    assert.equal(result.status, 2)
+    assert.match(result.stderr, /USAGE_HTTP_PROMPT/)
+  }
+  const result = await invoke(['--host=v1', '--dialect=claude-code', '--prompts', '--http-prompt', '-b', process.execPath], process.env, packageProbe)
+  assert.equal(result.status, 2)
+  assert.match(result.stderr, /HOST_VERSION_MISMATCH/)
 })
 
 test('package probe honors literal binary forms and the selected host environment', async () => {

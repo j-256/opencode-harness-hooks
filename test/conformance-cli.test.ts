@@ -126,14 +126,24 @@ test('input-rewrite cases appear in help and check only their own conditional na
 test('post-tool cases document conditional binaries and reject unsupported hosts', { skip: process.platform === 'win32' }, async () => {
   const help = await invoke(['--help'], { PATH: '' })
   for (const prefix of ['claude', 'codex']) {
-    for (const suffix of ['.posttooluse.effects', '.tool-failures']) {
+    for (const suffix of ['.posttooluse.effects', '.tool-failures', ...(prefix === 'claude' ? ['.pretooluse.http', '.posttooluse.http', '.pretooluse.http-failures'] : [])]) {
       const name = prefix + suffix
-      assert.ok(help.stdout.includes(name))
+      assert.ok(help.stdout.includes(name + ','))
       const result = await invoke(['-c', name, '-C', '/missing/claude', '-X', '/missing/codex'])
       assert.equal(result.status, 3); assert.equal(result.stdout, '')
       assert.match(result.stderr, new RegExp('DEPENDENCY_UNAVAILABLE: ' + prefix))
       const unsupported = await invoke(['-c', name, '-H', 'v2'], { PATH: '' })
       assert.equal(unsupported.status, 2); assert.match(unsupported.stderr, /CONFORMANCE_USAGE_CASE/)
     }
+  }
+})
+
+test('HTTP cases do not advertise or execute unsupported Codex handler configurations', async () => {
+  const help = await invoke(['--help'], { PATH: '' })
+  for (const suffix of ['pretooluse.http', 'posttooluse.http', 'pretooluse.http-failures']) {
+    assert.equal(help.stdout.includes('codex.' + suffix), false)
+    const result = await invoke(['--case', 'codex.' + suffix], { PATH: '' })
+    assert.equal(result.status, 2)
+    assert.match(result.stderr, /CONFORMANCE_USAGE_CASE/)
   }
 })

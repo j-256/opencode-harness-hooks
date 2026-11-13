@@ -8,6 +8,12 @@ export interface CommandArtifact extends ExecutionResult {
   readonly timeoutMs: number | null
 }
 
+export interface HttpArtifact {
+  readonly kind: 'http'
+  readonly completedAt: number
+  readonly durationMs: number
+}
+
 export interface NativeFailureArtifact {
   readonly type: 'hook_non_blocking_error'
   readonly completedAt: number
@@ -40,6 +46,7 @@ export interface InterpretedOutput {
 
 export interface HookEffect extends InterpretedOutput {
   readonly commandArtifact?: CommandArtifact
+  readonly httpArtifact?: HttpArtifact
   readonly nativeFailureArtifact?: NativeFailureArtifact
   readonly diagnostic: {
     readonly sourceID: string

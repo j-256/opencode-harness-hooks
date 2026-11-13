@@ -90,6 +90,14 @@ node scripts/verify-conformance.mjs --case claude.tool-failures --case codex.too
 
 The [failed-shell comparison](../docs/posttool-conformance.md#completed-nonzero-shell-calls) checks native event routing, selected error/output fields, owned post-tool effects, completed side effects and a later successful call. It uses the same pinned binaries, isolation and safe-receipt rules as the successful post-tool cases. Default V1 supports this measured path; other tool failures, exact rendering and V2 remain unverified. Passing the selected cases leaves the broader completeness gate unsatisfied.
 
+## Foreground HTTP hooks
+
+```sh
+node scripts/verify-conformance.mjs --case claude.pretooluse.http --case claude.posttooluse.http --case claude.pretooluse.http-failures
+```
+
+The [HTTP guide](../docs/http-hooks.md) defines native POST observation, tool controls, nonblocking fault dispositions, redirect checks and the separately scoped installed prompt-context probe. Only Claude has HTTP cases: the pinned native Codex source format rejects HTTP handlers. Passing these cases does not certify prompt failure artifacts, all HTTP policies or V2.
+
 ## Extending the suite
 
 Add a stable requirement for each independently testable native behavior and register a case with explicit source dialect, supported host targets, and observables. Broad event obligations need native branch coverage before they can be declared verified; a single example is insufficient. Reconcile version-sensitive behavior with the pinned native release, using public documentation as a starting reference rather than runtime proof.

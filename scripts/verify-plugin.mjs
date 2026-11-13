@@ -29,7 +29,7 @@ const TITLE_TEXT = 'PACKAGE_FIXTURE_TITLE'
 const TITLE_WAIT_MS = 5000
 const run = promisify(execFile)
 const INHERIT_PROCESS_GROUP = process.env.HARNESS_PROBE_INHERIT_PROCESS_GROUP === '1'
-const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval|-d] [--prompts] [--auth-composition] [-s|-r]
+const HELP = `Usage: node scripts/verify-plugin.mjs --host v1|v2 [-b PATH] [--dialect NAME] [--preapproval|-d] [--prompts] [-i] [--auth-composition] [-s|-r]
 
 Verify the built package's default entrypoint, native options and tool enforcement
 against a pinned OpenCode host. Requires npm run build, Node.js 22+, Git and the
@@ -45,6 +45,8 @@ Options:
   -d, --deny-precedence  V1: require a configured command denial to override hook
                          allow/input rewriting; exclusive with other probe modes
       --prompts      Check prompt blocking, context roles and retained history
+  -i, --http-prompt   V1 Claude HTTP additional context; requires --prompts and
+                     --dialect claude-code, without other probe modes
       --auth-composition  V1: compose an authentication-fetch provider and require
                           credential transformation on every provider request
   -s, --stop-rejection  Verify stock host fatal load rejection for Stop configs
@@ -84,7 +86,7 @@ async function stop(child, done) {
   } finally { signal('SIGKILL') }
 }
 
-async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRejection, reviewRejection, authComposition, denyPrecedence) {
+async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRejection, reviewRejection, authComposition, denyPrecedence, httpPrompt) {
   const loadRejection = stopRejection || reviewRejection
   const version = (await dependency(binary, ['--version'], 'OpenCode')).stdout.trim().replace(/^opencode v/, '')
   if (version !== VERSIONS[hostVersion]) throw new ProbeError('HOST_VERSION_MISMATCH: expected ' + VERSIONS[hostVersion], 2)
@@ -95,6 +97,7 @@ async function verify(hostVersion, binary, dialect, preapproval, prompts, stopRe
   const root = await realpath(await mkdtemp(join(tmpdir(), 'harness-package-')))
   const password = randomBytes(32).toString('base64url')
   let gateway
+  let httpHook
   let child
   let done
   let stage = 'setup'
@@ -173,7 +176,8 @@ console.log(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', 
 `)
     await run(process.execPath, ['--check', script], { env, timeout: STARTUP_MS, maxBuffer: MAX_BYTES })
     const hook = { type: 'command', command: quote(process.execPath) + ' ' + quote(script) }
-    const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [hook] }], PostToolUse: [{ matcher: 'Bash', hooks: [hook] }], ...(stopRejection ? { Stop: [{ hooks: [hook] }] } : {}), ...(prompts ? { UserPromptSubmit: [{ hooks: [hook, { ...hook, command: hook.command + ' stdout' }, { ...hook, command: hook.command + ' failure' }, { ...hook, command: hook.command + ' timeout', timeout: PROMPT_TIMEOUT_SECONDS }] }] } : {}) } })
+    if (httpPrompt) { const { startHttpHook } = await import('./lib/conformance-http.mjs'); httpHook = await startHttpHook({ hook: script, project }) }
+    const source = JSON.stringify({ hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [hook] }], PostToolUse: [{ matcher: 'Bash', hooks: [hook] }], ...(stopRejection ? { Stop: [{ hooks: [hook] }] } : {}), ...(prompts ? { UserPromptSubmit: [{ hooks: [httpPrompt ? { type: 'http', url: httpHook.url, timeout: 5 } : hook, { ...hook, command: hook.command + ' stdout' }, { ...hook, command: hook.command + ' failure' }, { ...hook, command: hook.command + ' timeout', timeout: PROMPT_TIMEOUT_SECONDS }] }] } : {}) } })
     await writeFile(sourcePath, source)
     const selectedDialects = dialect === 'mixed' ? ['claude-code', 'codex'] : [dialect]
     const sources = selectedDialects.map(dialect => ({ id: 'fixture-' + dialect, dialect, path: sourcePath }))
@@ -451,32 +455,35 @@ export default async function fixture(input, options) {
     } else assert.equal(payloads.length, toolPayloads.length + postPayloads.length)
     stage = 'model-visible-denial'
     assert.ok(JSON.stringify(requests[1].messages).includes('PACKAGE_FIXTURE_DENIED'))
+    if (httpPrompt) assert.deepEqual(httpHook.inspect(), { requests: PROMPT_SUBMISSIONS, redirectsFollowed: 0, errors: 0 })
     stage = 'final-answer'
     assert.equal(authenticationPreserved, true)
     assert.ok(JSON.stringify(answer).includes('PACKAGE_FIXTURE_DONE'))
-    return { host: version, dialect, defaultPackageEntrypoint: !authComposition, ...(authComposition ? { explicitV1ProviderComposition: true, authenticationFetchPreserved: true } : {}), nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, postToolEffectiveInputObserved: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, promptHandlerDispatchObserved: true, correlationHeaderPrivate: true, ...(v1TitleVerified ? { auxiliaryTitleCompleted: true, auxiliaryContextIsolated: true } : {}), ...(selectedDialects.includes('claude-code') ? { promptAttachmentsReadByHook: true, claudeCompletionOrderObserved: true, promptNonblockingErrorReadByHook: true, promptTimeoutReadByHook: true } : {}) } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true, modelDateReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
+    return { host: version, dialect, defaultPackageEntrypoint: !authComposition, ...(authComposition ? { explicitV1ProviderComposition: true, authenticationFetchPreserved: true } : {}), nativeOptions: true, deniedSideEffectAbsent: true, replacementExecuted: true, postToolEffectiveInputObserved: true, requiredPayloadMetadataObserved: true, ...(preapproval ? { nativeAllowUnderHostAsk: true } : {}), ...(httpPrompt ? { httpPromptAdditionalContextObserved: true } : {}), ...(prompts ? { promptBlockedBeforeModel: true, nativePromptContextRoles: true, promptContextRetainedAcrossTurns: true, promptHandlerDispatchObserved: true, correlationHeaderPrivate: true, ...(v1TitleVerified ? { auxiliaryTitleCompleted: true, auxiliaryContextIsolated: true } : {}), ...(selectedDialects.includes('claude-code') ? { promptAttachmentsReadByHook: true, claudeCompletionOrderObserved: true, promptNonblockingErrorReadByHook: true, promptTimeoutReadByHook: true } : {}) } : {}), ...(selectedDialects.includes('claude-code') ? { transcriptReadByHook: true, modelDateReadByHook: true } : {}), ...(selectedDialects.includes('codex') ? { hostTurnAndModelObserved: true } : {}), ...(sources.length > 1 ? { mixedSourcesExecutedIndependently: true } : {}), fixtureDeclaredPermissionMode: true, finalAnswerVisible: true, equivalent: false }
   } catch (error) {
     if (error instanceof ProbeError) throw error
     throw new ProbeError('PACKAGE_CHECK_FAILED: ' + stage + ' ' + (error.code ?? error.name ?? 'unknown') + (diagnosticCodes.size ? ' diagnostics=' + [...diagnosticCodes].sort().join(',') : ''))
   } finally {
     await stop(child, done)
     if (gateway?.listening) { gateway.closeAllConnections(); await new Promise(resolve => gateway.close(resolve)) }
-    await rm(root, { recursive: true, force: true })
+    try { await httpHook?.close() } finally { await rm(root, { recursive: true, force: true }) }
   }
 }
 
 try {
   let parsed
-  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, 'deny-precedence': { type: 'boolean', short: 'd' }, prompts: { type: 'boolean' }, 'auth-composition': { type: 'boolean' }, 'stop-rejection': { type: 'boolean', short: 's' }, 'review-rejection': { type: 'boolean', short: 'r' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
+  try { parsed = parseArgs({ options: { host: { type: 'string' }, dialect: { type: 'string' }, preapproval: { type: 'boolean' }, 'deny-precedence': { type: 'boolean', short: 'd' }, prompts: { type: 'boolean' }, 'http-prompt': { type: 'boolean', short: 'i' }, 'auth-composition': { type: 'boolean' }, 'stop-rejection': { type: 'boolean', short: 's' }, 'review-rejection': { type: 'boolean', short: 'r' }, binary: { type: 'string', short: 'b' }, help: { type: 'boolean', short: 'h' } }, strict: true, allowPositionals: false }) } catch { throw new ProbeError('USAGE_INVALID: use --help', 2) }
   if (parsed.values.help) process.stdout.write(HELP)
   else {
     const host = parsed.values.host
     if (!Object.hasOwn(VERSIONS, host ?? '')) throw new ProbeError('USAGE_HOST: expected v1 or v2', 2)
     const denyPrecedence = parsed.values['deny-precedence'] ?? false
-    if (denyPrecedence && (host !== 'v1' || parsed.values.preapproval || parsed.values.prompts || parsed.values['stop-rejection'] || parsed.values['review-rejection'] || parsed.values['auth-composition'])) throw new ProbeError('USAGE_DENY_PRECEDENCE: V1 without other probe modes', 2)
+    if (denyPrecedence && (host !== 'v1' || parsed.values.preapproval || parsed.values.prompts || parsed.values['stop-rejection'] || parsed.values['review-rejection'] || parsed.values['auth-composition'] || parsed.values['http-prompt'])) throw new ProbeError('USAGE_DENY_PRECEDENCE: V1 without other probe modes', 2)
     if (parsed.values['auth-composition'] && host !== 'v1') throw new ProbeError('USAGE_AUTH_COMPOSITION: V1 only', 2)
     const dialect = parsed.values.dialect ?? 'codex'
     if (!DIALECTS.has(dialect)) throw new ProbeError('USAGE_DIALECT: expected codex, claude-code or mixed', 2)
+    const httpPrompt = parsed.values['http-prompt'] ?? false
+    if (httpPrompt && (host !== 'v1' || dialect !== 'claude-code' || !parsed.values.prompts || parsed.values.preapproval || parsed.values['stop-rejection'] || parsed.values['review-rejection'] || parsed.values['auth-composition'])) throw new ProbeError('USAGE_HTTP_PROMPT: V1 Claude prompt mode only', 2)
     const preapproval = parsed.values.preapproval ?? false
     if (preapproval && dialect === 'codex') throw new ProbeError('USAGE_PREAPPROVAL: select claude-code or mixed', 2)
     const stopRejection = parsed.values['stop-rejection'] ?? false
@@ -485,7 +492,7 @@ try {
     if (stopRejection && (preapproval || parsed.values.prompts)) throw new ProbeError('USAGE_STOP_REJECTION: without --preapproval or --prompts', 2)
     const binary = parsed.values.binary ?? process.env[host === 'v1' ? 'OPENCODE_V1_BINARY' : 'OPENCODE_V2_BINARY'] ?? 'opencode'
     if (!binary.trim()) throw new ProbeError('USAGE_BINARY_EMPTY', 2)
-    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false, stopRejection, reviewRejection, parsed.values['auth-composition'] ?? false, denyPrecedence)) + '\n')
+    process.stdout.write(JSON.stringify(await verify(host, binary, dialect, preapproval, parsed.values.prompts ?? false, stopRejection, reviewRejection, parsed.values['auth-composition'] ?? false, denyPrecedence, httpPrompt)) + '\n')
   }
 } catch (error) {
   process.stderr.write((error instanceof ProbeError ? error.message : 'PACKAGE_PROBE_FAILED') + '\n')

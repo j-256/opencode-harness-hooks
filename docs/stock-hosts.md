@@ -1,6 +1,6 @@
 # Supported subset on stock OpenCode
 
-The default package targets OpenCode V1 1.19.5 and V2 2.2.5 without host patches. The supported subset uses foreground command handlers on the prompt and tool paths below. The [bounded V1 delivery profile and gap register](v1-compatibility.md) separate useful delivery from complete native equivalence and the V2 integration track. The subset does not establish a complete configuration migration or native trust/lifecycle parity, so the package's full-equivalence verdict remains false.
+The default package targets OpenCode V1 1.19.5 and V2 2.2.5 without host patches. The supported subset uses foreground command handlers and the documented [Claude HTTP subset](http-hooks.md) on the prompt and tool paths below. The [bounded V1 delivery profile and gap register](v1-compatibility.md) separate useful delivery from complete native equivalence and the V2 integration track. The subset does not establish a complete configuration migration or native trust/lifecycle parity, so the package's full-equivalence verdict remains false.
 
 ## Behavior and boundaries
 
@@ -12,6 +12,7 @@ The default package targets OpenCode V1 1.19.5 and V2 2.2.5 without host patches
 | `PreToolUse` | Command-based denial, whole input replacement and selected Claude preapproval | Forced approval, deferred execution, complete permission precedence and arbitrary cross-tool translations remain unverified |
 | `PostToolUse` | Foreground observation of effective arguments; V1 context/feedback and one Codex string result replacement | V2 default effect delivery needs its service; structured/conflicting replacements and full native rendering remain gaps. Completed effects cannot be undone |
 | Completed nonzero V1 shell calls | Claude failure hooks and Codex post-tool hooks, with selected context/feedback/replacement delivery | Other failures, interruption, exact native envelopes and V2 routing remain gaps; see [failure boundaries](runtime.md#v1-completed-shell-failures) |
+| Claude HTTP | Selected pre-tool denial/allow, post-tool effects and prompt additional context | Tool fault dispositions have native comparisons; prompt failure artifacts and broader HTTP policies remain gaps; Codex HTTP is not a supported native handler |
 | Stop | Prominent incompatible-configuration error and fatal admission/execution guards | Enabled selected Stop is incompatible with both default entrypoints; V1 rejection is an accepted host limitation and V2 completion remains a separate track |
 | Other events and services | Explicit unsupported diagnostics for unavailable events/services | Startup, native environment persistence, complete model/agent/MCP/background delivery and native extensions remain integration gates |
 
