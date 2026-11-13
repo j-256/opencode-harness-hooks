@@ -16,7 +16,7 @@ Preparations serialize by host session and append new records without rewriting 
 
 ## Storage and lifecycle
 
-`CodexRollout` owns journal files and verifies their identity before writes. Directories use mode `0700`, and files use `0600`. Journal size, record/session counts, retained original inputs and pending work have explicit limits. Cancellation drains preparation, and runtime disposal removes owned journal state while preserving replacements or unowned files for recovery. Metadata-only inspection and error codes exclude commands, transcript contents and source paths. The temporary journals are derived artifacts. The V1 binding separately persists owned native snapshots and regenerates a journal after restart without rerunning historical hooks. Automatic awaited V1 teardown remains unverified.
+`CodexRollout` owns journal files and verifies their identity before writes. Directories use mode `0700`, and files use `0600`. Journal size, record/session counts, retained original inputs and pending work have explicit limits. Cancellation drains preparation, and runtime disposal removes owned journal state while preserving replacements or unowned files for recovery. Actual V1 session deletion drains that session's writer, verifies its journal, reclaims its retained bytes and fences recreation; other sessions remain available. Metadata-only inspection and error codes exclude commands, transcript contents and source paths. The temporary journals are derived artifacts. The V1 binding separately persists owned native snapshots and regenerates a journal after restart without rerunning historical hooks. Automatic awaited V1 teardown remains unverified.
 
 ## Verification
 

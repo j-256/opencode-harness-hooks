@@ -80,7 +80,7 @@ export class V1Startups {
       if (this.created.size >= MAX_SESSIONS && !this.created.has(id)) { this.createdOverflow = true; return }
       this.created.add(id)
     }
-    if (type === 'session.deleted') { this.created.delete(id); this.states.delete(id) }
+    if (type === 'session.deleted') this.created.delete(id)
   }
 
   async configure(config: { shell?: string; model?: string }): Promise<void> {
@@ -195,6 +195,12 @@ export class V1Startups {
       if (config.error || !record(config.data) || config.data.shell !== this.wrapper) fail('HOST_ENVIRONMENT_CONFIG_UNAVAILABLE')
     }
     return this.shell.environment(session)
+  }
+
+  async removeSession(sessionID: string): Promise<void> {
+    await this.states.get(sessionID)?.pending.catch(() => {})
+    await this.shell.removeSession(sessionID)
+    this.states.delete(sessionID); this.created.delete(sessionID)
   }
 
   async dispose(): Promise<void> {

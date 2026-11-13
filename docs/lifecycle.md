@@ -1,6 +1,6 @@
 # Session lifecycle reference
 
-The default V1 binding delivers the documented [startup context, artifacts and environment subset](v1-startup-assessment.md). Its session-created observer is joined by awaited prompt/tool/model barriers. The V2 factory still requires separate lifecycle integration. Cold reconstruction, additional events and remaining native effects are pending implementation; the native fixtures below remain independent reference evidence for those branches.
+The default V1 binding delivers the documented [startup context, artifacts and environment subset](v1-startup-assessment.md), [owned cold reconstruction and guarded deletion](session-state.md). Its session-created observer is joined by awaited prompt/tool/model barriers. The V2 factory still requires separate lifecycle integration. Broader reconstruction, additional events and remaining native effects are pending implementation; the native fixtures below remain independent reference evidence for those branches.
 
 ## Core startup coordination
 

@@ -13,10 +13,13 @@ import { record, unavailable, protocol, partsText, layout, submit, guarded, hist
 import { V1Startups } from './startup-v1.js'
 import { V1SessionState } from './session-state-v1.js'
 import { SessionStore } from '../session-store.js'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
+import { ClaudeEnvironmentError } from '../claude-environment-files.js'
 import { realpath } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
+
+const MAX_SESSION_CLEANUPS = 1024
 
 export interface V1Input {
   readonly directory: string
@@ -127,6 +130,43 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   const reply = input.client?.postSessionIdPermissionsPermissionId?.bind(input.client)
   const tools = createV1Hooks({ ...runtime.tools, ...(!runtime.tools.preapprove && reply ? { preapprove: async (event: HostToolEvent) => approvals.remember(event, runtime.sessions.get(event.sessionID)) } : {}) })
   const disposeSession = async (sessionID: string) => { runtime.sessions.close(sessionID); protocols.delete(sessionID); await tools.disposeSession(sessionID) }
+  const cleanups = new Map<string, Promise<void>>()
+  const cleanupFailures = new Map<string, readonly { readonly phase: string; readonly code: string }[]>()
+  let cleanupObserverFailures = 0
+  let cleanupOverflowFailures = 0
+  const removeSession = (sessionID: string): Promise<void> => {
+    const existing = cleanups.get(sessionID)
+    if (existing) return existing
+    if (cleanups.size >= MAX_SESSION_CLEANUPS) return Promise.reject(new HostHookError('HOST_SESSION_CLEANUP_LIMIT', 'unsupported'))
+    const operationID = randomUUID()
+    const operations = [
+      { phase: 'runtime', run: async () => { await disposeSession(sessionID) } },
+      { phase: 'startup', run: async () => { await runtime.removeStartupSession(sessionID) } },
+      { phase: 'shell', run: async () => { await startup.removeSession(sessionID) } },
+      { phase: 'claude-transcript', run: async () => { await transcripts.removeSession?.(sessionID) } },
+      { phase: 'codex-transcript', run: async () => { await codexTranscripts.removeSession?.(sessionID) } },
+      { phase: 'native-state', run: async () => { await stateService.remove?.(sessionID) } },
+    ]
+    // Closing synchronously fences writers before any cleanup component begins
+    let closeError: unknown
+    try { runtime.sessions.close(sessionID) } catch (error) { closeError = error }
+    const pending = Promise.all(operations.map(async operation => {
+      const started = performance.now()
+      let code = 'HOST_SESSION_CLEANUP_SUCCEEDED', failure: { phase: string; code: string } | undefined
+      try { if (operation.phase === 'runtime' && closeError) throw closeError; await operation.run() }
+      catch (error) { code = error instanceof HostHookError || error instanceof ClaudeEnvironmentError ? error.code : 'HOST_SESSION_CLEANUP_FAILED'; failure = { phase: operation.phase, code } }
+      try { console.error(JSON.stringify({ component: 'opencode-harness-hooks', host: 'v1', event: 'session.deleted', sessionID, operationID, phase: operation.phase, code, outcome: failure ? 'failed' : 'success', durationMs: Math.round(performance.now() - started) })) } catch { cleanupObserverFailures++ }
+      return failure
+    })).then(results => {
+      const failed = results.filter((value): value is { phase: string; code: string } => value !== undefined)
+      if (!failed.length) cleanupFailures.delete(sessionID)
+      else if (cleanupFailures.has(sessionID) || cleanupFailures.size < MAX_SESSION_CLEANUPS) cleanupFailures.set(sessionID, failed)
+      else cleanupOverflowFailures++
+    })
+    cleanups.set(sessionID, pending)
+    void pending.finally(() => { if (cleanups.get(sessionID) === pending) cleanups.delete(sessionID) }).catch(() => {})
+    return pending
+  }
   const hooks = {
     ...tools,
     config: async (config: { provider?: Record<string, { options?: Record<string, unknown> }>; model?: string; shell?: string }) => {
@@ -221,7 +261,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
         const info = record(event.properties.info) ? event.properties.info : undefined
         const id = typeof event.properties.sessionID === 'string' ? event.properties.sessionID : info?.id
         if (typeof id === 'string' && id && (info?.id === undefined || info.id === id)) {
-          try { await disposeSession(id); await nativeState?.remove(id) } catch { console.error(JSON.stringify({ component: 'opencode-harness-hooks', host: 'v1', phase: 'session-deleted', sessionID: id, code: 'HOST_SESSION_CLEANUP_FAILED' })) }
+          await removeSession(id)
         }
         return
       }
@@ -235,9 +275,9 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       if (!input.sessionID) return
       Object.assign(output.env, await startup.shellEnvironment(runtime.sessions.get(input.sessionID)))
     },
-    inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
+    inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), cleanup: Object.freeze({ pending: cleanups.size, failedSessions: cleanupFailures.size, overflowFailures: cleanupOverflowFailures, observerFailures: cleanupObserverFailures }), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
     disposeSession,
-    dispose: async () => { runtime.sessions.dispose(); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); try { await startup.dispose(); await tools.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose() } },
+    dispose: async () => { runtime.sessions.dispose(); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await Promise.allSettled([...cleanups.values()]); try { await startup.dispose(); await tools.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose() } },
   }
   return {
     ...hooks,

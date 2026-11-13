@@ -21,6 +21,7 @@ import { runService } from './service-execution.js'
 import { SessionError, Sessions } from './sessions.js'
 import type { SessionSnapshot } from './sessions.js'
 import { SessionStarts } from './session-start.js'
+import { ClaudeEnvironmentFiles } from './claude-environment-files.js'
 import type { SessionStartEvent, SessionStartServices } from './session-start.js'
 import { Stops } from './stop.js'
 import type { StopEvent, StopServices } from './stop.js'
@@ -36,6 +37,7 @@ type NativeData = NonNullable<NativeEvent['dialectData']>
 
 export interface RuntimeServices {
   readonly nativeState?: {
+    readonly remove?: (sessionID: string) => Promise<void>
     readonly captureOriginals?: boolean
     readonly ensure: (session: SessionSnapshot, signal: AbortSignal) => Promise<void>
     readonly checkpoint: (session: SessionSnapshot, signal: AbortSignal) => Promise<void>
@@ -114,6 +116,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     return dispatch
   }
   const starts = services.sessionStart && sources.some(source => source.enabled && source.registrations.some(registration => registration.event === 'SessionStart')) ? new SessionStarts({ host, sources, sessions, hostServices: { ...services.host, environment, projectRoot: directory }, ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}), services: services.sessionStart, observe }) : undefined
+  const retainedEnvironments = !starts && services.sessionStart?.environmentDirectory ? new ClaudeEnvironmentFiles({ directory: services.sessionStart.environmentDirectory, sources }) : undefined
   const stops = services.stop && host === 'v2' && sources.some(source => source.enabled && source.registrations.some(registration => registration.event === 'Stop')) ? new Stops({ host, sources, sessions, hostServices: { ...services.host, environment, projectRoot: directory }, ...(options.permissionMode ? { permissionMode: options.permissionMode } : {}), ...(starts ? { starts } : {}), services: services.stop, observe }) : undefined
   const reported = new WeakSet<object>()
   const needsModelArtifacts = !!services.transcripts?.observeModel && (services.nativeState?.captureOriginals === true || sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.length))
@@ -243,6 +246,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     services.transcripts?.admitPrompt?.(event, session, dispatch)
   }
   return { report, sessions, tools, prompt, admitPrompt, promptOperation, observeModel, needsModelArtifacts,
+    removeStartupSession: async (sessionID: string) => { sessions.close(sessionID); if (starts) await starts.removeSession(sessionID); else await retainedEnvironments?.removeSession(sessionID) },
     start: (event: SessionStartEvent) => starts ? starts.start(event) : Promise.reject(new HostHookError('HOST_EVENT_UNAVAILABLE', 'unsupported')),
     stop: (event: StopEvent) => stops ? stops.complete(event) : Promise.reject(new HostHookError('HOST_EVENT_UNAVAILABLE', 'unsupported')),
     waitForStart: (sessionID: string) => starts ? starts.wait(sessionID) : Promise.resolve(undefined),

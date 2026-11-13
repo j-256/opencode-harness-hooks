@@ -114,6 +114,7 @@ async function reserveManifest(directory: string, text: string, signal?: AbortSi
 export class ClaudeEnvironmentFiles {
   private readonly serial = new Map<string, Promise<unknown>>()
   private readonly deleted = new Set<string>()
+  private readonly removed = new Set<string>()
   private readonly directories = new Map<string, Stats>()
   private rootOwnership?: Stats
   private readonly directory: string
@@ -204,11 +205,12 @@ export class ClaudeEnvironmentFiles {
     if (!this.deleted.has(sessionID) && this.deleted.size >= MAX_SESSIONS) return Promise.reject(new ClaudeEnvironmentError('ENVIRONMENT_SNAPSHOT_LIMIT'))
     this.deleted.add(sessionID)
     return this.schedule(sessionID, async () => {
+      if (this.removed.has(sessionID)) return
       try {
         const directory = join(this.directory, hash(sessionID))
-        if (!await lstat(this.directory).catch(error => { if (errno(error, 'ENOENT')) return undefined; throw error })) return
+        if (!await lstat(this.directory).catch(error => { if (errno(error, 'ENOENT')) return undefined; throw error })) { this.removed.add(sessionID); return }
         await this.verifyDirectory(this.directory)
-        if (!await lstat(directory).catch(error => { if (errno(error, 'ENOENT')) return undefined; throw error })) return
+        if (!await lstat(directory).catch(error => { if (errno(error, 'ENOENT')) return undefined; throw error })) { this.removed.add(sessionID); return }
         await this.verifyDirectory(directory, sessionID)
         const names = await readdir(directory)
         if (names.length > DEFAULT_REGISTRATION_LIMIT + 1 || names.some(name => name !== 'manifest.json' && (!HOOK_FILE.test(name) || Number(HOOK_FILE.exec(name)![1]) >= DEFAULT_REGISTRATION_LIMIT))) fail('ENVIRONMENT_LAYOUT_UNSUPPORTED')
@@ -227,7 +229,7 @@ export class ClaudeEnvironmentFiles {
           await unlink(entry.path)
         }
         await this.verifyDirectory(this.directory); await this.verifyDirectory(directory, sessionID)
-        await rmdir(directory); this.directories.delete(sessionID)
+        await rmdir(directory); this.directories.delete(sessionID); this.removed.add(sessionID)
       } catch (error) { if (error instanceof ClaudeEnvironmentError) throw error; fail('ENVIRONMENT_STORAGE_FAILED') }
     })
   }

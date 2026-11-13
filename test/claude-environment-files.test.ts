@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { execFile } from 'node:child_process'
 import { chmod, link, lstat, mkdir, mkdtemp, readFile, readdir, rename, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -10,6 +11,20 @@ import type { LoadedSource, NativeEvent, Registration } from '../src/types.js'
 
 const execute = promisify(execFile)
 const DIGEST = 'a'.repeat(64)
+
+for (const initiallyPresent of [false, true]) test(`completed environment removal never adopts replacement files (initiallyPresent=${initiallyPresent})`, async t => {
+  const { ClaudeEnvironmentFiles } = await import('../src/claude-environment-files.js')
+  const f = await fixture(t), selected = registrations(), files = new ClaudeEnvironmentFiles({ directory: f.directory, sources: [source(selected)] })
+  if (initiallyPresent) await files.prepare('session', selected)
+  await files.removeSession('session')
+  const directory = join(f.directory, createHash('sha256').update('session').digest('hex'))
+  await mkdir(directory, { recursive: true, mode: 0o700 })
+  await writeFile(join(directory, 'manifest.json'), JSON.stringify({ version: 2, layout: DIGEST }), { mode: 0o600 })
+  const replacement = join(directory, 'sessionstart-hook-0.sh')
+  await writeFile(replacement, 'replacement', { mode: 0o600 })
+  await files.removeSession('session')
+  assert.equal(await readFile(replacement, 'utf8'), 'replacement')
+})
 
 test('environment deletion recognizes retained native files after source selection changes', async t => {
   const { ClaudeEnvironmentFiles } = await import('../src/claude-environment-files.js')

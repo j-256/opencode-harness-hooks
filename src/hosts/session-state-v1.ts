@@ -148,6 +148,7 @@ export class V1SessionState {
 
   remove(sessionID: string): Promise<void> {
     if (this.disposed) return Promise.reject(new HostHookError('SESSION_STORE_CANCELLED', 'cancelled'))
+    if (!this.deleted.has(sessionID) && this.deleted.size >= MAX_SESSIONS || this.active.size >= MAX_PENDING) return Promise.reject(new HostHookError('SESSION_STORE_LIMIT', 'unsupported'))
     this.deleted.add(sessionID)
     const state = this.states.get(sessionID)
     const pending = (async () => {

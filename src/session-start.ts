@@ -237,6 +237,15 @@ export class SessionStarts {
     } catch (error) { throw this.barrierError(sessionID, error, started) }
   }
 
+  async removeSession(sessionID: string): Promise<void> {
+    this.options.sessions.close(sessionID)
+    const states = [...this.states].filter(([key]) => JSON.parse(key)[0] === sessionID)
+    await runService(this.serviceTimeout, undefined, async () => { await Promise.allSettled(states.flatMap(([, state]) => [state.pending, ...(state.admission ? [state.admission] : [])])) })
+    await this.environments?.removeSession(sessionID)
+    for (const [key] of states) this.states.delete(key)
+    this.current.delete(sessionID)
+  }
+
   dispose(): Promise<void> {
     this.disposing ??= (async () => {
       const started = performance.now()
