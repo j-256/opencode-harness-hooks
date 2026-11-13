@@ -13,6 +13,8 @@ import type { EffectResolution } from './effects.js'
 import type { HostModelEvent, ArtifactDiagnostic } from './model-types.js'
 import { selectRegistrations } from './matchers.js'
 import { buildPayload, PayloadError } from './payload.js'
+import { eventForDialect } from './native-event.js'
+import { MAX_TOOL_RESULT_BYTES, v1ShellFailure } from './tool-failure.js'
 import { inspectSources } from './inspection.js'
 import type { RuntimeReport } from './inspection.js'
 import { runService } from './service-execution.js'
@@ -28,7 +30,6 @@ import type { JsonValue, LoadedSource, NativeEvent, Registration } from './types
 
 export type { RuntimeOptions, RuntimeReport } from './inspection.js'
 
-const MAX_RESULT_BYTES = 8 * 1024 * 1024
 const MAX_PROMPT_BYTES = 8 * 1024 * 1024
 const STOP_HOST_CAPABILITY = 'awaited-completion-decision'
 type NativeData = NonNullable<NativeEvent['dialectData']>
@@ -58,11 +59,12 @@ function matched(sources: readonly LoadedSource[], event: NativeEvent): readonly
   }))
 }
 
-function resultData(event: HostToolEvent): Record<string, JsonValue> {
+function resultData(event: HostToolEvent, failure = v1ShellFailure(event)): Record<string, JsonValue> {
   if (event.event === 'PreToolUse') return {}
   if (event.event === 'PostToolUseFailure') {
+    if (failure) return { error: failure.error, is_interrupt: false }
     const error = typeof event.result === 'string' ? event.result : event.result instanceof Error ? event.result.message : record(event.result) && typeof event.result.message === 'string' ? event.result.message : undefined
-    if (error === undefined || Buffer.byteLength(error) > MAX_RESULT_BYTES) throw new HostHookError('HOST_TOOL_ERROR_UNAVAILABLE', 'unsupported')
+    if (error === undefined || Buffer.byteLength(error) > MAX_TOOL_RESULT_BYTES) throw new HostHookError('HOST_TOOL_ERROR_UNAVAILABLE', 'unsupported')
     return { error }
   }
   try {
@@ -70,7 +72,7 @@ function resultData(event: HostToolEvent): Record<string, JsonValue> {
       if (typeof item === 'number' && !Number.isFinite(item) || ['bigint', 'function', 'symbol'].includes(typeof item)) throw new Error()
       return item
     })
-    if (text === undefined || Buffer.byteLength(text) > MAX_RESULT_BYTES) throw new Error()
+    if (text === undefined || Buffer.byteLength(text) > MAX_TOOL_RESULT_BYTES) throw new Error()
     return { tool_response: JSON.parse(text) as JsonValue }
   } catch { throw new HostHookError('HOST_TOOL_RESULT_UNAVAILABLE', 'unsupported') }
 }
@@ -162,10 +164,12 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
         if (starts) await runService(null, signal, () => starts.wait(event.sessionID))
         if (sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.length)) services.transcripts?.observe(event, session)
         if (hasCodexToolHooks) services.codexTranscripts?.observe(event, session)
-        const base: NativeEvent = { host, event: event.event, sessionID: event.sessionID, cwd: directory, tool: event.tool, toolInput: event.event === 'PreToolUse' ? event.toolInput : event.effectiveInput }
-        const selected = matched(sources, base).filter(registration => !nativeSkip(registration, base))
-        if (event.event === 'PostToolUseFailure' && matched(sources, { ...base, event: 'PostToolUse' }).some(registration => registration.dialect === 'codex' && !nativeSkip(registration, { ...base, event: 'PostToolUse' }))) throw new HostHookError('HOST_POST_FAILURE_UNVERIFIED', 'unsupported')
+        const failure = v1ShellFailure(event)
+        const base: NativeEvent = { host, event: event.event, ...(failure ? { dialectEvents: { codex: 'PostToolUse' } } : {}), sessionID: event.sessionID, cwd: directory, tool: event.tool, toolInput: event.event === 'PreToolUse' ? event.toolInput : event.effectiveInput }
+        const selected = matched(sources, base).filter(registration => !nativeSkip(registration, eventForDialect(base, registration.dialect)))
+        if (event.event === 'PostToolUseFailure' && !failure && matched(sources, { ...base, event: 'PostToolUse' }).some(registration => registration.dialect === 'codex' && !nativeSkip(registration, { ...base, event: 'PostToolUse' }))) throw new HostHookError('HOST_POST_FAILURE_UNVERIFIED', 'unsupported')
         let nativeData = selected.length && services.nativeData ? await runService(null, signal, current => services.nativeData!(event, session, current)) : undefined
+        if (failure) nativeData = { ...nativeData, codex: { tool_response: failure.output, ...nativeData?.codex } }
         let nativeSessionIDs: NativeEvent['nativeSessionIDs']
         if (selected.some(registration => registration.dialect === 'claude-code') && nativeData?.['claude-code']?.transcript_path === undefined && services.transcripts) {
           const path = await services.transcripts.prepare(event, session, signal)
@@ -176,7 +180,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
           nativeData = { ...nativeData, codex: { ...nativeData?.codex, transcript_path: view.transcriptPath, turn_id: view.turnID } }
           nativeSessionIDs = { codex: view.sessionID }
         }
-        const data = { ...(selected.length ? resultData(event) : {}), transcript_path: null, tool_use_id: event.callID, ...(session.turnID ? { turn_id: session.turnID } : {}), ...(session.model ? { model: session.model } : {}), ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}) }
+        const data = { ...(selected.length ? resultData(event, failure) : {}), transcript_path: null, tool_use_id: event.callID, ...(session.turnID ? { turn_id: session.turnID } : {}), ...(session.model ? { model: session.model } : {}), ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}) }
         const nativeEvent: NativeEvent = { ...base, data, ...(nativeData ? { dialectData: nativeData } : {}), ...(nativeSessionIDs ? { nativeSessionIDs } : {}) }
         for (const registration of selected) {
           try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }

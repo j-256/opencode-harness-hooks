@@ -8,6 +8,7 @@ import type { HandlerResult } from './handlers.js'
 import type { HostServices } from './host-services.js'
 import { snapshotCommandContexts } from './host-services.js'
 import { MatcherError, selectRegistrations } from './matchers.js'
+import { eventForDialect } from './native-event.js'
 import type { LoadedSource, NativeEvent, Registration } from './types.js'
 
 const CLAUDE_MODEL_CONCURRENCY = 12
@@ -92,19 +93,20 @@ export async function dispatchEvent(inputSources: readonly LoadedSource[], input
   try {
     for (const source of sources) {
       if (!source.enabled) continue
+      const nativeEvent = eventForDialect(event, source.dialect)
       for (const original of source.registrations) {
-        if (original.event !== event.event) continue
+        if (original.event !== nativeEvent.event) continue
         const registration = { ...original, sourceDigest: source.digest }
         let failure: HandlerResult | undefined
         try {
-          if (!selectRegistrations([{ ...source, registrations: [registration] }], event).length) continue
+          if (!selectRegistrations([{ ...source, registrations: [registration] }], nativeEvent).length) continue
         } catch (error) {
           failure = matcherFailure(registration, error instanceof MatcherError ? 'MATCHER_INVALID' : 'MATCHER_FAILED')
         }
         const configuredOrder = pending.length
         const selectedFailure = failure
         const run = async (): Promise<DispatchEntry> => {
-          const result = selectedFailure ?? await executeRegistration(registration, event, host)
+          const result = selectedFailure ?? await executeRegistration(registration, nativeEvent, host)
           return { sourceID: source.id, sourceDigest: source.digest, registrationID: registration.id, dialect: registration.dialect, configuredOrder, completionOrder: completed++, result }
         }
         const limited = registration.dialect === 'claude-code' && (registration.handler.type === 'prompt' || registration.handler.type === 'agent')

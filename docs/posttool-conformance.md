@@ -29,4 +29,14 @@ For the selected successful shell calls, native Claude places both post-tool add
 
 Native Codex blocking output replaces the first model-visible tool result with the hook's feedback while retaining the completed side effects. Default V1 supplies the same exercised string replacement, hides the original output, and preserves the no-op control and next call's result. Both native and V1 retain the replacement in the selected later model request under the original call's ownership and before the next result. A missing replacement still produces failed conformance evidence rather than successful diagnostic coverage.
 
-This comparison provides the acceptance gate for the exercised shell path. The [bounded V1 gap register](v1-compatibility.md) records competing/structured replacements, nested tool promises, failed commands, other tool families, full rendering and lifecycle semantics, native trust, and V2 separately. They do not block delivery of the verified V1 subset. The [coverage catalog](../conformance/README.md) keeps the narrow cases separate from broad result and PostToolUse requirements.
+This comparison provides the acceptance gate for the exercised shell path. The [bounded V1 gap register](v1-compatibility.md) records competing/structured replacements, nested tool promises, unclassified tool failures, other tool families, full rendering and lifecycle semantics, native trust, and V2 separately. They do not block delivery of the verified V1 subset. The [coverage catalog](../conformance/README.md) keeps the narrow cases separate from broad result and PostToolUse requirements.
+
+## Completed nonzero shell calls
+
+```sh
+node scripts/verify-conformance.mjs --case claude.tool-failures --case codex.tool-failures --require-complete
+```
+
+These cases reuse the sequential-call controls with a first shell command that writes its marker, emits owned stdout and exits nonzero, followed by a successful call. Native Claude selects `PostToolUseFailure`; native Codex selects `PostToolUse`. Literal payload predicates require Claude error text with the observed exit code/output and `is_interrupt: false`, or Codex raw string stdout without a fabricated exit envelope. Both the event order and the absence of the other dialect's result field are checked. The same unchanged hook/configuration executes in native and V1.
+
+Context, feedback, string replacement, no-op controls, completed side effects, result ownership and later-call layout retain the successful-path checks above. Unsupported or malformed host delivery remains failed evidence. Default V1 agrees on these selected observations. A pass verifies only the catalog's narrow failed-shell requirement, not every failure event, exception, cancellation, payload field or artifact. Exact error rendering, stderr ordering, other tool families, full lifecycle/trust behavior and V2 remain gaps in the bounded profile.

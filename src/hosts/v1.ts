@@ -1,6 +1,7 @@
 import { HostHookError, ToolBridge } from './tools.js'
 import type { HostToolEvent, ToolCall, ToolHostOptions } from './tools.js'
 import type { EffectResolution } from '../effects.js'
+import { v1ShellFailure } from '../tool-failure.js'
 
 const MAX_CONTEXT_BYTES = 128 * 1024
 interface PendingContext { readonly sessionID: string; readonly parts: string[]; bytes: number; finishing: boolean; replacement?: string }
@@ -39,7 +40,7 @@ export function createV1Hooks(options: ToolHostOptions) {
     let replacement: string | undefined
     if (effects.resultReplacements.length) {
       const row = effects.resultReplacements[0]!
-      if (effects.resultReplacements.length !== 1 || event.event !== 'PostToolUse' || row.dialect !== 'codex' || typeof row.action.output !== 'string') throw new HostHookError('HOST_EFFECT_UNAVAILABLE', 'unsupported')
+      if (effects.resultReplacements.length !== 1 || (event.event !== 'PostToolUse' && !v1ShellFailure(event)) || row.dialect !== 'codex' || typeof row.action.output !== 'string') throw new HostHookError('HOST_EFFECT_UNAVAILABLE', 'unsupported')
       replacement = row.action.output
     }
     const parts = context(effects)

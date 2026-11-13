@@ -2,6 +2,7 @@ import { RRegex } from 'rregex'
 import { basename } from 'node:path'
 import type { Dialect, HostVersion } from './contracts.js'
 import { toolName } from './tool-schema.js'
+import { eventForDialect } from './native-event.js'
 import type { LoadedSource, NativeEvent, Registration } from './types.js'
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure', 'PermissionRequest', 'PermissionDenied'])
@@ -65,8 +66,9 @@ function candidates(registration: Registration, event: NativeEvent): readonly st
   return typeof value === 'string' ? [value] : []
 }
 
-export function selectRegistrations(sources: readonly LoadedSource[], event: NativeEvent): readonly Registration[] {
+export function selectRegistrations(sources: readonly LoadedSource[], inputEvent: NativeEvent): readonly Registration[] {
   return sources.flatMap(source => source.enabled ? source.registrations.filter(registration => {
+    const event = eventForDialect(inputEvent, registration.dialect)
     if (registration.event !== event.event) return false
     const values = candidates(registration, event)
     return values === undefined || matchesPattern(registration.dialect, event.event, registration.matcher, values)

@@ -83,7 +83,7 @@ test('default V1 discards a late replacement when the call is disposed', async (
   assert.equal(value.output, 'ORIGINAL_TOOL_RESULT')
 })
 
-test('default V1 does not apply result replacements before execution or through the failure event', async t => {
+test('default V1 does not apply result replacements before execution or through unsupported failure layouts', async t => {
   const actions: HookAction[] = [{ kind: 'replace-result', output: 'UNEXPECTED_REPLACEMENT', rejectNested: true }]
   const before = createV1Hooks({ dispatch: async () => result(actions, 'codex') })
   t.after(() => before.dispose())
@@ -92,9 +92,9 @@ test('default V1 does not apply result replacements before execution or through 
   t.after(() => failed.dispose())
   const bash = { ...call, tool: 'bash' }
   await failed['tool.execute.before'](bash, { args: { command: 'failure' } })
-  const value = { title: 'Failed', metadata: { exit: 1 }, output: 'ORIGINAL_FAILURE' }
+  const value = { content: [{ type: 'text', text: 'ORIGINAL_FAILURE' }], isError: true }
   await failed['tool.execute.after']({ ...bash, args: { command: 'failure' } }, value)
-  assert.equal(value.output, 'ORIGINAL_FAILURE')
+  assert.equal(value.content[0]!.text, 'ORIGINAL_FAILURE')
   assert.deepEqual(failed.inspect().diagnostics.map(row => row.code), ['HOST_EFFECT_UNAVAILABLE'])
 })
 

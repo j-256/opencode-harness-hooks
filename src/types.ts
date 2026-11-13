@@ -83,6 +83,7 @@ export interface LoadedSource {
 export interface NativeEvent {
   readonly host?: HostVersion
   readonly event: string
+  readonly dialectEvents?: Readonly<Partial<Record<Dialect, string>>>
   readonly sessionID: string
   readonly nativeSessionIDs?: Readonly<Partial<Record<Dialect, string>>>
   readonly cwd: string

@@ -82,6 +82,14 @@ node scripts/verify-conformance.mjs --case claude.posttooluse.effects --case cod
 
 The [post-tool conformance guide](../docs/posttool-conformance.md) defines selected result preservation/replacement, model-visible role/placement, completed side effects, and call-isolation observations. Native Claude and V1 agree on the selected context/feedback behavior; native Codex and V1 agree on the exercised string result replacement. A regression retains failed native/host observations and the runner continues other selected cases before exiting 1. Passing diagnostic rejection is not native equivalence. Exact formatting, broad post-tool behavior and V2 remain unverified. Those broader proof gaps remain visible without blocking the [bounded V1 delivery profile](../docs/v1-compatibility.md).
 
+## Nonzero shell results
+
+```sh
+node scripts/verify-conformance.mjs --case claude.tool-failures --case codex.tool-failures --require-complete
+```
+
+The [failed-shell comparison](../docs/posttool-conformance.md#completed-nonzero-shell-calls) checks native event routing, selected error/output fields, owned post-tool effects, completed side effects and a later successful call. It uses the same pinned binaries, isolation and safe-receipt rules as the successful post-tool cases. Default V1 supports this measured path; other tool failures, exact rendering and V2 remain unverified. Passing the selected cases leaves the broader completeness gate unsatisfied.
+
 ## Extending the suite
 
 Add a stable requirement for each independently testable native behavior and register a case with explicit source dialect, supported host targets, and observables. Broad event obligations need native branch coverage before they can be declared verified; a single example is insufficient. Reconcile version-sensitive behavior with the pinned native release, using public documentation as a starting reference rather than runtime proof.

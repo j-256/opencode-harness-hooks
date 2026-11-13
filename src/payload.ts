@@ -1,4 +1,5 @@
 import { isHookEvent } from './contracts.js'
+import { eventForDialect } from './native-event.js'
 import { toolIdentity } from './matchers.js'
 import { nativeToolInput } from './tool-schema.js'
 import type { JsonValue, NativeEvent, Registration } from './types.js'
@@ -70,6 +71,7 @@ function toolInput(registration: Registration, event: NativeEvent): JsonValue {
 }
 
 export function buildPayload(registration: Registration, event: NativeEvent): Record<string, JsonValue> {
+  event = eventForDialect(event, registration.dialect)
   if (registration.event !== event.event) throw new PayloadError('PAYLOAD_EVENT_MISMATCH')
   if (!isHookEvent(registration.dialect, event.event)) throw new PayloadError('PAYLOAD_EVENT_UNSUPPORTED')
   const data = { ...event.data, ...event.dialectData?.[registration.dialect] }
