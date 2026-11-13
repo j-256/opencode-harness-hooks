@@ -151,3 +151,31 @@ export class ModelResponse {
     if (value.type === 'response.output_text.delta') this.addText(value.delta)
   }
 }
+
+export function boundedModelResponse(response: Response, signal: AbortSignal, limit = EXECUTION_LIMITS.outputBytes): Response {
+  if (!response.body || !Number.isSafeInteger(limit) || limit < 1) throw new HookServiceError('MODEL_RESPONSE_INVALID')
+  const reader = response.body.getReader()
+  let bytes = 0, finished = false
+  let controller!: ReadableStreamDefaultController<Uint8Array>
+  const stop = () => { signal.removeEventListener('abort', abort); void reader.cancel().catch(() => {}) }
+  const abort = () => { if (finished) return; finished = true; stop(); controller.error(new HookServiceError('EXECUTION_CANCELLED')) }
+  const stream = new ReadableStream<Uint8Array>({
+    start(current) { controller = current },
+    pull: async current => {
+      if (finished) return
+      try {
+        if (signal.aborted) return abort()
+        const next = await reader.read()
+        if (finished) return
+        if (next.done) { finished = true; stop(); current.close(); return }
+        bytes += next.value.byteLength
+        if (bytes > limit) throw new HookServiceError('EXECUTION_OUTPUT_LIMIT')
+        current.enqueue(next.value)
+      } catch (error) { if (!finished) { finished = true; stop(); current.error(error instanceof HookServiceError ? error : new HookServiceError('MODEL_RESPONSE_INVALID')) } }
+    },
+    cancel: () => { finished = true; stop() },
+  })
+  signal.addEventListener('abort', abort, { once: true })
+  if (signal.aborted) abort()
+  return new Response(stream, { status: response.status, statusText: response.statusText, headers: response.headers })
+}
