@@ -309,7 +309,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     return dispatchPrompt(event, event)
   }
   return { report, sessions, tools, agentTool, prompt, notification, admitPrompt, promptOperation, observeModel, needsModelArtifacts,
-    backgroundRegistrations: Object.freeze(sources.flatMap(source => source.enabled ? source.registrations.filter(registration => isBackground(registration) && registration.handler.asyncRewake !== true && !nativeSkip(registration, { event: registration.event, sessionID: 'activation', cwd: directory, data: { source: 'startup' } })).map(registration => Object.freeze({ ...structuredClone(registration), sourceDigest: source.digest })) : [])),
+    backgroundRegistrations: Object.freeze(sources.flatMap(source => source.enabled ? source.registrations.filter(registration => isBackground(registration) && !nativeSkip(registration, { event: registration.event, sessionID: 'activation', cwd: directory, data: { source: 'startup' } })).map(registration => Object.freeze({ ...structuredClone(registration), sourceDigest: source.digest })) : [])),
     hasMcpHooks: sources.some(source => source.enabled && source.registrations.some(registration => registration.handler.type === 'mcp_tool')),
     hasAgentModelHooks: sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.some(registration => registration.handler.type === 'agent')),
     hasPromptModelHooks: sources.some(source => source.dialect === 'claude-code' && source.registrations.some(registration => registration.handler.type === 'prompt')),

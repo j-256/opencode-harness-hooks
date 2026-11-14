@@ -25,6 +25,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
     get: async () => ({ data: { id: 'parent', directory } }),
     create: async request => { calls.push({ phase: 'create', value: request.body }); const info = { id: 'child', directory, title: request.body.title, parentID: request.body.parentID, ...(missingPolicy ? {} : { permission: request.body.permission }) }; children.add(info.id); service.event('session.created', { info }); creating?.(); return { data: info } },
     prompt: async request => {
+      assert.ok(request.body.messageID)
       calls.push({ phase: 'prompt', value: request.body })
       const sessionID = request.path.id, message = { id: request.body.messageID, agent: request.body.agent }, model = request.body.model, input = { sessionID, message, model, agent: message.agent }
       service.message(input, { message, parts: request.body.parts })

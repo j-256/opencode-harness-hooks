@@ -24,6 +24,12 @@ import { V1AgentModels, AGENT_VERDICT_TOOL } from './agent-v1.js'
 import type { V1ModelClient } from './model-v1.js'
 import { V1McpTools } from './mcp-v1.js'
 import type { V1McpClient } from './mcp-v1.js'
+import { WakeRecords } from '../wake-records.js'
+import { V1WakeInputs } from './wake-inputs-v1.js'
+import { V1Wake } from './wake-v1.js'
+import type { V1WakeDiagnostic } from './wake-v1.js'
+import { V1WakeIdle } from './wake-idle-v1.js'
+import type { V1WakeIdleDiagnostic } from './wake-idle-v1.js'
 import { BackgroundRecords } from '../background-records.js'
 import { V1Background } from './background-v1.js'
 import type { V1BackgroundDiagnostic } from './background-v1.js'
@@ -51,7 +57,7 @@ export interface V1Input {
   }
 }
 export interface V1Services extends RuntimeServices {
-  readonly backgroundDiagnostic?: (value: V1BackgroundDiagnostic) => void
+  readonly backgroundDiagnostic?: (value: V1BackgroundDiagnostic | V1WakeDiagnostic | V1WakeIdleDiagnostic) => void
   readonly promptTransport?: {
     readonly providerID: string
     readonly attach: (wrap: (original: typeof fetch) => typeof fetch) => void
@@ -71,14 +77,18 @@ function auxiliary(prompt: Prompt & { readonly message: UserMessage }): boolean 
 
 export async function createHarnessHooks(input: V1Input, options: unknown, services: V1Services = {}) {
   services = { ...services }
-  const backgroundRecords = new BackgroundRecords()
-  const readHistory = async (event: { readonly sessionID: string }, signal: AbortSignal) => {
+  const backgroundRecords = new BackgroundRecords(), wakeRecords = new WakeRecords(), wakeInputs = new V1WakeInputs()
+  const readRawHistory = async (event: { readonly sessionID: string }, signal: AbortSignal) => {
     if (!input.client) throw new HostHookError('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE', 'unsupported')
     const [info, messages] = await Promise.all([input.client.session.get({ path: { id: event.sessionID }, signal }), input.client.session.messages({ path: { id: event.sessionID }, signal })])
     if (info.error || messages.error) throw new HostHookError('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE', 'unsupported')
     return { info: info.data, messages: messages.data }
   }
-  const transcripts = services.transcripts ?? new ClaudeTranscript({ host: 'v1', directory: input.directory, background: backgroundRecords, history: async (event, signal) => {
+  const readHistory = async (event: { readonly sessionID: string }, signal: AbortSignal) => {
+    const snapshot = await readRawHistory(event, signal)
+    return { ...snapshot, messages: wakeInputs.normalize(event.sessionID, snapshot.messages) }
+  }
+  const transcripts = services.transcripts ?? new ClaudeTranscript({ host: 'v1', directory: input.directory, background: backgroundRecords, wakes: wakeRecords, history: async (event, signal) => {
     const snapshot = await readHistory(event, signal)
     return history(snapshot.info, snapshot.messages)
   } })
@@ -89,7 +99,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   const contexts = new PromptContexts()
   const project = await realpath(input.directory), environment = services.host?.environment ?? process.env
   const stateDirectory = join(environment.XDG_STATE_HOME ?? join(environment.HOME ?? homedir(), '.local', 'state'), 'opencode-harness-hooks', createHash('sha256').update(project).digest('hex'), 'native-state')
-  const nativeState = services.nativeState ? undefined : new V1SessionState(new SessionStore({ host: 'v1', project, directory: stateDirectory, diagnostic: value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', ...value })) } }), { ...(!services.transcripts ? { claude: transcripts as ClaudeTranscript } : {}), ...(!services.codexTranscripts ? { codex: codexTranscripts as CodexTranscript } : {}), contexts, background: backgroundRecords }, { persistedPrompts: async (sessionID, signal) => {
+  const nativeState = services.nativeState ? undefined : new V1SessionState(new SessionStore({ host: 'v1', project, directory: stateDirectory, diagnostic: value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', ...value })) } }), { ...(!services.transcripts ? { claude: transcripts as ClaudeTranscript } : {}), ...(!services.codexTranscripts ? { codex: codexTranscripts as CodexTranscript } : {}), contexts, background: backgroundRecords, wakes: wakeRecords, wakeInputs }, { persistedPrompts: async (sessionID, signal) => {
     const snapshot = await readHistory({ sessionID }, signal), saved = history(snapshot.info, snapshot.messages)
     if (saved.id !== sessionID) unavailable('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE')
     const ids: string[] = []
@@ -102,11 +112,14 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   } })
   const stateService = services.nativeState ?? nativeState!
   const customBackground = services.host?.background
-  const background = new V1Background({ records: backgroundRecords, state: stateService, ...(services.backgroundDiagnostic ? { diagnostic: services.backgroundDiagnostic } : {}), ...(input.client?.tui ? { toast: async (text, _session, signal) => {
+  const wake = new V1Wake({ records: wakeRecords, state: stateService, ...(services.backgroundDiagnostic ? { diagnostic: services.backgroundDiagnostic } : {}) })
+  let idleWake: V1WakeIdle | undefined
+  const canWake = !customBackground && !!input.client?.session.prompt && !!transcripts.prepareNotification
+  const background = new V1Background({ records: backgroundRecords, state: stateService, ...(canWake ? { wakes: { records: wakeRecords, receive: async notice => { await wake.receive(notice); idleWake?.resume(notice.sessionID) } } } : {}), ...(services.backgroundDiagnostic ? { diagnostic: services.backgroundDiagnostic } : {}), ...(input.client?.tui ? { toast: async (text, _session, signal) => {
     const result = await input.client!.tui!.showToast({ body: { title: 'Codex background hook', message: text, variant: 'error', duration: BACKGROUND_TOAST_MS }, query: { directory: input.directory }, signal })
     if (result.error || result.data !== true) unavailable('HOST_BACKGROUND_UI_FAILED')
   } } : {}) })
-  const backgroundProjection = new V1BackgroundProjection({ records: backgroundRecords, prepare: (session, anchor, signal) => background.prepare(session, anchor, signal) })
+  const backgroundProjection = new V1BackgroundProjection({ records: backgroundRecords, wakes: wakeRecords, prepare: async (session, anchor, signal) => { await background.prepare(session, anchor, signal); await wake.prepare(session, anchor, signal) } })
   const startup = new V1Startups(input, transcripts, codexTranscripts, services, stateService)
   let models: V1PromptModels | undefined, agents: V1AgentModels | undefined, mcp: V1McpTools | undefined
   let agentPermissions: V1AgentPermissions | undefined
@@ -121,8 +134,18 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   } } : {}), ...(!services.host?.mcp ? { mcp: { timeoutAccounting: 'wall' as const, execute: request => {
     if (!mcp) unavailable('HOST_MCP_TOOL_UNAVAILABLE')
     return mcp.execute(request)
-  } } } : {}) }, transcripts, codexTranscripts, nativeState: stateService, sessionStart: startup.service })
+  } } } : {}) }, transcripts, codexTranscripts, nativeState: stateService, sessionStart: startup.service, ...(!customBackground ? { notifications: { prepare: async (event, session, signal) => {
+    if (services.notifications) return services.notifications.prepare(event, session, signal)
+    if (!transcripts.prepareNotification) unavailable('HOST_NOTIFICATION_UNAVAILABLE')
+    const path = await transcripts.prepareNotification(event, session, signal)
+    return { dialectData: { 'claude-code': { transcript_path: path } } }
+  }, capture: async (event, session, dispatch, signal) => { await services.notifications?.capture(event, session, dispatch, signal); await wake.capture(event, session, dispatch, signal) } } } : {}) })
   startup.attach(runtime)
+  wake.attach(runtime.sessions, runtime)
+  if (canWake) idleWake = new V1WakeIdle({ records: wakeRecords, inputs: wakeInputs, sessions: runtime.sessions, wake, state: stateService, history: async (sessionID, signal) => {
+    const snapshot = await readRawHistory({ sessionID }, signal)
+    return history(snapshot.info, snapshot.messages).messages
+  }, prompt: (sessionID, body, signal) => input.client!.session.prompt!({ path: { id: sessionID }, query: { directory: input.directory }, body, signal }), ...(services.backgroundDiagnostic ? { diagnostic: services.backgroundDiagnostic } : {}) })
   background.attach(runtime.sessions, customBackground ? [] : runtime.backgroundRegistrations)
   if (!services.host?.evaluatePrompt && runtime.hasPromptModelHooks) {
     models = await V1PromptModels.create({ directory: input.directory, ...(input.client ? { client: input.client } : {}) })
@@ -158,7 +181,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   const hasBackgroundHooks = !customBackground && runtime.backgroundRegistrations.length > 0
   const approvals = new CallApprovals({ diagnostic: runtime.tools.diagnostic })
   const needsPromptProjection = (sessionID: string) => hasContextHooks || contexts.requiresProjection(sessionID)
-  const needsBackgroundProjection = (sessionID: string) => hasBackgroundHooks || backgroundRecords.requiresProjection(sessionID)
+  const needsBackgroundProjection = (sessionID: string) => hasBackgroundHooks || backgroundRecords.requiresProjection(sessionID) || wakeRecords.requiresProjection(sessionID) || wakeInputs.requiresProjection(sessionID)
   const needsProjection = (sessionID: string) => needsPromptProjection(sessionID) || needsBackgroundProjection(sessionID)
   const admit = async (session: ReturnType<typeof runtime.sessions.get>, text: readonly string[]) => {
     try {
@@ -209,7 +232,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   }
   let retainedProjection = false
   try { retainedProjection = !hasContextHooks && nativeState ? await nativeState.requiresProjection() : false }
-  catch (error) { await Promise.allSettled([startup.dispose(), background.dispose(), runtime.dispose(), nativeState?.dispose()]); contexts.dispose(); backgroundProjection.dispose(); backgroundRecords.dispose(); throw error }
+  catch (error) { await Promise.allSettled([startup.dispose(), idleWake?.dispose(), wake.dispose(), background.dispose(), runtime.dispose(), nativeState?.dispose()]); contexts.dispose(); backgroundProjection.dispose(); backgroundRecords.dispose(); wakeRecords.dispose(); wakeInputs.dispose(); throw error }
   if ((hasContextHooks || hasBackgroundHooks || retainedProjection || models || agents || mcp) && managed) managed.attach(original => wrap(managed.providerID, original))
   const protocols = new Map<string, { readonly turnID: string; readonly providerID: string; readonly protocol: PromptProtocol }>()
   const reply = input.client?.postSessionIdPermissionsPermissionId?.bind(input.client)
@@ -218,7 +241,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     agentPermissions = new V1AgentPermissions({ directory: input.directory, environment, ...(input.serverUrl ? { serverUrl: input.serverUrl } : {}), owner: request => agents!.permissionOwner(request) })
     agentTools = createV1Hooks({ ...runtime.tools, dispatch: event => runtime.agentTool(agents!.execution(event.sessionID), event), ...(!runtime.tools.preapprove ? { preapprove: async (event: HostToolEvent) => { agentPermissions!.approve(agents!.execution(event.sessionID), { ...event, tool: event.tool === NATIVE_VERDICT_TOOL ? AGENT_VERDICT_TOOL : event.tool }) } } : {}) })
   }
-  const disposeSession = async (sessionID: string) => { runtime.sessions.close(sessionID); backgroundProjection.removeSession(sessionID); agentPermissions?.removeSession(sessionID); protocols.delete(sessionID); await Promise.all([tools.disposeSession(sessionID), models?.removeSession(sessionID), agents?.removeSession(sessionID), mcp?.removeSession(sessionID), agentTools?.disposeSession(sessionID), background.removeSession(sessionID)]); backgroundRecords.removeSession(sessionID) }
+  const disposeSession = async (sessionID: string) => { runtime.sessions.close(sessionID); backgroundProjection.removeSession(sessionID); agentPermissions?.removeSession(sessionID); protocols.delete(sessionID); await Promise.all([tools.disposeSession(sessionID), models?.removeSession(sessionID), agents?.removeSession(sessionID), mcp?.removeSession(sessionID), agentTools?.disposeSession(sessionID), background.removeSession(sessionID), idleWake?.removeSession(sessionID), wake.removeSession(sessionID)]); backgroundRecords.removeSession(sessionID); wakeRecords.removeSession(sessionID); wakeInputs.removeSession(sessionID) }
   const cleanups = new Map<string, Promise<void>>()
   const cleanupFailures = new Map<string, readonly { readonly phase: string; readonly code: string }[]>()
   let cleanupObserverFailures = 0
@@ -289,6 +312,10 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       }
     },
     'chat.message': async (prompt: Prompt, output: { readonly message: UserMessage; readonly parts?: readonly unknown[] }) => {
+      idleWake?.busy(prompt.sessionID)
+      const before = runtime.sessions.get(prompt.sessionID)
+      await stateService.ensure(before, before.signal)
+      if (idleWake && await idleWake.message(prompt.sessionID, output.message, output.parts)) return
       runtime.sessions.prompt(prompt.sessionID, output.message.id, prompt.model?.modelID ?? output.message.model?.modelID)
       const providerID = prompt.model?.providerID ?? output.message.model?.providerID, modelID = prompt.model?.modelID ?? output.message.model?.modelID
       if (models && providerID && modelID) models.observe(prompt.sessionID, output.message.id, { providerID, modelID }, { agent: output.message.agent, tools: output.message.tools })
@@ -335,8 +362,9 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       await stateService.ensure(session, session.turnSignal)
       if (!needsProjection(last.info.sessionID)) return
       if (!record(last) || !record(last.info) || typeof last.info.sessionID !== 'string') unavailable('HOST_PROMPT_LAYOUT_UNAVAILABLE')
-      if (needsPromptProjection(last.info.sessionID)) contexts.layout(session, layout('v1', output.messages))
-      if (needsBackgroundProjection(last.info.sessionID)) backgroundProjection.capture(session, output.messages)
+      const normalized = wakeInputs.normalize(session.sessionID, output.messages), owned = new Set(wakeInputs.read(session).map(input => input.messageID))
+      if (needsPromptProjection(last.info.sessionID)) contexts.layout(session, layout('v1', normalized).map(row => ({ ...row, ...(owned.has(row.id) ? { external: true as const } : {}) })))
+      if (needsBackgroundProjection(last.info.sessionID)) backgroundProjection.capture(session, normalized)
     },
     'chat.headers': async (prompt: Prompt & { readonly message: UserMessage }, output: { readonly headers: Record<string, string> }) => {
       if (auxiliary(prompt)) return
@@ -362,6 +390,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       }
       if (mcp?.event(event.type, event.properties) || agents?.event(event.type, event.properties) || models?.event(event.type, event.properties)) return
       startup.event(event.type, event.properties)
+      idleWake?.event(event.type, event.properties)
       if (event.type === 'session.created' && record(event.properties)) {
         const info = record(event.properties.info) ? event.properties.info : undefined
         const id = typeof event.properties.sessionID === 'string' ? event.properties.sessionID : info?.id
@@ -391,9 +420,10 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       if (agents?.owns(input.sessionID)) { const execution = agents.execution(input.sessionID); Object.assign(output.env, await startup.shellEnvironment(runtime.sessions.get(execution.parentID))); return }
       Object.assign(output.env, await startup.shellEnvironment(runtime.sessions.get(input.sessionID)))
     },
-    inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), ...(!customBackground ? { background: background.inspect() } : {}), backgroundRecords: backgroundRecords.inspect(), backgroundProjection: backgroundProjection.inspect(), ...(models ? { models: models.inspect() } : {}), ...(mcp ? { mcp: mcp.inspect() } : {}), ...(agents ? { agents: agents.inspect(), agentPermissions: agentPermissions!.inspect(), agentTools: agentTools!.inspect() } : {}), cleanup: Object.freeze({ pending: cleanups.size, failedSessions: cleanupFailures.size, overflowFailures: cleanupOverflowFailures, observerFailures: cleanupObserverFailures }), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
+    inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), ...(!customBackground ? { background: background.inspect() } : {}), backgroundRecords: backgroundRecords.inspect(), backgroundProjection: backgroundProjection.inspect(), wakes: wake.inspect(), wakeRecords: wakeRecords.inspect(), wakeInputs: wakeInputs.inspect(), ...(idleWake ? { idleWake: idleWake.inspect() } : {}), ...(models ? { models: models.inspect() } : {}), ...(mcp ? { mcp: mcp.inspect() } : {}), ...(agents ? { agents: agents.inspect(), agentPermissions: agentPermissions!.inspect(), agentTools: agentTools!.inspect() } : {}), cleanup: Object.freeze({ pending: cleanups.size, failedSessions: cleanupFailures.size, overflowFailures: cleanupOverflowFailures, observerFailures: cleanupObserverFailures }), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
     disposeSession,
-    dispose: async () => { runtime.sessions.dispose(); backgroundProjection.dispose(); await Promise.all([models?.dispose(), agents?.dispose(), mcp?.dispose(), background.dispose()]); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await Promise.allSettled([...cleanups.values()]); try { await startup.dispose(); await tools.dispose(); await agentTools?.dispose(); await agentPermissions?.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose(); backgroundRecords.dispose() } },
+    settleWake: async (sessionID: string) => { await background.completed(sessionID); await idleWake?.settled(sessionID) },
+    dispose: async () => { runtime.sessions.dispose(); backgroundProjection.dispose(); await Promise.all([models?.dispose(), agents?.dispose(), mcp?.dispose(), idleWake?.dispose(), wake.dispose(), background.dispose()]); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await Promise.allSettled([...cleanups.values()]); try { await startup.dispose(); await tools.dispose(); await agentTools?.dispose(); await agentPermissions?.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose(); backgroundRecords.dispose(); wakeRecords.dispose(); wakeInputs.dispose() } },
   }
   const message = guarded(runtime, 'admission', hooks['chat.message'], (prompt, output) => ({ sessionID: prompt.sessionID, messageID: output.message.id }))
   const parameters = guarded(runtime, 'parameters', hooks['chat.params'], prompt => ({ sessionID: prompt.sessionID, messageID: prompt.message.id }))

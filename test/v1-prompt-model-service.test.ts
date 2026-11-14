@@ -25,6 +25,7 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }, op
       return { data: info }
     },
     prompt: async request => {
+      assert.ok(request.body.messageID)
       const model = { ...request.body.model }, message = { id: request.body.messageID, agent: request.body.agent, model }
       calls.push({ phase: 'prompt', id: request.path.id, value: structuredClone(request.body) })
       assert.equal(models.event('message.updated', { info: { id: 'answer', sessionID: request.path.id, parentID: request.body.messageID, role: 'assistant' } }), true)

@@ -7,6 +7,7 @@ import type { HostNotificationEvent } from '../notification.js'
 import type { RuntimeServices } from '../runtime.js'
 import type { SessionSnapshot, Sessions } from '../sessions.js'
 import type { WakeRecords, WakePlacement } from '../wake-records.js'
+import type { WakeAttemptResult } from '../wake-attempts.js'
 
 const MAX_PENDING = 128
 const MAX_SESSIONS = 1024
@@ -55,24 +56,16 @@ export class V1Wake {
         this.current(session, signal); await this.options.state.ensure(session, session.signal)
         for (const row of this.options.records.read(session)) {
           if (row.binding) continue
-          let attempt = row.attempts.at(-1)
+          const attempt = row.attempts.at(-1)
           if (attempt && !attempt.result) fail('HOST_WAKE_ATTEMPT_UNRESOLVED')
           if (attempt && (!same(attempt.anchor, anchor) || attempt.result?.outcome !== 'allow')) continue
-          if (!attempt) {
-            attempt = this.options.records.begin(session, row.delivery.id, anchor)
-            await this.options.state.checkpoint(session, session.signal)
-            this.current(session, signal)
-            const event: HostNotificationEvent = { host: 'v1', event: 'UserPromptSubmit', sessionID: session.sessionID, messageID: session.turnID!, prompt: row.text.prompt, notificationID: attempt.id, anchor, signal }
-            this.capturing.add(attempt.id)
-            try { await this.runtime!.notification(event) } finally { this.capturing.delete(attempt.id) }
-          }
-          this.current(session, signal)
-          const result = this.options.records.read(session).find(value => value.delivery.id === row.delivery.id)!.attempts.at(-1)!.result
-          if (!result) fail('HOST_WAKE_ATTEMPT_UNRESOLVED')
-          if (result.outcome === 'allow') await this.bind(session, row.delivery.id, attempt.id, anchor, { kind: 'queued', human: false }, signal)
+          await this.evaluate(session, row.delivery.id, anchor, { kind: 'queued', human: false }, signal)
         }
       })
     } catch (error) { this.report(session.sessionID, 'admission', error instanceof HostHookError ? error.code : 'HOST_WAKE_ADMISSION_FAILED', 'failed', started); throw error }
+  }
+  system(session: SessionSnapshot, jobID: string, anchor: BackgroundAnchor, position: { readonly promptIndex: number; readonly turnIndex: number }, signal: AbortSignal): Promise<WakeAttemptResult> {
+    return this.serial(session.sessionID, async () => { this.current(session, signal); await this.options.state.ensure(session, session.signal); return this.evaluate(session, jobID, anchor, { kind: 'system', promptIndex: position.promptIndex, turnIndex: position.turnIndex }, signal) })
   }
   async removeSession(sessionID: string): Promise<void> {
     if (!this.closed.has(sessionID) && this.closed.size >= MAX_SESSIONS) fail('HOST_WAKE_LIMIT')
@@ -80,12 +73,38 @@ export class V1Wake {
   }
   async dispose(): Promise<void> { this.lifetime.abort(); await Promise.allSettled([...this.tails.values()]); this.tails.clear(); this.capturing.clear(); this.closed.clear() }
   inspect() { return Object.freeze({ pending: this.pending, sessions: this.tails.size, capturing: this.capturing.size, closed: this.closed.size, observerFailures: this.observerFailures, disposed: this.lifetime.signal.aborted }) }
+  private async evaluate(session: SessionSnapshot, jobID: string, anchor: BackgroundAnchor, placement: WakePlacement, signal: AbortSignal): Promise<WakeAttemptResult> {
+    const started = performance.now()
+    const row = this.options.records.read(session).find(row => row.delivery.id === jobID)
+    if (!row || row.binding) fail('HOST_WAKE_OWNER_MISMATCH')
+    let attempt = row.attempts.at(-1)
+    if (attempt && !same(attempt.anchor, anchor)) {
+      if (attempt.result?.outcome !== 'stop' || attempt.anchor.kind !== 'tool' || placement.kind !== 'system') fail('HOST_WAKE_ATTEMPT_UNRESOLVED')
+      attempt = undefined
+    }
+    if (attempt && !attempt.result) fail('HOST_WAKE_ATTEMPT_UNRESOLVED')
+    if (!attempt) {
+      attempt = this.options.records.begin(session, jobID, anchor)
+      await this.options.state.checkpoint(session, session.signal); this.current(session, signal)
+      const event: HostNotificationEvent = { host: 'v1', event: 'UserPromptSubmit', sessionID: session.sessionID, messageID: session.turnID!, prompt: row.text.prompt, notificationID: attempt.id, anchor, signal }
+      this.capturing.add(attempt.id)
+      try { await this.runtime!.notification(event) } finally { this.capturing.delete(attempt.id) }
+    }
+    this.current(session, signal)
+    const result = this.options.records.read(session).find(value => value.delivery.id === jobID)!.attempts.at(-1)!.result
+    if (!result) fail('HOST_WAKE_ATTEMPT_UNRESOLVED')
+    if (result.outcome === 'allow' || result.outcome === 'stop' && placement.kind === 'system') await this.bind(session, jobID, attempt.id, anchor, placement, signal)
+    else if (result.outcome === 'block') this.report(session.sessionID, 'admission', 'HOST_WAKE_CONSUMED', 'success', started, jobID)
+    return result
+  }
   private async bind(session: SessionSnapshot, jobID: string, attemptID: string, anchor: BackgroundAnchor, placement: WakePlacement, signal: AbortSignal): Promise<void> {
+    const started = performance.now()
     const reservation = this.options.records.reserveBind(session, jobID, attemptID, anchor, placement)
     let persisted = false
     try {
       await reservation.persist(() => this.options.state.checkpoint(session, session.signal)); persisted = true
       this.current(session, signal); reservation.commit()
+      this.report(session.sessionID, 'binding', 'HOST_WAKE_BOUND', 'success', started, jobID)
     } catch (error) {
       reservation.release()
       if (persisted && !session.signal.aborted) {

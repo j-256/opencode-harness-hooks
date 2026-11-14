@@ -28,6 +28,7 @@ async function fixture(t: { after: (callback: () => Promise<void>) => void }, de
       return { data: info }
     },
     prompt: async request => {
+      assert.ok(request.body.messageID)
       prompts.push(structuredClone(request.body))
       const prompt = { sessionID: request.path.id, agent: request.body.agent, model: { ...request.body.model, api: { npm: '@ai-sdk/openai-compatible' } }, message: { id: request.body.messageID, agent: request.body.agent, model: request.body.model } }
       await hooks['chat.message'](prompt, { message: prompt.message, parts: request.body.parts })

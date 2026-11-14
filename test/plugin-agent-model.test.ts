@@ -21,6 +21,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }, custom =
     get: async request => ({ data: { id: request.path.id, directory } }),
     create: async request => { const info = { permission: request.body.permission, id: 'owned-agent', parentID: request.body.parentID, title: request.body.title, directory }; children.push(info.id); await hooks.event({ event: { type: 'session.created', properties: { info } } }); return { data: info } },
     prompt: async request => {
+      assert.ok(request.body.messageID)
       prompts.push(structuredClone(request.body))
       const sessionID = request.path.id, model = request.body.model, message = { id: request.body.messageID, agent: request.body.agent, model }, prompt = { sessionID, agent: request.body.agent, model, message }
       await hooks['chat.message'](prompt, { message, parts: request.body.parts })

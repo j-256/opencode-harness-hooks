@@ -44,6 +44,7 @@ export function rejectV1Activation(input: Input, error: HostHookError): Hooks {
     event: async () => {},
     inspect: () => { throw error },
     disposeSession: async () => {},
+    settleWake: async () => {},
     dispose: async () => { lifetime.abort(); await notice },
   }
 }

@@ -43,7 +43,7 @@ const AGENT_BAD_REQUEST_ATTEMPTS = 4
 const AGENT_CONTINUATION = 'Complete the hook verification by calling the verdict tool with the decision'
 const MAX_TOOL_CALLS = 1024
 const MCP_DIAGNOSTICS: Readonly<Record<string, string>> = Object.freeze({ MODEL_EVALUATED: 'MCP_TOOL_EXECUTED', MODEL_EVALUATION_FAILED: 'MCP_TOOL_EXECUTION_FAILED', MODEL_SESSION_REMOVED: 'MCP_SESSION_REMOVED', MODEL_SESSION_CLEANUP_FAILED: 'MCP_SESSION_CLEANUP_FAILED' })
-interface PromptBody { readonly messageID: string; readonly model: ModelRef; readonly agent: string; readonly parts: { type: 'text'; text: string }[]; readonly tools?: Readonly<Record<string, boolean>>; readonly format?: { readonly type: 'json_schema'; readonly schema: unknown } }
+interface PromptBody { readonly messageID?: string; readonly noReply?: boolean; readonly variant?: string; readonly model: ModelRef; readonly agent: string; readonly parts: readonly { readonly type: 'text'; readonly text: string; readonly id?: string; readonly synthetic?: boolean; readonly metadata?: Readonly<Record<string, unknown>> }[]; readonly tools?: Readonly<Record<string, boolean>>; readonly format?: { readonly type: 'json_schema'; readonly schema: unknown } }
 export interface V1ModelClient {
   readonly app?: { readonly agents?: (options: { readonly query: { readonly directory: string }; readonly signal: AbortSignal }) => Promise<Result> }
   readonly session: {
