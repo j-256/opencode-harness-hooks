@@ -39,6 +39,7 @@ export interface BackgroundCompletion {
 
 export interface BackgroundRecord {
   readonly jobID: string
+  readonly sessionID: string
   readonly sourceID: string
   readonly sourceDigest?: string
   readonly registrationID: string

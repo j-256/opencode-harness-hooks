@@ -22,6 +22,7 @@ interface Job {
   startedAt?: number
 }
 interface SessionState {
+  readonly sessionID: string
   closed: boolean
   codexActive: number
   readonly lifecycle: AbortController
@@ -77,7 +78,7 @@ export class BackgroundManager implements BackgroundExecutor {
     if (existing && !existing.closed) return
     if (existing && (existing.active.size || existing.wakes.size)) throw new HookServiceError('BACKGROUND_SESSION_BUSY')
     this.states.set(sessionID, {
-      closed: false, codexActive: 0, lifecycle: new AbortController(), active: new Map(), tasks: new Map(), queue: [],
+      sessionID, closed: false, codexActive: 0, lifecycle: new AbortController(), active: new Map(), tasks: new Map(), queue: [],
       pending: [], pendingBytes: 0, history: [], waiters: new Set(), deliveryTail: Promise.resolve(), wakes: new Map(), observerFailures: 0,
     })
   }
@@ -128,6 +129,8 @@ export class BackgroundManager implements BackgroundExecutor {
     if (!state || (!state.active.size && !state.queue.length && !state.wakes.size)) return Promise.resolve()
     return new Promise(resolve => state.waiters.add(resolve))
   }
+
+  hasPending(sessionID: string, jobID: string): boolean { return this.states.get(sessionID)?.pending.some(row => row.id === jobID) === true }
 
   deliver(sessionID: string, mode: BackgroundDelivery['mode'], apply: (records: readonly BackgroundDelivery[], signal: AbortSignal) => Promise<void> | void): Promise<void> {
     const state = this.states.get(sessionID)
@@ -247,11 +250,11 @@ export class BackgroundManager implements BackgroundExecutor {
 
   private record(state: SessionState, job: Job, phase: BackgroundRecord['phase'], code: string, outcome?: BackgroundRecord['outcome'], durationMs = 0, invalidFields?: readonly string[]): void {
     const registration = job.work.registration
-    this.emit(state, freeze({ jobID: job.id, sourceID: registration.sourceID, ...(registration.sourceDigest ? { sourceDigest: registration.sourceDigest } : {}), registrationID: registration.id, dialect: registration.dialect, event: registration.event, phase, code, queuedMs: Math.round((job.startedAt ?? performance.now()) - job.queuedAt), durationMs, ...(outcome ? { outcome } : {}), ...(invalidFields ? { invalidFields } : {}) }))
+    this.emit(state, freeze({ jobID: job.id, sessionID: state.sessionID, sourceID: registration.sourceID, ...(registration.sourceDigest ? { sourceDigest: registration.sourceDigest } : {}), registrationID: registration.id, dialect: registration.dialect, event: registration.event, phase, code, queuedMs: Math.round((job.startedAt ?? performance.now()) - job.queuedAt), durationMs, ...(outcome ? { outcome } : {}), ...(invalidFields ? { invalidFields } : {}) }))
   }
 
   private deliveryFailure(state: SessionState, delivery: BackgroundDelivery, phase: 'delivery-failed' | 'wake-failed', code: string): void {
-    this.emit(state, Object.freeze({ jobID: delivery.id, sourceID: delivery.sourceID, ...(delivery.sourceDigest ? { sourceDigest: delivery.sourceDigest } : {}), registrationID: delivery.registrationID, dialect: delivery.dialect, event: delivery.event, phase, code, queuedMs: 0, durationMs: 0, outcome: 'failed' }))
+    this.emit(state, Object.freeze({ jobID: delivery.id, sessionID: state.sessionID, sourceID: delivery.sourceID, ...(delivery.sourceDigest ? { sourceDigest: delivery.sourceDigest } : {}), registrationID: delivery.registrationID, dialect: delivery.dialect, event: delivery.event, phase, code, queuedMs: 0, durationMs: 0, outcome: 'failed' }))
   }
 
   private emit(state: SessionState, record: BackgroundRecord): void {
