@@ -44,6 +44,18 @@ test('a passing narrow native differential cannot verify its entire event or ano
   assert.equal(report.nativeConformant, false)
 })
 
+test('active background cases verify their bounded controls without promoting all background obligations', async () => {
+  const { coverageReport } = await library(), data = await catalog()
+  const runs = ['claude', 'codex'].map(prefix => ({ caseID: prefix + '.background.active', host: 'v1', nativeVersion: data.versions.native[prefix === 'claude' ? 'claude-code' : 'codex'], hostVersion: data.versions.hosts.v1, status: 'passed' }))
+  const report = coverageReport(data, [], runs)
+  for (const dialect of ['claude-code', 'codex']) {
+    assert.equal(report.requirements.find((row: any) => row.id === dialect + '.execution.background-active-controls').targets.v1.status, 'verified')
+    assert.equal(report.requirements.find((row: any) => row.id === dialect + '.execution.background-active-controls').targets.v2.status, 'unverified')
+    assert.equal(report.requirements.find((row: any) => row.id === dialect + '.execution.background').targets.v1.status, 'unverified')
+  }
+  assert.equal(report.nativeConformant, false)
+})
+
 test('wrong native versions, host versions and unavailable case targets cannot promote coverage', async () => {
   const { coverageReport } = await library()
   const data = await catalog()

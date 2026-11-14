@@ -39,6 +39,26 @@ test('native Claude conversations send a new real prompt only after the precedin
   assert.ok(Number.isFinite(result.completedAt))
 })
 
+test('gated native conversations wait for an external safe point before admitting another genuine prompt', async () => {
+  const { runNativeGatedConversation } = await import(processURL.href)
+  const { mkdtemp, readFile, rm, writeFile } = await import('node:fs/promises')
+  const { join } = await import('node:path')
+  const root = await mkdtemp(join(tmpdir(), 'native-gate-')), marker = join(root, 'released')
+  try {
+    const program = `const fs=require('node:fs');let count=0;require('node:readline').createInterface({input:process.stdin}).on('line',line=>{count++;if(count===2&&!fs.existsSync(${JSON.stringify(marker)}))process.exit(9);console.log(JSON.stringify({type:'result',is_error:false,result:JSON.parse(line).message.content}))})`
+    const calls: number[] = []
+    const result = await runNativeGatedConversation(node, ['-e', program], ['Original', 'Next'], async (completed: number, signal: AbortSignal) => {
+      assert.equal(signal.aborted, false); calls.push(completed); await writeFile(marker, 'released')
+    }, tmpdir(), environment)
+    assert.deepEqual(calls, [1]); assert.equal(await readFile(marker, 'utf8'), 'released')
+    assert.deepEqual(result.stdout.trim().split('\n').map((line: string) => JSON.parse(line).result), ['Original', 'Next'])
+    await assert.rejects(runNativeGatedConversation(node, ['-e', program], ['Original', 'Next'], async () => { throw new Error('PRIVATE_GATE_FAILURE') }, tmpdir(), environment), { message: 'NATIVE_GATE_FAILED' })
+    let cancelled = false
+    await assert.rejects(runNativeGatedConversation(node, ['-e', program], ['Original', 'Next'], (_: number, signal: AbortSignal) => new Promise<void>(resolve => signal.addEventListener('abort', () => { cancelled = true; resolve() }, { once: true })), tmpdir(), environment, { durationMs: 100, graceMs: 10, maxBytes: 1024 }), { message: 'NATIVE_TIMEOUT' })
+    assert.equal(cancelled, true)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 test('native conversation failures do not admit a later prompt or disclose private child content', async () => {
   const { runNativeConversation } = await import(processURL.href)
   const input = 'process.stdin.once("data",()=>{'

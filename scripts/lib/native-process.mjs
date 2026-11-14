@@ -23,6 +23,11 @@ export async function runNativeConversation(binary, args, prompts, cwd, env, lim
   return execute(binary, args, conversationInput(prompts, limits), cwd, env, limits)
 }
 
+export async function runNativeGatedConversation(binary, args, prompts, gate, cwd, env, limits = NATIVE_PROCESS_LIMITS) {
+  if (typeof gate !== 'function') throw new NativeProbeError('NATIVE_INPUT_INVALID')
+  return execute(binary, args, conversationInput(prompts, limits), cwd, env, limits, undefined, gate)
+}
+
 export async function runNativeInterruptedConversation(binary, args, prompts, signal, cwd, env, limits = NATIVE_PROCESS_LIMITS) {
   const input = conversationInput(prompts, limits)
   if (!signal || typeof signal.addEventListener !== 'function' || signal.aborted || input.length < 2) throw new NativeProbeError('NATIVE_INPUT_INVALID')
@@ -34,7 +39,7 @@ function conversationInput(prompts, limits) {
   return Object.freeze([...prompts])
 }
 
-async function execute(binary, args, input, cwd, env, limits, interruptSignal) {
+async function execute(binary, args, input, cwd, env, limits, interruptSignal, gate) {
   const child = spawn(binary, args, { cwd, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] })
   const output = []
   const conversation = Array.isArray(input)
@@ -47,13 +52,21 @@ async function execute(binary, args, input, cwd, env, limits, interruptSignal) {
   let bytes = 0
   let failure
   let escalation
+  let advancing = false
+  const lifetime = new AbortController()
   const kill = signal => { try { if (child.pid) process.kill(-child.pid, signal) } catch {} }
-  const stop = code => { if (failure) return; failure = code; kill('SIGTERM'); escalation = setTimeout(() => kill('SIGKILL'), limits.graceMs) }
+  const stop = code => { if (failure) return; failure = code; lifetime.abort(); kill('SIGTERM'); escalation = setTimeout(() => kill('SIGKILL'), limits.graceMs) }
   const timer = setTimeout(() => stop('NATIVE_TIMEOUT'), limits.durationMs)
   const send = index => { dispatched = index + 1; child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: input[index] }, parent_tool_use_id: null, session_id: '' }) + '\n') }
   const advance = () => {
     if (completed === input.length) child.stdin.end()
-    else if (dispatched <= completed && (!interruptSignal || acknowledgedAt !== undefined)) send(completed)
+    else if (dispatched <= completed && (!interruptSignal || acknowledgedAt !== undefined)) {
+      if (!gate) send(completed)
+      else if (!advancing) {
+        advancing = true
+        void Promise.resolve().then(() => gate(completed, lifetime.signal)).then(() => { if (!failure && !lifetime.signal.aborted) send(completed) }, () => stop('NATIVE_GATE_FAILED')).finally(() => { advancing = false })
+      }
+    }
   }
   const interrupt = () => {
     if (failure) return
@@ -82,7 +95,7 @@ async function execute(binary, args, input, cwd, env, limits, interruptSignal) {
           continue
         }
         if (row.type !== 'result') continue
-        if (row.is_error !== false || completed >= input.length) { stop('NATIVE_RESULT_INVALID'); return }
+        if (row.is_error !== false || completed >= dispatched) { stop('NATIVE_RESULT_INVALID'); return }
         completed++
         if (interruptSignal && sentAt === undefined) { stop('NATIVE_CONTROL_NOT_TRIGGERED'); return }
         advance()
@@ -103,5 +116,5 @@ async function execute(binary, args, input, cwd, env, limits, interruptSignal) {
     }
     if (interruptSignal && (sentAt === undefined || acknowledgedAt === undefined)) throw new NativeProbeError('NATIVE_CONTROL_INVALID')
     return { stdout: Buffer.concat(output).toString('utf8'), completedAt: Date.now(), ...(interruptSignal ? { interrupt: Object.freeze({ sentAt, acknowledgedAt }) } : {}) }
-  } finally { interruptSignal?.removeEventListener('abort', interrupt); clearTimeout(timer); clearTimeout(escalation); kill('SIGKILL') }
+  } finally { lifetime.abort(); interruptSignal?.removeEventListener('abort', interrupt); clearTimeout(timer); clearTimeout(escalation); kill('SIGKILL') }
 }

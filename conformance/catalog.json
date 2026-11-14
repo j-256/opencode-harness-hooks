@@ -577,6 +577,24 @@
       "event": "PreToolUse",
       "area": "handlers",
       "summary": "Configured MCP exact arguments, text decisions, nonblocking failure, recursion suppression and owned child cleanup"
+    },
+    {
+      "id": "claude-code.execution.background-active-controls",
+      "dialect": "claude-code",
+      "area": "execution",
+      "summary": "Ordinary active-turn background commands preserve selected native channels, retained model carriers, hook-readable artifacts and original tool results without veto or rewrite"
+    },
+    {
+      "id": "codex.execution.background-active-controls",
+      "dialect": "codex",
+      "area": "execution",
+      "summary": "Ordinary active-turn background commands preserve selected native channels, retained model carriers, hook-readable artifacts and original tool results without veto or rewrite"
+    },
+    {
+      "id": "claude-code.execution.background-idle-controls",
+      "dialect": "claude-code",
+      "area": "execution",
+      "summary": "Ordinary background completion while idle remains unwoken during the observation window, then reaches the next genuine prompt as separate native prefix parts with retained attachment placement"
     }
   ],
   "evidence": [
@@ -1136,6 +1154,30 @@
         "handlers"
       ],
       "scope": "Guarded V1 identity, raw output and native metadata boundaries, deterministic owned dispatch, connection policy and callback isolation; actual comparison is separate"
+    },
+    {
+      "id": "background-delivery-controls",
+      "level": "unit-test",
+      "artifacts": [
+        "test/background.test.ts",
+        "test/background-records.test.ts",
+        "test/background-projection-v1.test.ts",
+        "test/background-v1.test.ts",
+        "test/plugin-background.test.ts",
+        "test/conformance-background.test.mjs"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [],
+      "areas": [
+        "execution",
+        "output",
+        "artifacts",
+        "state"
+      ],
+      "scope": "Bounded completion evidence, owned records and model carriers, native artifact replay, cancellation and cold-state controls; actual pinned comparison is separate"
     }
   ],
   "cases": [
@@ -1556,6 +1598,65 @@
         "Multiple text blocks retain their JSON decision",
         "No native hook recursion or evaluator identity in the parent transcript",
         "Owned child removal and unchanged source, hook and adapter bytes"
+      ]
+    },
+    {
+      "id": "claude.background.active",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.execution.background-active-controls"
+      ],
+      "description": "Independent native and stock V1 active-turn ordinary background command controls using unchanged source and helper bytes and a synthetic loopback provider",
+      "observables": [
+        "First model request excludes the still-blocked background output",
+        "Later model requests retain the exact dialect-native context carrier and text",
+        "Recognized informational, nonzero, control-only, malformed and empty outputs preserve native disposition",
+        "Original tool results and both completed filesystem effects remain intact",
+        "Hook-readable background attachments or developer rollout provenance retain owned process, turn and tool placement",
+        "Native CLI warning items and stock server toast emission stay outside model context",
+        "Session identity, invocation count, source/helper digests and adapter fingerprint remain owned"
+      ]
+    },
+    {
+      "id": "codex.background.active",
+      "dialect": "codex",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "codex.execution.background-active-controls"
+      ],
+      "description": "Independent native and stock V1 active-turn ordinary background command controls using unchanged source and helper bytes and a synthetic loopback provider",
+      "observables": [
+        "First model request excludes the still-blocked background output",
+        "Later model requests retain the exact dialect-native context carrier and text",
+        "Recognized informational, nonzero, control-only, malformed and empty outputs preserve native disposition",
+        "Original tool results and both completed filesystem effects remain intact",
+        "Hook-readable background attachments or developer rollout provenance retain owned process, turn and tool placement",
+        "Native CLI warning items and stock server toast emission stay outside model context",
+        "Session identity, invocation count, source/helper digests and adapter fingerprint remain owned"
+      ]
+    },
+    {
+      "id": "claude.background.idle",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.execution.background-idle-controls"
+      ],
+      "description": "Pinned native and stock V1 ordinary background completion after a finished turn, followed by genuine prompts in the same running session",
+      "observables": [
+        "The first genuine turn completes while the asynchronous hook remains blocked",
+        "After releasing the completed hook, no model request occurs during a bounded idle observation",
+        "The next genuine prompt receives separate native reminder text parts before its unchanged original text",
+        "A later genuine turn retains context at the same historical prompt",
+        "The hook-readable native attachment retains actual process identity, response fields and the verified prompt parent chain",
+        "Session, source, helper and adapter identities remain unchanged without a synthetic prompt"
       ]
     }
   ],

@@ -155,3 +155,16 @@ node scripts/verify-conformance.mjs --case claude.pretooluse.mcp
 ```
 
 This named V1 case shares source, recorder, and local MCP server bytes with pinned native Claude. Literal RPC arguments, parent effects and denial feedback, callback counts, text/error/empty/malformed/timeout controls, parent transcript isolation, and owned child cleanup must all agree. The deterministic internal transport uses no model account; parent responses use synthetic loopback providers. Provider allowlist handling is exercised. Native permission bypass is fixture-only, and machine-managed settings can remain active. The case does not certify connection/authentication/elicitation, exact raw multi-text whitespace, other events, native trust, Codex MCP, or V2. See the [MCP capability boundaries](../docs/mcp-hooks.md).
+
+## Ordinary background delivery comparison
+
+```sh
+node scripts/verify-conformance.mjs --case claude.background.active --case codex.background.active
+node scripts/verify-conformance.mjs --case claude.background.idle
+```
+
+The active cases share source and command bytes with the pinned native harness. The first model request excludes blocked output; later requests must retain the exact native carrier and text. Claude reminders append to the owned tool result, while Codex context uses a separate developer message and its warning uses the native CLI error item or stock server toast event. Informational nonzero, ignored control-only, malformed, and empty outputs must preserve each dialect's disposition without vetoing the parent or rewriting its effects. Both shell effects and original stored tool outputs remain required.
+
+The command recorder checks Claude raw background attachments, actual process ownership, rendered fields, and the parent chain following the owned result. Unrelated native attachments may intervene, but a broken chain or intervening message cannot pass. Codex rollout context requires native hook provenance and owned turn attribution following the result. The comparers reject equally wrong native and host observations as well as missing, duplicate, misplaced, or altered evidence.
+
+The Claude idle case finishes a genuine turn before releasing its background output. It observes a bounded idle window without a model request, then submits further genuine prompts in the same process and session. Reminder wrappers must occupy separate text parts before the next prompt's original text, retain that historical placement, and appear in the hook-readable attachment chain. This observation does not establish arbitrary-duration absence of wake behavior. Idle `asyncRewake`, Codex next-turn delivery, cold restart, broader events and carriers, complete TUI presentation, trust/reload, other providers, and V2 retain separate obligations. Default-factory tests cover additional cancellation, cold-state, and mixed-source paths; they are classified separately from these actual native comparisons.

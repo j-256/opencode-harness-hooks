@@ -178,3 +178,15 @@ test('MCP conformance exposes its named case without weakening dependency and ho
   const wrongHost = await invoke(['--case', name, '--host', 'v2'], { PATH: '' })
   assert.equal(wrongHost.status, 2); assert.match(wrongHost.stderr, /CONFORMANCE_USAGE_CASE/)
 })
+
+test('background cases retain per-dialect binary and stock host boundaries', { skip: process.platform === 'win32' }, async () => {
+  const help = await invoke(['--help'], { PATH: '' })
+  for (const name of ['claude.background.active', 'codex.background.active', 'claude.background.idle']) {
+    const dialect = name.startsWith('claude.') ? 'claude' : 'codex'
+    assert.ok(help.stdout.includes(name), name)
+    const missing = await invoke(['--case', name, '-C', '/missing/claude', '-X', '/missing/codex'])
+    assert.equal(missing.status, 3); assert.match(missing.stderr, new RegExp('DEPENDENCY_UNAVAILABLE: ' + dialect))
+    const wrongHost = await invoke(['--case', name, '--host', 'v2'], { PATH: '' })
+    assert.equal(wrongHost.status, 2); assert.match(wrongHost.stderr, /CONFORMANCE_USAGE_CASE/)
+  }
+})

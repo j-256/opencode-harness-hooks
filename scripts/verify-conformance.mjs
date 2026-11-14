@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { parseArgs } from 'node:util'
 import { ConformanceError, validateCatalog, readInventory, coverageReport, conformanceExitStatus } from './lib/conformance.mjs'
 
-const EXECUTABLE_CASES = new Set(['claude.pretooluse.mcp', 'claude.userpromptsubmit.agent-model', 'claude.userpromptsubmit.prompt-model', 'claude.session.resume', 'codex.session.resume', 'claude.sessionstart.context', 'codex.sessionstart.context', 'claude.pretooluse.control', 'codex.pretooluse.control', 'claude.pretooluse.input-rewrite', 'codex.pretooluse.input-rewrite', 'claude.posttooluse.effects', 'codex.posttooluse.effects', 'claude.tool-failures', 'codex.tool-failures', 'claude.pretooluse.http', 'claude.posttooluse.http', 'claude.pretooluse.http-failures', 'claude-code.v1.stop-load-rejection', 'codex.v1.stop-load-rejection'])
+const EXECUTABLE_CASES = new Set(['claude.background.idle', 'claude.background.active', 'codex.background.active', 'claude.pretooluse.mcp', 'claude.userpromptsubmit.agent-model', 'claude.userpromptsubmit.prompt-model', 'claude.session.resume', 'codex.session.resume', 'claude.sessionstart.context', 'codex.sessionstart.context', 'claude.pretooluse.control', 'codex.pretooluse.control', 'claude.pretooluse.input-rewrite', 'codex.pretooluse.input-rewrite', 'claude.posttooluse.effects', 'codex.posttooluse.effects', 'claude.tool-failures', 'codex.tool-failures', 'claude.pretooluse.http', 'claude.posttooluse.http', 'claude.pretooluse.http-failures', 'claude-code.v1.stop-load-rejection', 'codex.v1.stop-load-rejection'])
 const HELP = `Usage: node scripts/verify-conformance.mjs [-r] [-c CASE ...] [-H v1|v2] [-C PATH] [-X PATH] [-o PATH]
 
 List pinned native requirements and existing evidence without executing hooks.
@@ -15,6 +15,8 @@ Requires Node.js 22.13+. Inventory and help need no binaries, build or account.
 
 Options:
   -c, --case ID          Repeat for independent cases (V1 only):
+                        claude.background.active, codex.background.active,
+                        claude.background.idle,
                         claude.pretooluse.mcp,
                         claude.userpromptsubmit.agent-model,
                         claude.userpromptsubmit.prompt-model,
@@ -81,6 +83,10 @@ try {
       if (scenario.kind === 'exception') {
         const { runStopRejection } = await import('./lib/conformance-stop.mjs')
         runs.push(await runStopRejection(options))
+      } else if (scenario.id.includes('.background.')) {
+        const { runBackgroundComparison } = await import('./lib/conformance-background.mjs')
+        const nativeBinary = scenario.dialect === 'codex' ? binary(parsed.values['codex-binary'] ?? process.env.CODEX_BINARY ?? 'codex') : binary(parsed.values['claude-binary'] ?? process.env.CLAUDE_BINARY ?? 'claude')
+        runs.push(await runBackgroundComparison({ ...options, nativeBinary, delivery: scenario.id.endsWith('.idle') ? 'idle' : 'active' }))
       } else if (scenario.id === 'claude.pretooluse.mcp') {
         const { runMcpComparison } = await import('./lib/conformance-mcp.mjs')
         const nativeBinary = binary(parsed.values['claude-binary'] ?? process.env.CLAUDE_BINARY ?? 'claude')
