@@ -186,3 +186,13 @@ test('notification UI channels remain separate from model text and acknowledge d
   assert.deepEqual(cold.warnings(f.session), []); assert.equal(cold.read(f.session)[0]!.attempts.length, 1)
   assert.equal(f.records.read(f.session)[0]!.attempts[0]!.result!.attachments.some(row => (JSON.stringify(row.body.rendered) ?? '').includes('UI_ONLY')), false)
 })
+
+test('an unavailable Codex callback service cannot be captured as an allowed empty notification', async t => {
+  const f = fixture(t), attempt = f.records.begin(f.session, 'job', tool), event = f.input(attempt), source: Registration = { ...registration, dialect: 'codex', id: 'callback', handler: { type: 'mcp_tool', server: 'fixture', tool: 'check' } }
+  const result = await executeRegistration(source, { host: 'v1', event: 'UserPromptSubmit', sessionID: 'session', cwd: process.cwd(), data: { prompt: event.prompt, turn_id: event.messageID, model: 'model', permission_mode: 'default', transcript_path: '/unused' } }, { projectRoot: process.cwd(), environment: {} })
+  assert.equal(result.status, 'unsupported'); assert.equal(result.code, 'HOST_MCP_TOOL_UNAVAILABLE')
+  const entry = { sourceID: 'source', sourceDigest: DIGEST, registrationID: 'callback', dialect: 'codex' as const, configuredOrder: 0, completionOrder: 0, result }, dispatched: DispatchResult = { entries: [entry], actions: [], cancelled: false, diagnostic: { dispatchID: 'dispatch', sessionID: 'session', event: 'UserPromptSubmit', durationMs: 1, cancelled: false, failed: 0, unsupported: 1, skipped: 0, background: 0, handlers: [] } }
+  assert.throws(() => f.records.capture(f.session, event, dispatched), { code: 'WAKE_EFFECT_UNSUPPORTED' })
+  assert.equal(f.records.read(f.session)[0]!.attempts[0]!.result, null)
+  assert.throws(() => f.records.reserveBind(f.session, 'job', attempt.id, tool), { code: 'WAKE_NOTIFICATION_NOT_ADMITTED' })
+})

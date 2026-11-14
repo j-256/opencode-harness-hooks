@@ -52,6 +52,7 @@ export function wakeAttemptResult(event: HostNotificationEvent, dispatch: Dispat
   const expected = dispatch.cancelled ? [] : dispatch.entries.flatMap(({ result, ...origin }) => result.actions.map(action => ({ ...origin, action })))
   if (expected.length !== dispatch.actions.length || expected.some((row, index) => ORIGIN_FIELDS.some(field => row[field] !== dispatch.actions[index]![field]) || JSON.stringify(row.action) !== JSON.stringify(dispatch.actions[index]!.action))) fail('WAKE_DISPATCH_INVALID')
   const resolution = resolveEffects(dispatch)
+  if (!dispatch.cancelled && dispatch.entries.some(entry => entry.result.status === 'unsupported')) fail('WAKE_EFFECT_UNSUPPORTED')
   if (dispatch.actions.some(row => !ACTIONS.has(row.action.kind) || row.action.kind === 'native-extension' && row.action.name !== 'mcpSourceNamespace')) fail('WAKE_EFFECT_UNSUPPORTED')
   if (resolution.context.some(row => row.action.placement !== 'model') || !['default', 'block', 'stop', 'cancelled'].includes(resolution.control)) fail('WAKE_EFFECT_UNSUPPORTED')
   const outcome = resolution.control === 'default' ? 'allow' : resolution.control as 'block' | 'stop' | 'cancelled'
