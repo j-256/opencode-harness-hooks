@@ -8,11 +8,14 @@ import { PromptContexts } from '../prompt-contexts.js'
 import { Sessions } from '../sessions.js'
 import { StartupRecords } from '../startup-records.js'
 import { BackgroundRecords } from '../background-records.js'
+import { WakeRecords } from '../wake-records.js'
+import { V1WakeInputs } from './wake-inputs-v1.js'
 
 const KIND = 'v1-session-state'
-const PARTICIPANTS = ['claude', 'codex', 'contexts', 'background'] as const
+const PARTICIPANTS = ['claude', 'codex', 'contexts', 'background', 'wakes', 'wakeInputs'] as const
 const FIELDS = [...PARTICIPANTS, 'pendingPrompts']
-const PREVIOUS_FIELDS = ['claude', 'codex', 'contexts', 'pendingPrompts']
+const PRE_BACKGROUND_FIELDS = ['claude', 'codex', 'contexts', 'pendingPrompts']
+const PRE_WAKE_FIELDS = [...PRE_BACKGROUND_FIELDS, 'background']
 const MAX_SESSIONS = 1024
 const MAX_PENDING = 128
 const MAX_PROMPTS = 10000
@@ -24,7 +27,10 @@ interface Options { readonly persistedPrompts?: (sessionID: string, signal: Abor
 interface State { readonly signal: AbortSignal; readonly loading: Promise<void>; readonly pendingPrompts: Set<string>; tail: Promise<unknown>; receipt?: StoredSession; failure?: unknown }
 function fail(code: string): never { throw new HostHookError(code, code === 'SESSION_STORE_CANCELLED' ? 'cancelled' : 'unsupported') }
 function retained(value: unknown, session: SessionSnapshot) {
-  if (value !== null && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'background')) return { ...sessionSnapshot(KIND, value, session, PREVIOUS_FIELDS), background: null }
+  if (value !== null && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'wakes') && !Object.hasOwn(value, 'wakeInputs')) {
+    if (!Object.hasOwn(value, 'background')) return { ...sessionSnapshot(KIND, value, session, PRE_BACKGROUND_FIELDS), background: null, wakes: null, wakeInputs: null }
+    return { ...sessionSnapshot(KIND, value, session, PRE_WAKE_FIELDS), wakes: null, wakeInputs: null }
+  }
   return sessionSnapshot(KIND, value, session, FIELDS)
 }
 
@@ -42,9 +48,17 @@ export class V1SessionState {
     return this.store.someSession(receipt => {
       if (performance.now() - started > SCAN_MS) fail('SESSION_STORE_LIMIT')
       if (!receipt.payload) return false
-      const sessions = new Sessions(), contexts = new PromptContexts(), starts = new StartupRecords(), background = new BackgroundRecords()
+      const sessions = new Sessions(), contexts = new PromptContexts(), starts = new StartupRecords(), background = new BackgroundRecords(), wakes = new WakeRecords(), wakeInputs = new V1WakeInputs()
       try {
         const session = sessions.get(receipt.sessionID), input = retained(receipt.payload, session)
+        if (input.wakeInputs !== null) {
+          wakeInputs.restoreV1(session, input.wakeInputs)
+          if (wakeInputs.requiresProjection(receipt.sessionID)) return true
+        }
+        if (input.wakes !== null) {
+          wakes.restoreV1(session, input.wakes)
+          if (wakes.requiresProjection(receipt.sessionID)) return true
+        }
         if (input.background !== null) {
           background.restoreV1(session, input.background)
           if (background.requiresProjection(receipt.sessionID)) return true
@@ -68,7 +82,7 @@ export class V1SessionState {
           }
         }
         return false
-      } finally { contexts.dispose(); starts.dispose(); background.dispose(); sessions.dispose() }
+      } finally { contexts.dispose(); starts.dispose(); background.dispose(); wakes.dispose(); wakeInputs.dispose(); sessions.dispose() }
     }, AbortSignal.timeout(SCAN_MS))
   }
 
@@ -141,7 +155,7 @@ export class V1SessionState {
     if (this.active.size >= MAX_PENDING) return Promise.reject(new HostHookError('SESSION_STORE_LIMIT', 'unsupported'))
     const pending = (async () => {
       await this.ensure(session, waiter)
-      await this.participants.background?.snapshotReady?.(session, waiter)
+      for (const participant of Object.values(this.participants)) await participant.snapshotReady?.(session, waiter)
       const state = this.states.get(session.sessionID)!
       const previous = state.receipt!.payload
       const payload = snapshotCopy({ kind: KIND, version: SESSION_SNAPSHOT_VERSION, sessionID: session.sessionID, pendingPrompts: [...state.pendingPrompts], ...Object.fromEntries(PARTICIPANTS.map(name => [name, this.participants[name]?.snapshotV1(session.sessionID) ?? previous?.[name] ?? null])) }) as Readonly<Record<string, JsonValue>>

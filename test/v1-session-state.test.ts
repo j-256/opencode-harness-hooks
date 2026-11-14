@@ -9,6 +9,9 @@ import { Sessions } from '../src/sessions.js'
 import { BackgroundRecords } from '../src/background-records.js'
 import type { BackgroundDelivery } from '../src/background-types.js'
 import type { Registration } from '../src/types.js'
+import { WakeRecords } from '../src/wake-records.js'
+import type { DispatchResult } from '../src/engine.js'
+import { V1WakeInputs, wakeInputPart } from '../src/hosts/wake-inputs-v1.js'
 
 async function fixture(t: { after: (callback: () => Promise<void>) => void }) {
   const project = await mkdtemp(join(tmpdir(), 'v1-native-state-'))
@@ -68,26 +71,87 @@ test('V1 state conflicts fail explicitly and cannot replace a newer durable snap
   await source.dispose(); await stale.dispose(); a.dispose(); b.dispose()
 })
 
-test('the known previous V1 state shape migrates narrowly while preserving untouched participant payloads', async t => {
+for (const backgroundField of [false, true]) test(`known prior V1 layouts migrate narrowly without changing participant payloads, background field ${backgroundField}`, async t => {
   const f = await fixture(t), store = f.store(), sessions = new Sessions(), session = sessions.get('session')
-  const previous = { kind: 'v1-session-state', version: 1, sessionID: 'session', claude: { original: 'retained' }, codex: null, contexts: null, pendingPrompts: [] }
+  const previous = { kind: 'v1-session-state', version: 1, sessionID: 'session', claude: { original: 'retained' }, codex: null, contexts: null, pendingPrompts: [], ...(backgroundField ? { background: null } : {}) }
   await store.save(await store.load('session'), previous); await store.dispose()
   const data = participant(), background = participant(), state = new V1SessionState(f.store(), { claude: data, background })
   await state.ensure(session); assert.deepEqual(JSON.parse(JSON.stringify(data.value())), previous.claude); assert.equal(background.restored(), 0)
   background.set({ retained: 'background' }); await state.checkpoint(session); await state.dispose()
   const readback = f.store(), payload = (await readback.load('session')).payload!
   assert.deepEqual(JSON.parse(JSON.stringify(payload.claude)), previous.claude); assert.deepEqual(JSON.parse(JSON.stringify(payload.background)), { retained: 'background' })
+  assert.equal(payload.wakes, null)
+  assert.equal(payload.wakeInputs, null)
   await readback.dispose(); sessions.dispose()
 })
 
 test('unknown or partial V1 state layouts cannot use migration to bypass strict restoration', async t => {
-  for (const extra of [{ unknown: true }, { background: null, unknown: true }]) {
+  for (const extra of [{ unknown: true }, { background: null, unknown: true }, { wakes: null }, { background: null, wakes: null }, { background: null, wakes: null, unknown: true }]) {
     const f = await fixture(t), store = f.store(), sessions = new Sessions(), session = sessions.get('session')
     await store.save(await store.load('session'), { kind: 'v1-session-state', version: 1, sessionID: 'session', claude: null, codex: null, contexts: null, pendingPrompts: [], ...extra }); await store.dispose()
     const state = new V1SessionState(f.store(), { background: participant() })
     await assert.rejects(state.ensure(session), { code: 'SESSION_SNAPSHOT_SCHEMA_INVALID' }); await assert.rejects(state.requiresProjection(), { code: 'SESSION_SNAPSHOT_SCHEMA_INVALID' })
     await state.dispose(); sessions.dispose()
   }
+})
+
+async function wakeFixture(t: { after(callback: () => unknown): void }) {
+  const f = await fixture(t), sessions = new Sessions(); sessions.prompt('session', 'turn', 'model')
+  const registration: Registration = { id: 'hook', sourceID: 'source', sourceDigest: 'a'.repeat(64), dialect: 'claude-code', event: 'UserPromptSubmit', groupIndex: 0, handlerIndex: 0, handler: { type: 'command', command: 'owned', asyncRewake: true } }
+  const wakes = new WakeRecords({ registrations: [registration] }), state = new V1SessionState(f.store(), { wakes }), session = sessions.get('session')
+  t.after(async () => { await state.dispose(); wakes.dispose(); sessions.dispose() }); await state.ensure(session)
+  wakes.admit(session, { id: 'job', sourceID: 'source', sourceDigest: registration.sourceDigest!, registrationID: 'hook', dialect: 'claude-code', event: 'UserPromptSubmit', mode: 'wake', actions: [{ kind: 'native-extension', name: 'asyncRewake', value: 'OWNED_WAKE' }], completion: { completedAt: 1700000000000, execution: { status: 'exited', exitCode: 2, signal: null, stdout: '', stderr: 'OWNED_WAKE', durationMs: 1, processID: 123 } } })
+  const anchor = { kind: 'tool' as const, sessionID: 'session', turnID: 'turn', messageID: 'answer', callID: 'call', signature: 'b'.repeat(64) }, attempt = wakes.begin(session, 'job', anchor)
+  const dispatch: DispatchResult = { entries: [], actions: [], cancelled: false, diagnostic: { dispatchID: 'dispatch', sessionID: 'session', event: 'UserPromptSubmit', durationMs: 0, cancelled: false, failed: 0, unsupported: 0, skipped: 0, background: 0, handlers: [] } }
+  wakes.capture(session, { host: 'v1', event: 'UserPromptSubmit', sessionID: 'session', messageID: 'turn', prompt: wakes.read(session)[0]!.text.prompt, notificationID: attempt.id, anchor, signal: session.turnSignal }, dispatch)
+  return { ...f, sessions, session, registration, wakes, state, anchor, attempt }
+}
+
+test('durable wake state survives a cold runtime without restoring source command grants', async t => {
+  const f = await wakeFixture(t)
+  const binding = f.wakes.reserveBind(f.session, 'job', f.attempt.id, f.anchor)
+  await binding.persist(() => f.state.checkpoint(f.session, f.session.signal)); binding.commit(); await f.state.dispose()
+  const sessions = new Sessions(), wakes = new WakeRecords(), state = new V1SessionState(f.store(), { wakes })
+  t.after(async () => { await state.dispose(); wakes.dispose(); sessions.dispose() })
+  assert.equal(await state.requiresProjection(), true)
+  await state.ensure(sessions.get('session')); assert.deepEqual(wakes.read(sessions.get('session')), f.wakes.read(f.session))
+  assert.throws(() => wakes.assertRegistration(f.registration), { code: 'WAKE_SOURCE_UNAVAILABLE' })
+})
+
+test('an unrelated durable checkpoint waits for the wake binding decision before sampling participants', async t => {
+  const f = await wakeFixture(t), binding = f.wakes.reserveBind(f.session, 'job', f.attempt.id, f.anchor)
+  let sampled = false; const snapshot = f.wakes.snapshotV1.bind(f.wakes); f.wakes.snapshotV1 = sessionID => { sampled = true; return snapshot(sessionID) }
+  const external = f.state.checkpoint(f.session, f.session.signal)
+  await new Promise<void>(resolve => setImmediate(resolve)); const sampledBeforeDecision = sampled
+  binding.release(); await external; await f.state.dispose()
+  const store = f.store(), payload = (await store.load('session')).payload!, cold = new WakeRecords(); t.after(async () => { await store.dispose(); cold.dispose() })
+  cold.restoreV1(f.session, payload.wakes); assert.equal(cold.read(f.session)[0]!.binding, undefined)
+  assert.equal(cold.read(f.session)[0]!.attempts[0]!.result!.outcome, 'allow'); assert.equal(sampledBeforeDecision, false)
+})
+
+test('wake participant rejection rolls back every restored predecessor atomically', async t => {
+  const f = await fixture(t), sessions = new Sessions(), first = participant(), last = participant(), source = new V1SessionState(f.store(), { claude: first, wakes: last }), session = sessions.get('session')
+  await source.ensure(session); first.set('retained'); last.set('invalid'); await source.checkpoint(session); await source.dispose()
+  const restored = participant(), state = new V1SessionState(f.store(), { claude: restored, wakes: participant() })
+  t.after(async () => { await state.dispose(); sessions.dispose() })
+  await assert.rejects(state.ensure(session), /invalid/); assert.equal(restored.restored(), 0)
+})
+
+test('durable SDK ownership restores the saved host identity for its explicit resume phase without source replay', async t => {
+  const f = await fixture(t), sessions = new Sessions(), inputs = new V1WakeInputs(), state = new V1SessionState(f.store(), { wakeInputs: inputs })
+  sessions.prompt('session', 'genuine', 'model'); const before = sessions.get('session'); await state.ensure(before)
+  const prompt = 'OWNED_NOTIFICATION', model = { providerID: 'provider', modelID: 'model' }, ticket = inputs.prepare(before, { jobID: 'job', prompt, model, agent: 'build', promptIndex: 0, turnIndex: 2 })
+  const message = { role: 'user', id: 'system', sessionID: 'session', time: { created: 1700000000000 }, model, agent: 'build' }, parts = [{ ...wakeInputPart(ticket, prompt, 'save'), id: 'part' }]
+  inputs.claim(before, message, parts); sessions.prompt('session', 'system', 'model'); const owner = sessions.get('session')
+  inputs.saved(owner, ticket.saveNonce, { info: message, parts }); await state.checkpoint(owner); await state.dispose()
+  const coldSessions = new Sessions(), coldInputs = new V1WakeInputs(), cold = new V1SessionState(f.store(), { wakeInputs: coldInputs })
+  t.after(async () => { await cold.dispose(); inputs.dispose(); coldInputs.dispose(); sessions.dispose(); coldSessions.dispose() })
+  assert.equal(await cold.requiresProjection(), true); await cold.ensure(coldSessions.get('session'))
+  assert.equal(coldInputs.normalize('session', [{ info: message, parts }])[0]!.parts[0]!.synthetic, undefined)
+  coldSessions.prompt('session', 'system', 'model')
+  const resumed = coldInputs.resume(coldSessions.get('session'), ticket.saveNonce), copied = { ...message, time: { created: 1700000000005 } }
+  assert.equal(coldInputs.claim(coldSessions.get('session'), copied, [wakeInputPart(resumed, prompt, 'resume')])?.phase, 'resume')
+  assert.equal(copied.time.created, message.time.created)
 })
 
 test('extended background state participates in atomic restore rollback', async t => {

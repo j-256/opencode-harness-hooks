@@ -151,6 +151,11 @@ export class WakeRecords {
     })
   }
   read(session: SessionSnapshot): readonly WakeEntry[] { const state = this.state(session); if (state?.binding) fail('WAKE_BINDING_PENDING'); return Object.freeze([...(state?.rows.values() ?? [])]) }
+  pending(session: SessionSnapshot): readonly WakeEntry[] { return Object.freeze(this.read(session).filter(row => this.isPending(row))) }
+  requiresProjection(sessionID: string): boolean { return !this.disposed && !this.closed.has(sessionID) && [...(this.states.get(sessionID)?.rows.values() ?? [])].some(row => row.binding || this.isPending(row)) }
+  discardPendingPrompt(session: SessionSnapshot, messageID: string): void {
+    if (!snapshotID(messageID) || this.read(session).some(row => row.attempts.some(attempt => attempt.promptID === messageID))) fail('SESSION_SNAPSHOT_PROMPT_RECONCILIATION_UNAVAILABLE')
+  }
   snapshotV1(sessionID: string): unknown {
     if (this.disposed || this.closed.has(sessionID) || !snapshotID(sessionID)) fail('WAKE_SESSION_CLOSED')
     const state = this.states.get(sessionID); if (state?.owner.aborted) fail('WAKE_SESSION_CLOSED')
@@ -223,6 +228,11 @@ export class WakeRecords {
     for (const id of this.rowIdentities(row)) { if (identities.has(id)) fail('WAKE_IDENTITY_REUSED'); identities.add(id) }
   }
   private rowIdentities(row: WakeEntry): readonly string[] { return [row.sourceUUID, row.deliveryID, ...row.attempts.flatMap(attempt => [attempt.id, ...(attempt.result?.attachments.map(row => row.id) ?? [])])] }
+  private isPending(row: WakeEntry): boolean {
+    if (row.binding) return false
+    const last = row.attempts.at(-1)
+    return !last?.result || last.result.outcome === 'allow' || last.result.outcome === 'stop' && last.anchor.kind === 'tool'
+  }
   private identities(except?: WakeEntry): Set<string> { return new Set([...this.states.values()].flatMap(state => [...state.rows.values()].filter(row => row !== except).flatMap(row => this.rowIdentities(row)))) }
   private replace(sessionID: string, state: State, previous: WakeEntry, row: WakeEntry): void {
     this.unique(row, this.identities(previous))
