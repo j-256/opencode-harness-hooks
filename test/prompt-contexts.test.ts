@@ -146,3 +146,18 @@ test('disposal cancels an in-flight body read before any projected request can e
   await assert.rejects(pending, { code: 'HOST_PROMPT_CANCELLED' })
   assert.deepEqual(contexts.inspect(), { prompts: 0, continuations: 0, bytes: 0, tickets: 0, sessions: 0 })
 })
+
+test('an explicit host-owned system row passes through prompt projection without a genuine prompt admission', async t => {
+  const { sessions, contexts } = fixture(t)
+  contexts.remember(sessions.get('session'), ['GENUINE'], [context('codex', 'GENUINE_CONTEXT')])
+  sessions.prompt('session', 'system', 'model'); const session = sessions.get('session')
+  contexts.layout(session, [{ id: 'first', text: ['GENUINE'] }, { id: 'system', text: ['RAW_NOTIFICATION'], external: true }])
+  const body = await (await contexts.project(request([{ role: 'user', content: 'GENUINE' }, { role: 'assistant', content: 'DONE' }, { role: 'user', content: 'RAW_NOTIFICATION' }]), contexts.issue(session)!)).json()
+  assert.deepEqual(body.messages, [{ role: 'user', content: 'GENUINE' }, { role: 'developer', content: 'GENUINE_CONTEXT' }, { role: 'assistant', content: 'DONE' }, { role: 'user', content: 'RAW_NOTIFICATION' }])
+  assert.equal(contexts.inspect().prompts, 1)
+  const saved = contexts.snapshotV1('session') as { entries: unknown[] }; assert.equal(saved.entries.length, 1)
+  assert.throws(() => contexts.layout(session, [{ id: 'first', text: ['GENUINE'], external: true }, { id: 'system', text: ['RAW_NOTIFICATION'], external: true }]), { code: 'HOST_PROMPT_LAYOUT_UNAVAILABLE' })
+  assert.throws(() => contexts.layout(session, [{ id: 'first', text: ['GENUINE'] }, { id: 'system', text: ['RAW_NOTIFICATION'] }]), { code: 'HOST_PROMPT_LAYOUT_UNAVAILABLE' })
+  contexts.layout(session, [{ id: 'first', text: ['GENUINE'] }, { id: 'system', text: ['RAW_NOTIFICATION'], external: true }])
+  await assert.rejects(contexts.project(request([{ role: 'user', content: 'GENUINE' }, { role: 'user', content: 'FORGED' }]), contexts.issue(session)!), { code: 'HOST_PROMPT_REQUEST_UNAVAILABLE' })
+})

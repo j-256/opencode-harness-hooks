@@ -20,14 +20,14 @@ const READ_MS = 5000
 const contextSchema = z.object({ sourceID: z.string().refine(snapshotID), sourceDigest: z.string().min(1), registrationID: z.string().refine(snapshotID), dialect: z.enum(['claude-code', 'codex']), configuredOrder: z.number().int().nonnegative(), completionOrder: z.number().int().nonnegative(), action: z.object({ kind: z.literal('context'), placement: z.literal('model'), text: z.string(), channel: z.enum(['stdout', 'additionalContext', 'systemMessage']).optional() }).strict() }).strict().refine(row => row.dialect !== 'claude-code' || row.action.channel === 'stdout' || row.action.channel === 'additionalContext')
 type Context = AttributedAction<Extract<HookAction, { kind: 'context' }>>
 export type PromptProtocol = 'openai' | 'anthropic'
-export interface PromptLayout { readonly id: string; readonly text: readonly string[] }
+export interface PromptLayout { readonly id: string; readonly text: readonly string[]; readonly external?: true }
 export interface PromptContinuationOptions { readonly reconcileCancellation?: boolean }
 export interface PromptContinuationReservation { readonly admit: () => void; readonly release: () => void; readonly suppress?: () => void }
 export interface PromptStopHistory extends StopModelBlocks { readonly completionID: string; readonly assistantText: readonly string[]; readonly interrupted?: true }
 interface Entry { readonly kind: 'prompt' | 'continuation'; readonly turnID: string; readonly turnSignal: AbortSignal; readonly text: readonly string[]; readonly contexts: readonly Context[]; readonly projection?: readonly string[]; readonly history?: PromptStopHistory; readonly startup?: StartupBatch['model']; readonly bytes: number }
-interface Layout { readonly turnID: string; readonly turnSignal: AbortSignal; readonly rows: readonly PromptLayout[] }
+interface Layout { readonly turnID: string; readonly turnSignal: AbortSignal; readonly rows: readonly PromptLayout[]; readonly externalBytes: number }
 interface State { readonly signal: AbortSignal; readonly entries: Map<string, Entry>; readonly reservations: Map<string, Entry>; readonly retired: Map<string, Entry>; readonly cleanup: () => void; requests: AbortController; layout?: Layout }
-interface Ticket { readonly sessionID: string; readonly turnID: string; readonly sessionSignal: AbortSignal; readonly turnSignal: AbortSignal; readonly signal: AbortSignal; readonly protocol: PromptProtocol; readonly entries: readonly Entry[]; readonly hashes: Map<string, string> }
+interface Ticket { readonly sessionID: string; readonly turnID: string; readonly sessionSignal: AbortSignal; readonly turnSignal: AbortSignal; readonly signal: AbortSignal; readonly protocol: PromptProtocol; readonly entries: readonly Pick<Entry, 'text' | 'contexts' | 'projection' | 'history' | 'startup'>[]; readonly hashes: Map<string, string> }
 function fail(code: string): never { throw new HostHookError(code, 'unsupported') }
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 function same(a: unknown, b: unknown): boolean { return JSON.stringify(a) === JSON.stringify(b) }
@@ -259,6 +259,7 @@ export class PromptContexts {
     const cleanup = () => {
       const previous = this.sessions.get(session.sessionID)
       if (!previous) return
+      this.bytes -= previous.layout?.externalBytes ?? 0
       for (const entry of [...previous.entries.values(), ...previous.reservations.values(), ...previous.retired.values()]) {
         this.bytes -= entry.bytes
         if (entry.kind === 'prompt') this.prompts--
@@ -274,6 +275,7 @@ export class PromptContexts {
   }
 
   private invalidate(state: State): void {
+    this.bytes -= state.layout?.externalBytes ?? 0
     delete state.layout
     const previous = state.requests
     state.requests = new AbortController()
@@ -288,22 +290,26 @@ export class PromptContexts {
   layout(session: SessionSnapshot, input: readonly PromptLayout[]): void {
     const state = this.sessions.get(session.sessionID)
     if (state?.reservations.size) fail('HOST_PROMPT_ADMISSION_PENDING')
-    if (!state || !session.turnID || !this.ownsCurrentMessage(session, input.at(-1)?.id ?? '') || input.length !== state.entries.size) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
+    if (!state || !session.turnID || !this.ownsCurrentMessage(session, input.at(-1)?.id ?? '') || input.length > MAX_ENTRIES || input.filter(row => !row.external).length !== state.entries.size) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
     const seen = new Set<string>()
     const expected = [...state.entries.keys()]
-    for (const [index, row] of input.entries()) {
+    let index = 0
+    for (const row of input) {
       const entry = state.entries.get(row.id)
-      if (!entry || seen.has(row.id) || expected[index] !== row.id || !same(entry.text, row.text)) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
+      if (!snapshotID(row.id) || seen.has(row.id) || !Array.isArray(row.text) || !row.text.length || !row.text.every(text => typeof text === 'string') || row.external !== undefined && row.external !== true || row.external && entry || !row.external && (!entry || expected[index++] !== row.id || !same(entry.text, row.text))) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
       seen.add(row.id)
     }
-    state.layout = Object.freeze({ turnID: session.turnID, turnSignal: session.turnSignal, rows: Object.freeze(input.map(row => Object.freeze({ id: row.id, text: Object.freeze([...row.text]) }))) })
+    const externalBytes = Buffer.byteLength(JSON.stringify(input.filter(row => row.external)))
+    if (this.bytes - (state.layout?.externalBytes ?? 0) + externalBytes > MAX_BYTES) fail('HOST_PROMPT_CONTEXT_LIMIT')
+    this.bytes += externalBytes - (state.layout?.externalBytes ?? 0)
+    state.layout = Object.freeze({ turnID: session.turnID, turnSignal: session.turnSignal, externalBytes, rows: Object.freeze(input.map(row => Object.freeze({ id: row.id, text: Object.freeze([...row.text]), ...(row.external ? { external: true as const } : {}) }))) })
   }
 
   issue(session: SessionSnapshot, protocol: PromptProtocol = 'openai'): string | undefined {
     const state = this.sessions.get(session.sessionID)
     if (state?.reservations.size) fail('HOST_PROMPT_ADMISSION_PENDING')
     if (!state || state.signal !== session.signal || !state.layout || !session.turnID || state.layout.turnID !== session.turnID || state.layout.turnSignal !== session.turnSignal || session.signal.aborted || session.turnSignal.aborted || this.lifetime.signal.aborted) fail('HOST_PROMPT_LAYOUT_UNAVAILABLE')
-    const entries = state.layout.rows.map(row => state.entries.get(row.id)!)
+    const entries: Ticket['entries'] = state.layout.rows.map(row => row.external ? { text: row.text, contexts: [] } : state.entries.get(row.id)!)
     if (!entries.some(entry => entry.contexts.length || entry.projection || entry.history || entry.startup?.claude.length || entry.startup?.codex.length)) return undefined
     if (this.tickets.size >= MAX_TICKETS) fail('HOST_PROMPT_REQUEST_LIMIT')
     const id = randomUUID()
