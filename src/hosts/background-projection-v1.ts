@@ -8,6 +8,7 @@ import { snapshotID } from '../session-snapshot.js'
 import type { SessionSnapshot } from '../sessions.js'
 import { MODEL_REQUEST_HEADER } from './model-v1.js'
 import type { WakeRecords } from '../wake-records.js'
+import { expandAnthropicUsers, mergeAnthropicUsers } from '../anthropic-users.js'
 
 export const BACKGROUND_REQUEST_HEADER = 'x-opencode-harness-hooks-background'
 const MAX_BYTES = 32 * 1024 * 1024
@@ -17,7 +18,7 @@ const MAX_VARIANTS = 128
 const MAX_PENDING = 8
 const READ_MS = 5000
 const TOOL_REMINDER_SEPARATOR = '\n\n'
-interface Carrier { readonly anchor: BackgroundAnchor; readonly parts?: readonly string[] }
+interface Carrier { readonly anchor: BackgroundAnchor; readonly parts?: readonly string[]; readonly joinPrevious?: true }
 interface Layout { readonly session: SessionSnapshot; readonly users: readonly Carrier[]; readonly tools: readonly Carrier[]; readonly current: Carrier; readonly bytes: number }
 interface ProjectionRow extends Pick<BackgroundEntry, 'anchor' | 'dialect' | 'model'> { readonly replacePrompt?: boolean }
 interface Ticket { readonly layout: Layout; readonly providerID: string; readonly protocol: PromptProtocol; readonly signal: AbortSignal; readonly cleanup: () => void; readonly hashes: Map<string, string>; rows?: readonly ProjectionRow[]; preparing?: Promise<void> }
@@ -67,14 +68,14 @@ export class V1BackgroundProjection {
     this.live(owner)
     if (!Array.isArray(input) || !input.length || input.length > MAX_ROWS) fail('HOST_BACKGROUND_LAYOUT_UNAVAILABLE')
     const users: Carrier[] = [], tools: Carrier[] = [], seen = new Set<string>(), calls = new Set<string>()
-    let current: Carrier | undefined
+    let current: Carrier | undefined, previousUser = false
     const session = Object.freeze({ sessionID: id(owner.sessionID), turnID: id(owner.turnID), signal: owner.signal, turnSignal: owner.turnSignal })
     for (const [index, raw] of input.entries()) {
       if (!record(raw) || !record(raw.info) || raw.info.sessionID !== owner.sessionID || !Array.isArray(raw.parts)) fail('HOST_BACKGROUND_LAYOUT_UNAVAILABLE')
       const info = raw.info, messageID = id(info.id); if (seen.has(messageID)) fail('HOST_BACKGROUND_LAYOUT_UNAVAILABLE'); seen.add(messageID)
       if (info.role === 'user') {
         const text = promptParts(raw.parts), signature = hash(JSON.stringify(text))
-        const carrier: Carrier = Object.freeze({ anchor: Object.freeze({ kind: 'prompt', sessionID: owner.sessionID, turnID: messageID, messageID, signature }), parts: Object.freeze(text.map(hash)) }); users.push(carrier)
+        const carrier: Carrier = Object.freeze({ anchor: Object.freeze({ kind: 'prompt', sessionID: owner.sessionID, turnID: messageID, messageID, signature }), parts: Object.freeze(text.map(hash)), ...(previousUser ? { joinPrevious: true as const } : {}) }); users.push(carrier)
         if (index === input.length - 1) current = carrier
       } else if (info.role === 'assistant') {
         const turnID = id(info.parentID); if (!users.some(row => row.anchor.messageID === turnID)) fail('HOST_BACKGROUND_LAYOUT_UNAVAILABLE')
@@ -88,6 +89,7 @@ export class V1BackgroundProjection {
         }
         if (index === input.length - 1) current = lastTool
       } else fail('HOST_BACKGROUND_LAYOUT_UNAVAILABLE')
+      previousUser = info.role === 'user'
     }
     if (!current || users.at(-1)?.anchor.messageID !== owner.turnID || current.anchor.turnID !== owner.turnID || users.length + tools.length > MAX_ROWS) fail('HOST_BACKGROUND_LAYOUT_UNAVAILABLE')
     const previous = this.layouts.get(owner.sessionID)
@@ -150,8 +152,10 @@ export class V1BackgroundProjection {
   private bytes(): number { return [...this.layouts.values()].reduce((sum, row) => sum + row.bytes, 0) + [...this.tickets.values()].reduce((sum, ticket) => sum + ticket.layout.bytes + Buffer.byteLength(ticket.providerID) + ticket.hashes.size * 128, 0) }
   private wire(ticket: Ticket, input: unknown): Wire {
     const value = snapshotJsonObject(input, MAX_BYTES, kind => fail(kind === 'size' ? 'HOST_BACKGROUND_LIMIT' : 'HOST_BACKGROUND_REQUEST_UNAVAILABLE')).value
-    const responses = ticket.protocol === 'openai' && Array.isArray(value.input) && value.messages === undefined, field = responses ? 'input' : 'messages', source = value[field]
-    if (!Array.isArray(source) || source.length > MAX_ROWS || !source.every(record)) fail('HOST_BACKGROUND_REQUEST_UNAVAILABLE')
+    const responses = ticket.protocol === 'openai' && Array.isArray(value.input) && value.messages === undefined, field = responses ? 'input' : 'messages', inputSource = value[field]
+    if (!Array.isArray(inputSource) || inputSource.length > MAX_ROWS || !inputSource.every(record)) fail('HOST_BACKGROUND_REQUEST_UNAVAILABLE')
+    const source = ticket.protocol === 'anthropic' ? expandAnthropicUsers(inputSource, ticket.layout.users.map(row => ({ parts: row.parts!, ...(row.joinPrevious ? { joinPrevious: true as const } : {}) })), hash) : inputSource
+    if (source.length > MAX_ROWS) fail('HOST_BACKGROUND_LIMIT')
     const targets = new Map<string, Target>(), toolIDs = new Set<string>(); let userIndex = 0
     const addTool = (position: number, callID: unknown, output: unknown, part?: number) => {
       if (!snapshotID(callID) || toolIDs.has(callID)) fail(); toolIDs.add(callID)
@@ -221,6 +225,7 @@ export class V1BackgroundProjection {
         const field = wire.responses ? 'output' : 'content'; changes.set(target.position, { ...raw, [field]: toolText(raw[field]) + TOOL_REMINDER_SEPARATOR + suffix })
       }
     }
-    return { ...wire.value, [wire.field]: wire.source.flatMap((raw, index) => [changes.get(index) ?? raw, ...(developers.get(index) ?? [])]) }
+    const source = wire.source.flatMap((raw, index) => [changes.get(index) ?? raw, ...(developers.get(index) ?? [])])
+    return { ...wire.value, [wire.field]: ticket.protocol === 'anthropic' ? mergeAnthropicUsers(source) : source }
   }
 }

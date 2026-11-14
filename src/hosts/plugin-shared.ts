@@ -24,14 +24,16 @@ function partsText(parts: unknown): readonly string[] {
 }
 function layout(host: 'v1' | 'v2', messages: unknown): readonly PromptLayout[] {
   if (!Array.isArray(messages)) return unavailable('HOST_PROMPT_LAYOUT_UNAVAILABLE')
+  let previousUser = false
   return messages.flatMap((message: unknown) => {
     if (!record(message)) return unavailable('HOST_PROMPT_LAYOUT_UNAVAILABLE')
     const info = host === 'v1' ? message.info : message
     if (!record(info)) return unavailable('HOST_PROMPT_LAYOUT_UNAVAILABLE')
+    const joinPrevious = previousUser; previousUser = info.role === 'user'
     if (info.role !== 'user') return []
     if (typeof info.id !== 'string') return unavailable('HOST_PROMPT_LAYOUT_UNAVAILABLE')
     const content = host === 'v1' ? message.parts : typeof info.content === 'string' ? [{ type: 'text', text: info.content }] : info.content
-    return [{ id: info.id, text: partsText(content) }]
+    return [{ id: info.id, text: partsText(content), ...(joinPrevious ? { joinPrevious: true as const } : {}) }]
   })
 }
 async function submit(runtime: Awaited<ReturnType<typeof createRuntime>>, contexts: PromptContexts, event: HostPromptEvent, text: readonly string[], services: RuntimeServices): Promise<void> {

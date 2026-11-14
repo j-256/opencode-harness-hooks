@@ -230,7 +230,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       }
       return runtime.promptOperation('request', owner ?? {}, async () => {
         let projected = new Request(input, init)
-        if (token) projected = await contexts.project(projected, token)
+        if (token) projected = await contexts.project(projected, token, undefined, backgroundToken ? { preserveUserBoundaries: true } : {})
         if (backgroundToken) projected = await backgroundProjection.project(projected, backgroundToken, id)
         return original(input instanceof Request ? projected : input, { ...init, headers: projected.headers, body: await projected.clone().text(), signal: projected.signal })
       })

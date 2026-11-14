@@ -161,3 +161,20 @@ test('an explicit host-owned system row passes through prompt projection without
   contexts.layout(session, [{ id: 'first', text: ['GENUINE'] }, { id: 'system', text: ['RAW_NOTIFICATION'], external: true }])
   await assert.rejects(contexts.project(request([{ role: 'user', content: 'GENUINE' }, { role: 'user', content: 'FORGED' }]), contexts.issue(session)!), { code: 'HOST_PROMPT_REQUEST_UNAVAILABLE' })
 })
+
+test('Anthropic merged adjacent users retain context at each proven logical position and preserve block metadata', async t => {
+  const { sessions, contexts } = fixture(t)
+  contexts.remember(sessions.get('session'), ['FIRST'], [])
+  sessions.prompt('session', 'next', 'model'); const session = sessions.get('session')
+  contexts.remember(session, ['SAME'], [context('claude-code', 'NEXT_CONTEXT', 'additionalContext')])
+  const layout = [{ id: 'first', text: ['FIRST'] }, { id: 'system', text: ['SAME'], external: true as const }, { id: 'next', text: ['SAME'], joinPrevious: true as const }]
+  contexts.layout(session, layout)
+  const system = { type: 'text', text: 'SAME', cache_control: { type: 'ephemeral' } }, genuine = { ...system, fixture: 'genuine' }
+  const input = [{ role: 'user', content: [{ type: 'text', text: 'FIRST' }] }, { role: 'assistant', content: 'DONE' }, { role: 'user', content: [system, genuine] }]
+  const token = contexts.issue(session, 'anthropic')!, projected = await contexts.project(request(input, '/v1/messages'), token), actual = await projected.clone().json()
+  assert.deepEqual(actual.messages[2].content, [system, { type: 'text', text: '<system-reminder>\nUserPromptSubmit hook additional context: NEXT_CONTEXT\n</system-reminder>' }, genuine])
+  assert.equal(actual.messages.length, input.length)
+  assert.deepEqual(await (await contexts.project(projected, token)).json(), actual)
+  contexts.layout(session, layout.map(({ joinPrevious: _join, ...row }) => row))
+  await assert.rejects(contexts.project(request(input), contexts.issue(session, 'anthropic')!), { code: 'HOST_PROMPT_REQUEST_UNAVAILABLE' })
+})

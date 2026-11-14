@@ -31,7 +31,7 @@ async function fixture(t: { after(callback: () => unknown): void }, kind: 'activ
   const projection = new V1BackgroundProjection({ records, wakes, prepare: async () => {} }); t.after(() => projection.dispose())
   const history = [{ info: { role: 'user', id: 'turn', sessionID: 'session' }, parts: [{ type: 'text', text: kind === 'active' ? GENUINE : text.prompt }] }, ...(kind === 'active' ? [{ info: { role: 'assistant', id: 'answer', parentID: 'turn', sessionID: 'session' }, parts: [{ type: 'tool', callID: 'call', state: { status: 'completed', output: OUTPUT } }] }] : [])]
   projection.capture(session, history)
-  return { session, wakes, records, projection, history, text, binding: wakes.read(session)[0]!.binding! }
+  return { sessions, session, wakes, records, projection, history, text, binding: wakes.read(session)[0]!.binding! }
 }
 
 for (const protocol of ['openai', 'responses', 'anthropic'] as const) test(`active wake model text follows the original ${protocol} tool result without changing host history`, async t => {
@@ -61,4 +61,20 @@ test('idle wake projection replaces only its owned raw notification and preserve
 test('changed and pruned wake carriers fail before projecting accepted notification context', async t => {
   const f = await fixture(t, 'active'), token = f.projection.issue(f.session, 'provider', 'openai')
   for (const messages of [[{ role: 'user', content: GENUINE }], [{ role: 'user', content: GENUINE }, { role: 'tool', tool_call_id: 'call', content: 'changed' }]]) await assert.rejects(f.projection.project(request({ messages }), token, 'provider'))
+})
+
+for (const repeated of [false, true]) test(`a merged Anthropic wake and later genuine input retain separate verified carriers, repeated text ${repeated}`, async t => {
+  const f = await fixture(t, 'idle'), text = repeated ? f.text.prompt : 'LATER'
+  f.sessions.prompt('session', 'later', 'model'); const session = f.sessions.get('session')
+  const later = { info: { id: 'later', role: 'user', sessionID: 'session', time: { created: 1700000000002 } }, parts: [{ type: 'text', text }] }
+  f.projection.capture(session, [...f.history, later])
+  const first = { type: 'text', text: f.text.prompt, cache_control: { type: 'ephemeral' } }, second = { type: 'text', text, fixture: 'genuine' }
+  const input = { messages: [{ role: 'user', content: [first, second] }] }, token = f.projection.issue(session, 'provider', 'anthropic')
+  const actual = await (await f.projection.project(request(input), token, 'provider')).json()
+  assert.equal(actual.messages.length, 1)
+  assert.deepEqual(actual.messages[0].content, [{ type: 'text', text: '<system-reminder>\nUserPromptSubmit hook additional context: CALLBACK_CONTEXT\n</system-reminder>\n' }, { ...first, text: f.text.model }, second])
+  assert.deepEqual(await (await f.projection.project(request(input), token, 'provider')).json(), actual)
+  const assistant = { info: { id: 'intervening', role: 'assistant', sessionID: 'session', parentID: 'turn' }, parts: [{ type: 'text', text: 'DONE' }] }
+  const guarded = new V1BackgroundProjection({ records: f.records, wakes: f.wakes, prepare: async () => {} }); t.after(() => guarded.dispose()); guarded.capture(session, [...f.history, assistant, later])
+  await assert.rejects(guarded.project(request(input), guarded.issue(session, 'provider', 'anthropic'), 'provider'))
 })
