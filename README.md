@@ -1,12 +1,17 @@
 # OpenCode Harness Hooks
 
-Compatibility adapters for running native Claude Code and Codex hook configurations in OpenCode.
+> [!WARNING]
+> **v0: work in progress, not ready for use.** This repository is public for code review and collaboration. Compatibility, lifecycle handling and native conformance are incomplete. Do not rely on it to enforce policies or replace an existing hook setup.
+
+An experimental compatibility engine for running native Claude Code and Codex hook configurations in OpenCode, with separate V1 and V2 bindings. The goal is to accept either harness's configuration, or sources from both, while preserving each dialect's native behavior within documented host limitations. APIs and supported behavior may change.
+
+For a published project focused on **Claude Code hooks in OpenCode V1 and V2**, see [Hamza-Abili/opencode-claude-hooks](https://github.com/Hamza-Abili/opencode-claude-hooks). Its scope is Claude Code hooks; it does not provide Codex hook support. Review its documented compatibility boundaries when evaluating it.
 
 Each source retains its native protocol and registration identity. Multiple sources may be selected together; registrations are never deduplicated.
 
 Node requires version 22.13 or later. The default V1 binding keeps owned native inputs, records and prompt context in [private durable session storage](docs/session-state.md), using built-in SQLite on Node and Bun. Its cold-resume comparisons preserve historical original input after a tool rewrite; full lifecycle and compaction parity remain separate requirements.
 
-The package has a shared runtime and separate V1/V2 entrypoints. The implementation target is every feasible behavior through stock host APIs, with demonstrated host limitations documented in the [V1 implementation status](docs/v1-compatibility.md). Verified subsets can be used while remaining services, mappings and conformance work proceeds. Tool enforcement and [prompt submission](docs/prompts.md) have controlled runtime evidence on both pinned hosts. V2 native integration and complete lifecycle/artifact/trust coverage remain separate work. Review the intended source configuration and supported boundaries before migrating an existing integration; see [compatibility](docs/compatibility.md) and [runtime configuration](docs/runtime.md).
+The package has a shared runtime and separate V1/V2 entrypoints. The implementation target is every feasible behavior through stock host APIs, with demonstrated host limitations documented in the [V1 implementation status](docs/v1-compatibility.md). Some subsets have controlled evidence while remaining services, mappings and conformance work proceeds; that evidence does not establish readiness for use. Tool enforcement and [prompt submission](docs/prompts.md) have controlled runtime evidence on both pinned hosts. V2 native integration and complete lifecycle/artifact/trust coverage remain separate work. See [compatibility](docs/compatibility.md) and [runtime configuration](docs/runtime.md) for the implemented boundaries.
 
 V1 providers with custom authentication fetch loaders require [explicit provider composition](docs/v1-provider-composition.md) for prompt and background context. Synchronous tool-only commands avoid that transport requirement. The [default V1 prompt-model service](docs/model-hooks.md) also uses verified provider transports and owned evaluator sessions. The [stock-host guide](docs/stock-hosts.md) defines the supported command/prompt/tool subset, explicit source selection, incompatible configurations and executable checks.
 
