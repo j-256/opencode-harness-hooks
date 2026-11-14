@@ -51,6 +51,7 @@ export interface McpHookRequest {
   readonly server: string
   readonly tool: string
   readonly input: Readonly<Record<string, JsonValue>>
+  readonly metadata?: Readonly<Record<string, JsonValue>>
   readonly signal: AbortSignal
   readonly timeoutMs: number
   readonly connectionPolicy: 'connected-only' | 'wait-or-connect-cached' | 'connect-cached-without-waiting'

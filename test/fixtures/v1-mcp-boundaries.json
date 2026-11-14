@@ -2,7 +2,8 @@
   "oracle": "Actual isolated stock-host and native CLI probes",
   "versions": {
     "claude-code": "2.1.318",
-    "opencode": "1.19.5"
+    "opencode": "1.19.5",
+    "codex": "0.167.0"
   },
   "scope": "Canonical MCP tool identity loss and structured-only output conversion; not a full conformance comparison",
   "identity": {
@@ -32,5 +33,15 @@
       }
     }
   },
-  "reference": "https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts"
+  "reference": "https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts",
+  "requestMetadata": {
+    "nativeCodexKeys": [
+      "progressToken",
+      "threadId"
+    ],
+    "stockKeys": [
+      "progressToken"
+    ]
+  },
+  "codexReference": "https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/core/src/hook_mcp_executor.rs"
 }

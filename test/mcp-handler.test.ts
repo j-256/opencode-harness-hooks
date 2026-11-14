@@ -79,15 +79,22 @@ test('Claude MCP requests distinguish waiting and observational events and prese
   assert.equal(calls.length, 3)
 })
 
-test('Codex requires active timeout accounting and keeps MCP execution synchronous', async () => {
+test('pinned Codex MCP calls carry the native thread identity and accept a wall-budgeted service', async () => {
   const { executeRegistration } = await import('../src/handlers.js')
-  let calls = 0
-  const wallOnly = await executeRegistration(hook('codex'), event(), { ...host, mcp: { timeoutAccounting: 'wall', execute: async () => { calls++; return { text: '{}' } } } })
-  assert.equal(wallOnly.status, 'unsupported')
-  assert.equal(calls, 0)
-  const result = await executeRegistration(hook('codex', { async: true }), event(), { ...host, mcp: { timeoutAccounting: 'exclude-elicitation', execute: async () => { calls++; return { text: '{}' } } } })
+  const calls: McpHookRequest[] = []
+  const result = await executeRegistration(hook('codex', { async: true }), { ...event(), nativeSessionIDs: { codex: 'native-thread' } }, { ...host, mcp: { timeoutAccounting: 'wall', execute: async request => { calls.push(request); return { text: '{}' } } } })
   assert.equal(result.status, 'success')
-  assert.equal(calls, 1)
+  assert.equal(calls.length, 1)
+  assert.deepEqual(calls[0]?.metadata, { threadId: 'native-thread' })
+  assert.equal(Object.isFrozen(calls[0]?.metadata), true)
+})
+
+test('the pinned native outer wall deadline also bounds services that exclude elicitation internally', async () => {
+  const { executeRegistration } = await import('../src/handlers.js')
+  let observed: AbortSignal | undefined
+  const result = await executeRegistration(hook('codex', { timeout: 0.02 }), event(), { ...host, mcp: { timeoutAccounting: 'exclude-elicitation', execute: async request => { observed = request.signal; return new Promise(() => {}) } } })
+  assert.equal(result.code, 'EXECUTION_TIMEOUT')
+  assert.equal(observed?.aborted, true)
 })
 
 test('MCP cancellation and Claude wall deadlines abort requests and discard late control effects', async () => {

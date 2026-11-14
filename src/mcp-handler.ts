@@ -60,7 +60,6 @@ function expandTemplate(value: JsonValue, payload: Readonly<Record<string, JsonV
 export async function runMcp(registration: Registration, event: NativeEvent, payload: Readonly<Record<string, JsonValue>>, host: HostServices): Promise<McpExecutionResult> {
   const service = host.mcp
   if (!service) throw new UnsupportedServiceError('HOST_MCP_TOOL_UNAVAILABLE')
-  if (registration.dialect === 'codex' && service.timeoutAccounting !== 'exclude-elicitation') throw new UnsupportedServiceError('HOST_MCP_TIMEOUT_ACCOUNTING_UNAVAILABLE')
   const template = registration.handler.input ?? {}
   if (!record(template)) throw new HookServiceError('MCP_INPUT_INVALID')
   const inputLimit = host.maxInputBytes ?? EXECUTION_LIMITS.inputBytes
@@ -75,14 +74,16 @@ export async function runMcp(registration: Registration, event: NativeEvent, pay
   const input = registration.dialect === 'claude-code' ? expandClaudeMcp(templateJSON, payloadJSON, inputLimit, timeoutMs) : expandTemplate(template, payload, consume)
   if (!record(input)) throw new HookServiceError('MCP_INPUT_INVALID')
   if (Buffer.byteLength(JSON.stringify(input)) > inputLimit) throw new HookServiceError('EXECUTION_INPUT_LIMIT')
-  const wallDeadline = registration.dialect === 'claude-code' ? timeoutMs : host.remainingBudgetMs ?? null
+  const wallDeadline = registration.dialect === 'codex' ? Math.min(timeoutMs, host.remainingBudgetMs ?? timeoutMs) : timeoutMs
+  const nativeThreadID = payload.session_id
+  if (registration.dialect === 'codex' && (typeof nativeThreadID !== 'string' || !nativeThreadID)) throw new HookServiceError('MCP_NATIVE_SESSION_INVALID')
   const output = await runService(wallDeadline, host.signal, async signal => {
     const request: McpHookRequest = {
       dialect: registration.dialect, event: registration.event, sourceID: registration.sourceID, sessionID: event.sessionID, cwd: event.cwd,
       server: String(registration.handler.server), tool: String(registration.handler.tool), input, signal, timeoutMs,
       allowAuthentication: false,
       connectionPolicy: registration.dialect === 'codex' ? 'connected-only' : CLAUDE_OBSERVATIONAL_EVENTS.has(event.event) ? 'connect-cached-without-waiting' : 'wait-or-connect-cached',
-      ...(registration.dialect === 'codex' ? { allowToolApproval: false, allowHookRecursion: false } as const : {}),
+      ...(registration.dialect === 'codex' ? { metadata: Object.freeze({ threadId: nativeThreadID as string }), allowToolApproval: false, allowHookRecursion: false } as const : {}),
     }
     try { return await service.execute(request) } catch (error) {
       if (error instanceof HookServiceError || error instanceof UnsupportedServiceError) throw error

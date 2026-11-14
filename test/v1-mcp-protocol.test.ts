@@ -49,6 +49,8 @@ test('literal native and stock observations retain canonical identity and raw-ou
   assert.equal(fixture.identity.hostExecutedTool, 'check.read')
   assert.notEqual(fixture.identity.hostExecutedTool, fixture.identity.requestedTool)
   assert.throws(() => mcpInvocation(fixture.identity.server, fixture.identity.requestedTool, {}), { code: 'HOST_MCP_TOOL_IDENTITY_UNAVAILABLE' })
+  assert.deepEqual(fixture.requestMetadata.nativeCodexKeys, ['progressToken', 'threadId'])
+  assert.deepEqual(fixture.requestMetadata.stockKeys, ['progressToken'])
   assert.equal(fixture.structuredOnly.nativeParentEffect, true)
   assert.deepEqual(fixture.structuredOnly.serverResult.content, [])
   assert.equal(fixture.structuredOnly.hostPublicAfter.content[0].text, '{"continue":false}')

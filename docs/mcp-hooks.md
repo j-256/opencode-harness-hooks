@@ -10,6 +10,10 @@ A controlled collision demonstrates the lost identity: the source requests `fixt
 
 The guarded helper permits server and tool names containing only ASCII letters, digits, and hyphens. Their host name has one unambiguous underscore separator. A complete raw server inventory can also verify wider server names when exactly one configured server can own the flattened target. Tool names outside the injective subset, and unresolved server aliases, report `HOST_MCP_TOOL_IDENTITY_UNAVAILABLE` before delegation. A wider safe subset requires authoritative raw identity information or a direct configured-client invocation boundary; absence of a collision in a sample is insufficient.
 
+## Native request metadata
+
+The pinned Codex executor adds the native session identity as `_meta.threadId` on each tool call. An isolated native invocation captures that field alongside the generated progress token. The stock V1 model-tool path supplies its own progress token and has no public per-call request-metadata parameter. A service must preserve the engine request's `metadata.threadId`; a default adapter cannot claim Codex MCP parity by placing it inside tool arguments or substituting a host session ID. See the [pinned Codex executor](https://github.com/openai/codex/blob/rust-v0.167.0/codex-rs/core/src/hook_mcp_executor.rs).
+
 ## Raw MCP output
 
 Native Claude treats an MCP error result as nonblocking failure and ignores structured-only results as hook text. Multiple text blocks can supply a JSON policy. V1's [tool conversion](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts) synthesizes a JSON text block when `content` is empty and non-null `structuredContent` exists. This happens before its public tool-after callback. The [captured public callback](../test/fixtures/v1-mcp-boundaries.json) records the synthesized policy text.
