@@ -299,6 +299,128 @@
         "<system-reminder>\nBG_WITHOUT_TAG\n</system-reminder>"
       ],
       "renderedRole": "system"
+    },
+    {
+      "name": "wide-wide",
+      "stdout": "{\"continue\":true,\"terminalSequence\":\"BG_TERMINAL\",\"async\":false,\"asyncTimeout\":5,\"hookSpecificOutput\":{\"hookEventName\":\"Any\",\"permissionDecision\":\"defer\",\"additionalContext\":\"BG_WIDE_CONTEXT\",\"updatedInput\":{\"value\":1},\"sessionTitle\":\"BG_TITLE\",\"suppressOriginalPrompt\":true,\"initialUserMessage\":\"BG_INITIAL\",\"watchPaths\":[\"/tmp/fixture\"],\"reloadSkills\":true,\"classifierContext\":\"BG_CLASSIFIER\",\"updatedToolOutput\":{\"value\":1},\"updatedMCPToolOutput\":{\"value\":1},\"retry\":true,\"displayContent\":\"BG_DISPLAY\",\"decision\":{\"behavior\":\"deny\",\"message\":\"BG_DECISION\"},\"worktreePath\":\"/tmp/fixture\",\"action\":\"accept\",\"content\":{\"value\":1}}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": null,
+      "rendered": [],
+      "renderedRole": null
+    },
+    {
+      "name": "wide-invalid-fields",
+      "stdout": "{\"continue\":null,\"decision\":\"bogus\",\"hookSpecificOutput\":{\"hookEventName\":7,\"permissionDecision\":\"bogus\",\"updatedInput\":[1],\"permissionDecisionReason\":7,\"additionalContext\":\"BG_VALID_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "hookSpecificOutput": {
+          "hookEventName": 7,
+          "permissionDecision": "bogus",
+          "updatedInput": [
+            1
+          ],
+          "permissionDecisionReason": 7,
+          "additionalContext": "BG_VALID_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_VALID_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "wide-empty-values",
+      "stdout": "{\"systemMessage\":\"\",\"hookSpecificOutput\":{\"additionalContext\":\"\",\"updatedInput\":null}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "",
+        "hookSpecificOutput": {
+          "additionalContext": "",
+          "updatedInput": null
+        }
+      },
+      "rendered": [],
+      "renderedRole": null
+    },
+    {
+      "name": "fields-wide",
+      "stdout": "{\"continue\":true,\"hookSpecificOutput\":{\"hookEventName\":\"Any\",\"permissionDecision\":\"defer\",\"additionalContext\":\"BG_WIDE_CONTEXT\",\"updatedInput\":{\"value\":1},\"sessionTitle\":\"BG_TITLE\",\"suppressOriginalPrompt\":true,\"initialUserMessage\":\"BG_INITIAL\",\"watchPaths\":[\"/tmp/fixture\"],\"reloadSkills\":true,\"classifierContext\":\"BG_CLASSIFIER\",\"updatedToolOutput\":{\"value\":1},\"updatedMCPToolOutput\":{\"value\":1},\"retry\":true,\"displayContent\":\"BG_DISPLAY\",\"decision\":{\"behavior\":\"deny\",\"message\":\"BG_DECISION\"},\"worktreePath\":\"/tmp/fixture\",\"action\":\"accept\",\"content\":{\"value\":1}}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "hookSpecificOutput": {
+          "hookEventName": "Any",
+          "permissionDecision": "defer",
+          "additionalContext": "BG_WIDE_CONTEXT",
+          "updatedInput": {
+            "value": 1
+          },
+          "sessionTitle": "BG_TITLE",
+          "suppressOriginalPrompt": true,
+          "initialUserMessage": "BG_INITIAL",
+          "watchPaths": [
+            "/tmp/fixture"
+          ],
+          "reloadSkills": true,
+          "classifierContext": "BG_CLASSIFIER",
+          "updatedToolOutput": {
+            "value": 1
+          },
+          "updatedMCPToolOutput": {
+            "value": 1
+          },
+          "retry": true,
+          "displayContent": "BG_DISPLAY",
+          "decision": {
+            "behavior": "deny",
+            "message": "BG_DECISION"
+          },
+          "worktreePath": "/tmp/fixture",
+          "action": "accept",
+          "content": {
+            "value": 1
+          }
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_WIDE_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "fields-async-false",
+      "stdout": "{\"async\":false,\"systemMessage\":\"BG_ASYNC_FALSE\"}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": null,
+      "rendered": [],
+      "renderedRole": null
+    },
+    {
+      "name": "fields-async-true",
+      "stdout": "{\"async\":true,\"systemMessage\":\"BG_ASYNC_TRUE\"}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": null,
+      "rendered": [],
+      "renderedRole": null
+    },
+    {
+      "name": "fields-terminal",
+      "stdout": "{\"terminalSequence\":\"BG_TERMINAL\",\"systemMessage\":\"BG_TERMINAL_SYSTEM\"}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "BG_TERMINAL_SYSTEM",
+        "terminalSequence": "BG_TERMINAL"
+      },
+      "rendered": [
+        "<system-reminder>\nBG_TERMINAL_SYSTEM\n</system-reminder>"
+      ],
+      "renderedRole": "system"
     }
   ]
 }

@@ -49,6 +49,7 @@ const SYNC_OUTPUT = z.object({
   ]).optional(),
 })
 const OUTPUT = z.union([z.object({ async: z.literal(true), asyncTimeout: z.number().optional() }), SYNC_OUTPUT])
+export const CLAUDE_SPECIFIC_OUTPUT_FIELDS: readonly string[] = Object.freeze([...new Set(SYNC_OUTPUT.shape.hookSpecificOutput.unwrap().options.flatMap(option => Object.keys(option.shape)))])
 
 type Issue = z.core.$ZodIssue
 interface Failure { readonly path: readonly PropertyKey[]; readonly message: string }

@@ -69,3 +69,17 @@ test('Claude asyncRewake uses its own native exit contract and takes precedence 
     assert.deepEqual(result.actions, observed.automatic ? [{ kind: 'native-extension', name: 'asyncRewake', value: observed.stderr || observed.stdout }] : [], observed.name)
   }
 })
+
+test('a completed ordinary background response cannot declare another async response or publish its informational fields', async () => {
+  const { interpretOutput } = await import('../src/protocol.js')
+  for (const async of [false, true]) {
+    const result = interpretOutput(hook('claude-code', 'UserPromptSubmit'), event('UserPromptSubmit'), execution(JSON.stringify({ async, systemMessage: 'Ignored dynamic response' })), { mode: 'background' })
+    assert.deepEqual(result.actions, [])
+  }
+})
+
+test('empty background context strings retain no model action', async () => {
+  const { interpretOutput } = await import('../src/protocol.js')
+  const result = interpretOutput(hook('claude-code', 'UserPromptSubmit'), event('UserPromptSubmit'), execution('{"systemMessage":"","hookSpecificOutput":{"additionalContext":""}}'), { mode: 'background' })
+  assert.deepEqual(result.actions, [])
+})
