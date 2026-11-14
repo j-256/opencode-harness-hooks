@@ -175,3 +175,14 @@ for (const reason of ['STOPPED', '']) test(`a terminal idle stop retains protect
   const cold = new WakeRecords(); t.after(() => cold.dispose()); cold.restoreV1(f.session, f.records.snapshotV1('session'))
   assert.deepEqual(cold.read(f.session), f.records.read(f.session))
 })
+
+test('notification UI channels remain separate from model text and acknowledge durably without granting another callback', async t => {
+  const f = fixture(t), attempt = f.records.begin(f.session, 'job', tool), event = f.input(attempt)
+  f.records.capture(f.session, event, await dispatch(event))
+  assert.deepEqual(f.records.warnings(f.session), [{ id: attempt.id, texts: ['UI_ONLY'] }])
+  assert.throws(() => f.records.acknowledgeWarnings(f.session, ['foreign']), { code: 'WAKE_UI_OWNER_MISMATCH' })
+  f.records.acknowledgeWarnings(f.session, [attempt.id]); assert.deepEqual(f.records.warnings(f.session), [])
+  const cold = new WakeRecords(); t.after(() => cold.dispose()); cold.restoreV1(f.session, f.records.snapshotV1('session'))
+  assert.deepEqual(cold.warnings(f.session), []); assert.equal(cold.read(f.session)[0]!.attempts.length, 1)
+  assert.equal(f.records.read(f.session)[0]!.attempts[0]!.result!.attachments.some(row => (JSON.stringify(row.body.rendered) ?? '').includes('UI_ONLY')), false)
+})

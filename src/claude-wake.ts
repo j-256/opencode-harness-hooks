@@ -12,6 +12,7 @@ export interface ClaudeWakeArtifact extends BackgroundArtifact { readonly humanM
 export interface ClaudeSystemFeedbackInput { readonly promptID: string; readonly text: string; readonly created: number }
 
 const DATE_LIMIT = 8640000000000000
+const STOP_FEEDBACK = 'Operation stopped by hook'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const ORIGIN = Object.freeze({ kind: 'task-notification', producer: 'session-task' })
 const TASK = '<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>'
@@ -50,4 +51,10 @@ export function claudeSystemFeedback(input: ClaudeSystemFeedbackInput): Backgrou
   if (!input || !snapshotID(input.promptID) || typeof input.text !== 'string' || !Number.isSafeInteger(input.created) || input.created < 0 || input.created > DATE_LIMIT) fail('CLAUDE_WAKE_IDENTITY_INVALID')
   if (Buffer.byteLength(input.text) > EXECUTION_LIMITS.outputBytes) fail('CLAUDE_WAKE_LIMIT')
   return snapshotCopy({ created: input.created, body: { type: 'user', promptId: input.promptID, message: { role: 'user', content: input.text }, isMeta: true, origin: ORIGIN, queueSkipAttachments: true }, model: [model(input.text, WARNING)] })
+}
+export function claudeWakeDecision(outcome: 'block' | 'stop', reason: string, prompt: string): string {
+  if (!['block', 'stop'].includes(outcome) || typeof reason !== 'string' || typeof prompt !== 'string') fail('CLAUDE_WAKE_INPUT_INVALID')
+  const text = outcome === 'stop' ? STOP_FEEDBACK + (reason ? ': ' + reason : '') : 'UserPromptSubmit operation blocked by hook:\n' + reason + '\n\nOriginal prompt: ' + prompt
+  if (Buffer.byteLength(text) > EXECUTION_LIMITS.outputBytes) fail('CLAUDE_WAKE_LIMIT')
+  return text
 }

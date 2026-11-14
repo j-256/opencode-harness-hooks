@@ -18,12 +18,12 @@ async function dispatch(event: HostNotificationEvent, output: object): Promise<D
   const origin = { sourceID: source.sourceID, sourceDigest: source.sourceDigest!, registrationID: callback.id, dialect: source.dialect, configuredOrder: 0, completionOrder: 0 }
   return { entries: [{ ...origin, result }], actions: result.actions.map(action => ({ ...origin, action })), cancelled: false, diagnostic: { dispatchID: 'dispatch', sessionID: 'session', event: 'UserPromptSubmit', durationMs: 0, cancelled: false, failed: 0, unsupported: 0, skipped: 0, background: 0, handlers: [] } }
 }
-function fixture(t: { after(callback: () => unknown): void }, output: object = {}) {
+function fixture(t: { after(callback: () => unknown): void }, output: object = {}, toast?: (text: string, session: import('../src/sessions.js').SessionSnapshot, signal: AbortSignal) => Promise<void>) {
   const sessions = new Sessions(), records = new WakeRecords({ registrations: [source] }), writes: unknown[] = [], events: HostNotificationEvent[] = [], diagnostics: unknown[] = []
   sessions.prompt('session', 'turn', 'model')
   const session = sessions.get('session'), anchor = { kind: 'tool' as const, sessionID: 'session', turnID: 'turn', messageID: 'answer', callID: 'call', signature: createHash('sha256').update('ORIGINAL').digest('hex') }
   let checkpoint: () => Promise<void> = async () => { writes.push(records.snapshotV1('session')) }
-  const wake = new V1Wake({ records, state: { ensure: async () => {}, checkpoint: async () => checkpoint() }, diagnostic: value => diagnostics.push(value) })
+  const wake = new V1Wake({ records, state: { ensure: async () => {}, checkpoint: async () => checkpoint() }, diagnostic: value => diagnostics.push(value), ...(toast ? { toast } : {}) })
   wake.attach(sessions, { notification: async event => { events.push(event); const result = await dispatch(event, output); await wake.capture(event, sessions.get('session'), result, session.signal); return result } })
   t.after(async () => { await wake.dispose(); records.dispose(); sessions.dispose() })
   return { sessions, records, writes, events, diagnostics, session, anchor, wake, checkpoint: (value: () => Promise<void>) => { checkpoint = value } }
@@ -77,4 +77,31 @@ test('an unresolved persisted source attempt reports ambiguity without executing
   f.records.begin(f.session, 'job', f.anchor)
   await assert.rejects(f.wake.prepare(f.session, f.anchor, f.session.turnSignal), { code: 'HOST_WAKE_ATTEMPT_UNRESOLVED' })
   assert.equal(f.events.length, 0)
+})
+
+test('held UI stays separate from model admission and is acknowledged only after delivery', { timeout: 2000 }, async t => {
+  let release!: () => void, entered!: () => void; const held = new Promise<void>(resolve => { release = resolve }), ready = new Promise<void>(resolve => { entered = resolve }), seen: string[] = []
+  const f = fixture(t, { systemMessage: 'UI_ONLY' }, async text => { seen.push(text); entered(); await held })
+  t.after(() => release())
+  await f.wake.receive({ sessionID: 'session', delivery, signal: f.session.signal }); await f.wake.prepare(f.session, f.anchor, f.session.turnSignal); await ready
+  assert.equal(f.records.read(f.session)[0]!.binding!.model.some(text => text.includes('UI_ONLY')), false)
+  assert.equal(f.records.warnings(f.session).length, 1)
+  release(); await f.wake.settled('session'); assert.deepEqual(seen, ['UI_ONLY']); assert.deepEqual(f.records.warnings(f.session), [])
+  await f.wake.resume(f.session); await f.wake.settled('session'); assert.deepEqual(seen, ['UI_ONLY']); assert.equal(f.events.length, 1)
+})
+
+test('a rejected notification UI channel retries from retained output without source execution', { timeout: 2000 }, async t => {
+  let refuse = true; const seen: string[] = [], f = fixture(t, { systemMessage: 'RETAINED_UI' }, async text => { if (refuse) throw new Error('Unavailable'); seen.push(text) })
+  await f.wake.receive({ sessionID: 'session', delivery, signal: f.session.signal }); await f.wake.prepare(f.session, f.anchor, f.session.turnSignal); await f.wake.settled('session')
+  assert.equal(f.records.warnings(f.session).length, 1); assert.ok(JSON.stringify(f.diagnostics).includes('HOST_WAKE_UI_FAILED'))
+  refuse = false; await f.wake.resume(f.session); await f.wake.settled('session')
+  assert.deepEqual(seen, ['RETAINED_UI']); assert.equal(f.events.length, 1); assert.equal(f.records.warnings(f.session).length, 0)
+})
+
+test('session removal cancels a held UI operation and drains its work without acknowledgement', { timeout: 2000 }, async t => {
+  let entered!: () => void; const ready = new Promise<void>(resolve => { entered = resolve })
+  const f = fixture(t, { systemMessage: 'UI_ONLY' }, async () => { entered(); await new Promise(() => {}) })
+  await f.wake.receive({ sessionID: 'session', delivery, signal: f.session.signal }); await f.wake.prepare(f.session, f.anchor, f.session.turnSignal); await ready
+  await f.wake.removeSession('session'); assert.equal(f.wake.inspect().ui, 0); assert.equal(f.records.warnings(f.session).length, 1)
+  assert.ok(JSON.stringify(f.diagnostics).includes('HOST_WAKE_CANCELLED'))
 })

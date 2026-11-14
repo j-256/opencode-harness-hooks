@@ -1,13 +1,13 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
-import { claudeQueuedWake, claudeSystemWake, claudeSystemFeedback, claudeWakeText } from '../src/claude-wake.js'
+import { claudeQueuedWake, claudeSystemWake, claudeSystemFeedback, claudeWakeDecision, claudeWakeText } from '../src/claude-wake.js'
 import { EXECUTION_LIMITS } from '../src/runner.js'
 
 interface Capture { name: string; hookName: string; text: string; prompt: string; model: string; modelInHumanTurn: string; queuedBody: unknown }
 const oracle = JSON.parse(readFileSync(new URL('./fixtures/claude-wake-oracle.json', import.meta.url), 'utf8')) as { cases: Capture[]; idle: unknown }
 const identity = { sourceUUID: '11111111-1111-4111-8111-111111111111', deliveryID: '22222222-2222-4222-8222-222222222222', created: 1700000000000 }
-const feedback = JSON.parse(readFileSync(new URL('./fixtures/claude-wake-feedback-oracle.json', import.meta.url), 'utf8')) as { promptID: string; text: string; body: unknown; modelBeforeFollowingPrompt: string; withoutReasonText: string; withoutReasonModelBeforeFollowingPrompt: string }
+const feedback = JSON.parse(readFileSync(new URL('./fixtures/claude-wake-feedback-oracle.json', import.meta.url), 'utf8')) as { promptID: string; text: string; body: unknown; modelBeforeFollowingPrompt: string; withoutReasonText: string; withoutReasonModelBeforeFollowingPrompt: string; blockPrompt: string; blockReason: string; blockResult: string }
 
 test('wake prompts and both non-human model warnings match literal native captures without trimming or escaping unrelated markup', () => {
   for (const row of oracle.cases) {
@@ -52,4 +52,10 @@ test('idle terminal feedback retains its literal native meta-user origin and a n
   assert.equal(result.created, identity.created); assert.ok(Object.isFrozen(result.body)); assert.ok(Object.isFrozen(result.model))
   for (const change of [{ promptID: '' }, { created: NaN }, { created: -1 }]) assert.throws(() => claudeSystemFeedback({ ...feedback, created: identity.created, ...change }), { code: 'CLAUDE_WAKE_IDENTITY_INVALID' })
   assert.throws(() => claudeSystemFeedback({ promptID: feedback.promptID, created: identity.created, text: 'x'.repeat(EXECUTION_LIMITS.outputBytes + 1) }), { code: 'CLAUDE_WAKE_LIMIT' })
+})
+
+test('notification control messages match native stopped and blocked UI results without entering model context', () => {
+  assert.equal(claudeWakeDecision('stop', feedback.text.slice('Operation stopped by hook: '.length), feedback.blockPrompt), feedback.text)
+  assert.equal(claudeWakeDecision('stop', '', feedback.blockPrompt), feedback.withoutReasonText)
+  assert.equal(claudeWakeDecision('block', feedback.blockReason, feedback.blockPrompt), feedback.blockResult)
 })

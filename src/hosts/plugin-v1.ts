@@ -112,7 +112,10 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   } })
   const stateService = services.nativeState ?? nativeState!
   const customBackground = services.host?.background
-  const wake = new V1Wake({ records: wakeRecords, state: stateService, ...(services.backgroundDiagnostic ? { diagnostic: services.backgroundDiagnostic } : {}) })
+  const wake = new V1Wake({ records: wakeRecords, state: stateService, ...(services.backgroundDiagnostic ? { diagnostic: services.backgroundDiagnostic } : {}), ...(input.client?.tui ? { toast: async (text, _session, signal) => {
+    const result = await input.client!.tui!.showToast({ body: { title: 'Hook notification', message: text, variant: 'error', duration: BACKGROUND_TOAST_MS }, query: { directory: input.directory }, signal })
+    if (result.error || result.data !== true) unavailable('HOST_WAKE_UI_FAILED')
+  } } : {}) })
   let idleWake: V1WakeIdle | undefined
   const canWake = !customBackground && !!input.client?.session.prompt && !!transcripts.prepareNotification
   const background = new V1Background({ records: backgroundRecords, state: stateService, ...(canWake ? { wakes: { records: wakeRecords, receive: async notice => { await wake.receive(notice); idleWake?.resume(notice.sessionID) } } } : {}), ...(services.backgroundDiagnostic ? { diagnostic: services.backgroundDiagnostic } : {}), ...(input.client?.tui ? { toast: async (text, _session, signal) => {
@@ -330,6 +333,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       const session = runtime.sessions.get(prompt.sessionID)
       await stateService.ensure(session, session.turnSignal)
       await background.resume(session)
+      await wake.resume(session)
       if (!needsProjection(prompt.sessionID)) {
         if (Array.isArray(output.parts) && output.parts.length && output.parts.every(part => record(part) && part.type === 'text' && typeof part.text === 'string')) {
           const text = partsText(output.parts)
@@ -429,7 +433,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     },
     inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), ...(!customBackground ? { background: background.inspect() } : {}), backgroundRecords: backgroundRecords.inspect(), backgroundProjection: backgroundProjection.inspect(), wakes: wake.inspect(), wakeRecords: wakeRecords.inspect(), wakeInputs: wakeInputs.inspect(), ...(idleWake ? { idleWake: idleWake.inspect() } : {}), ...(models ? { models: models.inspect() } : {}), ...(mcp ? { mcp: mcp.inspect() } : {}), ...(agents ? { agents: agents.inspect(), agentPermissions: agentPermissions!.inspect(), agentTools: agentTools!.inspect() } : {}), cleanup: Object.freeze({ pending: cleanups.size, failedSessions: cleanupFailures.size, overflowFailures: cleanupOverflowFailures, observerFailures: cleanupObserverFailures }), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
     disposeSession,
-    settleWake: async (sessionID: string) => { await background.completed(sessionID); await idleWake?.settled(sessionID) },
+    settleWake: async (sessionID: string) => { await background.completed(sessionID); await idleWake?.settled(sessionID); await wake.settled(sessionID) },
     dispose: async () => { runtime.sessions.dispose(); backgroundProjection.dispose(); await Promise.all([models?.dispose(), agents?.dispose(), mcp?.dispose(), idleWake?.dispose(), wake.dispose(), background.dispose()]); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await Promise.allSettled([...cleanups.values()]); try { await startup.dispose(); await tools.dispose(); await agentTools?.dispose(); await agentPermissions?.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose(); backgroundRecords.dispose(); wakeRecords.dispose(); wakeInputs.dispose() } },
   }
   const message = guarded(runtime, 'admission', hooks['chat.message'], (prompt, output) => ({ sessionID: prompt.sessionID, messageID: output.message.id }))

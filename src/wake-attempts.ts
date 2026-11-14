@@ -14,13 +14,13 @@ export interface WakeAttemptResult {
   readonly outcome: 'allow' | 'block' | 'stop' | 'cancelled'; readonly dispatchHash: string; readonly reason: string | null; readonly completedAt: number
   readonly attachments: readonly PromptAttachment[]; readonly warnings: readonly string[]; readonly feedback: readonly string[]; readonly developer: readonly string[]
 }
-export interface WakeAttempt { readonly id: string; readonly promptID: string; readonly created: number; readonly anchor: BackgroundAnchor; readonly result: WakeAttemptResult | null }
+export interface WakeAttempt { readonly id: string; readonly promptID: string; readonly created: number; readonly anchor: BackgroundAnchor; readonly result: WakeAttemptResult | null; readonly uiAcknowledged: boolean }
 const ID = z.string().refine(snapshotID)
 const DATE_LIMIT = 8640000000000000
 const HASH = z.string().regex(/^[a-f0-9]{64}$/)
 const UUID = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
 const RESULT = z.object({ outcome: z.enum(['allow', 'block', 'stop', 'cancelled']), dispatchHash: HASH, reason: z.string().nullable(), completedAt: z.number().int().nonnegative().max(DATE_LIMIT), attachments: z.array(z.unknown()), warnings: z.array(z.string()), feedback: z.array(z.string()), developer: z.array(z.string()) }).strict()
-const ATTEMPT = z.object({ id: UUID, promptID: ID, created: z.number().int().nonnegative().max(DATE_LIMIT), anchor: z.unknown(), result: RESULT.nullable() }).strict()
+const ATTEMPT = z.object({ id: UUID, promptID: ID, created: z.number().int().nonnegative().max(DATE_LIMIT), anchor: z.unknown(), result: RESULT.nullable(), uiAcknowledged: z.boolean().default(false) }).strict()
 const ACTIONS = new Set(['context', 'feedback', 'warning', 'block-event', 'stop-session', 'native-extension'])
 const ORIGIN_FIELDS = ['sourceID', 'sourceDigest', 'registrationID', 'dialect', 'configuredOrder', 'completionOrder'] as const
 function fail(code: string): never { throw new HostHookError(code, 'unsupported') }
@@ -29,6 +29,7 @@ function freeze<T>(value: T): T { if (value && typeof value === 'object') { Obje
 export function wakeAttempt(value: unknown, sessionID: string): WakeAttempt {
   const parsed = ATTEMPT.safeParse(value); if (!parsed.success) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
   const input = parsed.data, anchor = backgroundAnchor(input.anchor)
+  if (!input.result && input.uiAcknowledged) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
   if (anchor.sessionID !== sessionID || anchor.turnID !== input.promptID || (anchor.kind === 'prompt' ? anchor.messageID !== input.promptID : anchor.messageID === input.promptID)) fail('WAKE_ATTEMPT_OWNER_MISMATCH')
   let result: WakeAttemptResult | null = null
   if (input.result) {
@@ -36,7 +37,7 @@ export function wakeAttempt(value: unknown, sessionID: string): WakeAttempt {
     if ((raw.outcome === 'block' || raw.outcome === 'stop') !== (raw.reason !== null) || !accepted && (raw.attachments.length || raw.developer.length)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
     result = { ...raw, attachments: raw.attachments.map(value => nativeHookRecord(value, 'UserPromptSubmit')) }
   }
-  return freeze({ id: input.id, promptID: input.promptID, created: input.created, anchor, result })
+  return freeze({ id: input.id, promptID: input.promptID, created: input.created, anchor, result, uiAcknowledged: input.uiAcknowledged })
 }
 
 export function wakeAttemptResult(event: HostNotificationEvent, dispatch: DispatchResult, dispatchHash: string): WakeAttemptResult {

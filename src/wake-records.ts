@@ -14,7 +14,7 @@ import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotID } from './session
 import { backgroundAnchor } from './background-records.js'
 import type { BackgroundAnchor, BackgroundBinding } from './background-records.js'
 import type { BackgroundArtifact } from './background-artifacts.js'
-import { claudeQueuedWake, claudeSystemWake, claudeSystemFeedback } from './claude-wake.js'
+import { claudeQueuedWake, claudeSystemWake, claudeSystemFeedback, claudeWakeDecision } from './claude-wake.js'
 import { wakeAttempt, wakeAttemptResult } from './wake-attempts.js'
 import type { WakeAttempt } from './wake-attempts.js'
 import type { HostNotificationEvent } from './notification.js'
@@ -34,7 +34,6 @@ const MAX_BYTES = 32 * 1024 * 1024
 const MAX_SESSIONS = 1024
 const DATE_LIMIT = 8640000000000000
 const MAX_ATTEMPTS = 2
-const STOP_FEEDBACK = 'Operation stopped by hook'
 const RESERVATION = Object.freeze({ OPEN: 'open', COMMITTED: 'committed', RELEASED: 'released' } as const)
 const DIGEST = /^[a-f0-9]{64}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -63,6 +62,12 @@ function fingerprint(sessionID: string, row: WakeEntry): string { return hash({ 
 function rowBytes(row: WakeEntry): number { return Buffer.byteLength(JSON.stringify(row)) + 1 }
 function receiptBytes(id: string, hash: string): number { return Buffer.byteLength(JSON.stringify({ id, hash })) + 1 }
 function headerBytes(sessionID: string): number { return Buffer.byteLength(JSON.stringify({ value: { kind: KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, rows: [], receipts: [] } })) }
+function uiTexts(row: WakeEntry, attempt: WakeAttempt): readonly string[] {
+  const result = attempt.result
+  if (!result) return []
+  const control = result.outcome === 'block' || result.outcome === 'stop' && attempt.anchor.kind === 'prompt' ? [claudeWakeDecision(result.outcome, result.reason ?? '', row.text.prompt)] : []
+  return [...result.warnings, ...result.feedback, ...control]
+}
 
 export class WakeRecords {
   private readonly states = new Map<string, State>()
@@ -153,6 +158,17 @@ export class WakeRecords {
   }
   read(session: SessionSnapshot): readonly WakeEntry[] { const state = this.state(session); if (state?.binding) fail('WAKE_BINDING_PENDING'); return Object.freeze([...(state?.rows.values() ?? [])]) }
   pending(session: SessionSnapshot): readonly WakeEntry[] { return Object.freeze(this.read(session).filter(row => this.isPending(row))) }
+  warnings(session: SessionSnapshot): readonly { readonly id: string; readonly texts: readonly string[] }[] { return Object.freeze(this.read(session).flatMap(row => row.attempts.flatMap(attempt => { if (attempt.uiAcknowledged) return []; const texts = uiTexts(row, attempt); return texts.length ? [freeze({ id: attempt.id, texts })] : [] }))) }
+  acknowledgeWarnings(session: SessionSnapshot, ids: readonly string[]): void {
+    const state = this.state(session), selected = new Set(ids), rows = this.read(session)
+    if (selected.size !== ids.length || ids.some(id => !rows.some(row => row.attempts.some(attempt => attempt.id === id && attempt.result)))) fail('WAKE_UI_OWNER_MISMATCH')
+    if (!state) { if (ids.length) fail('WAKE_UI_OWNER_MISMATCH'); return }
+    for (const previous of rows) {
+      if (!previous.attempts.some(attempt => selected.has(attempt.id) && !attempt.uiAcknowledged)) continue
+      const row = freeze({ ...previous, attempts: previous.attempts.map(attempt => selected.has(attempt.id) ? { ...attempt, uiAcknowledged: true } : attempt) })
+      this.replace(session.sessionID, state, previous, row)
+    }
+  }
   requiresProjection(sessionID: string): boolean { return !this.disposed && !this.closed.has(sessionID) && [...(this.states.get(sessionID)?.rows.values() ?? [])].some(row => row.binding || this.isPending(row)) }
   discardPendingPrompt(session: SessionSnapshot, messageID: string): void {
     if (!snapshotID(messageID) || this.read(session).some(row => row.attempts.some(attempt => attempt.promptID === messageID))) fail('SESSION_SNAPSHOT_PROMPT_RECONCILIATION_UNAVAILABLE')
@@ -221,7 +237,7 @@ export class WakeRecords {
         artifact = { created: attempt.created, body: claudeSystemWake({ ...input, promptID: attempt.promptID, promptIndex: placement.promptIndex, turnIndex: placement.turnIndex }), model: [text.model] }
       }
       const callbacks = attempt.result.attachments.flatMap(row => { const rendered = row.body.rendered; return Array.isArray(rendered) ? rendered.map(value => (value as { readonly content: string }).content) : [] })
-      const feedback = attempt.result.outcome === 'stop' ? claudeSystemFeedback({ promptID: attempt.promptID, text: STOP_FEEDBACK + (attempt.result.reason ? ': ' + attempt.result.reason : ''), created: attempt.result.completedAt }) : undefined
+      const feedback = attempt.result.outcome === 'stop' ? claudeSystemFeedback({ promptID: attempt.promptID, text: claudeWakeDecision('stop', attempt.result.reason ?? '', text.prompt), created: attempt.result.completedAt }) : undefined
       const model = feedback ? [...artifact.model, ...feedback.model].map(text => text + '\n') : placement.kind === 'system' ? [...callbacks.map((text, index) => text + (index === callbacks.length - 1 ? '\n' : '')), ...artifact.model] : [...artifact.model, ...callbacks]
       binding = { attemptID: attempt.id, anchor, placement, artifact, ...(feedback ? { feedback } : {}), model, developer: attempt.result.developer }
     }
