@@ -34,6 +34,14 @@ export interface AgentHookContext {
   readonly nativeInput: Readonly<Record<string, JsonValue>>
 }
 
+export interface AgentExecutionContext {
+  readonly parentID: string
+  readonly turnID: string
+  readonly sessionID: string
+  readonly signal: AbortSignal
+  readonly context: AgentHookContext
+}
+
 export interface McpHookRequest {
   readonly dialect: Dialect
   readonly event: string
@@ -77,6 +85,7 @@ export interface HostServices {
   readonly captureCommandArtifacts?: boolean
   readonly captureHttpArtifacts?: boolean
   readonly captureModelArtifacts?: boolean
+  readonly insideHookAgent?: true
   readonly mcp?: McpHookService
   readonly evaluatePrompt?: (request: ModelHookRequest) => Promise<unknown>
   readonly runAgent?: (request: AgentHookRequest) => Promise<unknown>

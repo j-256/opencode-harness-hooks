@@ -15,6 +15,7 @@ export interface RuntimeOptions {
   readonly reviewedDigests: Readonly<Record<string, string>>
   readonly permissionMode?: string
   readonly promptModel?: string
+  readonly agentModel?: string
   readonly modelAliases?: Readonly<Record<string, string>>
 }
 export interface RuntimeReport {
@@ -39,7 +40,7 @@ export interface RuntimeReport {
 function record(value: unknown): value is Record<string, unknown> { return value !== null && typeof value === 'object' && !Array.isArray(value) }
 
 function optionsCopy(value: unknown, directory: string): RuntimeOptions {
-  if (!record(value) || Object.keys(value).some(key => !['sources', 'reviewedDigests', 'permissionMode', 'promptModel', 'modelAliases'].includes(key)) || !Array.isArray(value.sources) || !value.sources.length || !record(value.reviewedDigests)) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
+  if (!record(value) || Object.keys(value).some(key => !['sources', 'reviewedDigests', 'permissionMode', 'promptModel', 'agentModel', 'modelAliases'].includes(key)) || !Array.isArray(value.sources) || !value.sources.length || !record(value.reviewedDigests)) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
   if (value.permissionMode !== undefined && (typeof value.permissionMode !== 'string' || !PERMISSION_MODES.has(value.permissionMode))) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
   if (Object.values(value.reviewedDigests).some(digest => typeof digest !== 'string' || !/^[a-f0-9]{64}$/.test(digest))) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
   const sources = value.sources.map(source => {
@@ -47,6 +48,7 @@ function optionsCopy(value: unknown, directory: string): RuntimeOptions {
     return snapshotSourceSpec(source as unknown as SourceSpec, undefined, directory)
   })
   const validModel = (input: unknown): input is string => typeof input === 'string' && /^[^/\s\x00-\x1f]+\/.+$/u.test(input) && !/[\x00-\x1f]/u.test(input) && Buffer.byteLength(input) <= MAX_MODEL_BYTES
+  if (value.agentModel !== undefined && !validModel(value.agentModel)) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
   if (value.promptModel !== undefined && !validModel(value.promptModel)) throw new HostHookError('PLUGIN_OPTIONS_INVALID', 'failed')
   let aliases: Readonly<Record<string, string>> | undefined
   if (value.modelAliases !== undefined) {
@@ -59,7 +61,7 @@ function optionsCopy(value: unknown, directory: string): RuntimeOptions {
     }
     aliases = Object.freeze(copied)
   }
-  return { sources, reviewedDigests: { ...value.reviewedDigests } as Record<string, string>, ...(typeof value.permissionMode === 'string' ? { permissionMode: value.permissionMode } : {}), ...(typeof value.promptModel === 'string' ? { promptModel: value.promptModel } : {}), ...(aliases ? { modelAliases: aliases } : {}) }
+  return { sources, reviewedDigests: { ...value.reviewedDigests } as Record<string, string>, ...(typeof value.permissionMode === 'string' ? { permissionMode: value.permissionMode } : {}), ...(typeof value.promptModel === 'string' ? { promptModel: value.promptModel } : {}), ...(typeof value.agentModel === 'string' ? { agentModel: value.agentModel } : {}), ...(aliases ? { modelAliases: aliases } : {}) }
 }
 
 export async function inspectSources(host: HostVersion, directory: string, inputOptions: unknown, availableEvents: readonly string[] = []) {

@@ -72,7 +72,7 @@ export async function executeRegistration(registration: Registration, inputEvent
   const background = isBackground(registration)
   const fail = (code: string) => result(registration, 'failed', code, started, !background && registration.dialect === 'claude-code' && claudeFailureBlocks(registration, code) ? claudeBlock(event, `Hook failed: ${code}`, true) : [])
   if (registration.event !== inputEvent.event) return fail('HANDLER_EVENT_MISMATCH')
-  const skipped = nativeSkipReason(registration, inputEvent)
+  const skipped = services.insideHookAgent && registration.dialect === 'claude-code' && (registration.handler.type === 'prompt' || registration.handler.type === 'agent') ? 'NATIVE_AGENT_MODEL_RECURSION' : nativeSkipReason(registration, inputEvent)
   if (skipped) {
     const artifact = nativeStartRejection(registration, event, started)
     if (artifact) {

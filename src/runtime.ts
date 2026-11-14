@@ -4,7 +4,7 @@ import type { HostVersion } from './contracts.js'
 import { dispatchEvent } from './engine.js'
 import type { DispatchResult } from './engine.js'
 import { nativeSkip } from './handlers.js'
-import type { HostServices } from './host-services.js'
+import type { HostServices, AgentExecutionContext } from './host-services.js'
 import { snapshotCommandContexts } from './host-services.js'
 import { HostHookError } from './host-errors.js'
 import type { HostToolEvent, ToolHostOptions } from './tool-types.js'
@@ -64,6 +64,10 @@ function matched(sources: readonly LoadedSource[], event: NativeEvent): readonly
   return sources.flatMap(source => source.registrations.filter(registration => {
     try { return selectRegistrations([{ ...source, registrations: [registration] }], event).length > 0 } catch { return false }
   }))
+}
+
+function requireClassifiedFailure(sources: readonly LoadedSource[], event: HostToolEvent, base: NativeEvent, classified: boolean): void {
+  if (event.event === 'PostToolUseFailure' && !classified && matched(sources, { ...base, event: 'PostToolUse' }).some(registration => registration.dialect === 'codex' && !nativeSkip(registration, { ...base, event: 'PostToolUse' }))) throw new HostHookError('HOST_POST_FAILURE_UNVERIFIED', 'unsupported')
 }
 
 function resultData(event: HostToolEvent, failure = v1ShellFailure(event)): Record<string, JsonValue> {
@@ -176,7 +180,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
         const failure = v1ShellFailure(event)
         const base: NativeEvent = { host, event: event.event, ...(failure ? { dialectEvents: { codex: 'PostToolUse' } } : {}), sessionID: event.sessionID, cwd: directory, tool: event.tool, toolInput: event.event === 'PreToolUse' ? event.toolInput : event.effectiveInput }
         const selected = matched(sources, base).filter(registration => !nativeSkip(registration, eventForDialect(base, registration.dialect)))
-        if (event.event === 'PostToolUseFailure' && !failure && matched(sources, { ...base, event: 'PostToolUse' }).some(registration => registration.dialect === 'codex' && !nativeSkip(registration, { ...base, event: 'PostToolUse' }))) throw new HostHookError('HOST_POST_FAILURE_UNVERIFIED', 'unsupported')
+        requireClassifiedFailure(sources, event, base, !!failure)
         let nativeData = selected.length && services.nativeData ? await runService(null, signal, current => services.nativeData!(event, session, current)) : undefined
         if (failure) nativeData = { ...nativeData, codex: { tool_response: failure.output, ...nativeData?.codex } }
         let nativeSessionIDs: NativeEvent['nativeSessionIDs']
@@ -205,6 +209,44 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
       void pending.finally(() => { active.delete(pending) }).catch(() => {})
       return pending
     },
+  }
+  const agentTool = async (inputExecution: AgentExecutionContext, inputEvent: HostToolEvent): Promise<DispatchResult> => {
+    const execution = { ...inputExecution, context: structuredClone(inputExecution.context) }
+    const event = { ...inputEvent, toolInput: structuredClone(inputEvent.toolInput), effectiveInput: structuredClone(inputEvent.effectiveInput) }
+    const context = execution.context
+    if (event.host !== host || context.host !== host || context.dialect !== 'claude-code' || event.sessionID !== execution.sessionID || execution.parentID === execution.sessionID || !sources.some(source => source.enabled && source.id === context.sourceID && source.registrations.some(registration => registration.id === context.registrationID && registration.event === context.event && registration.handler.type === 'agent'))) throw new HostHookError('HOST_AGENT_CONTEXT_UNAVAILABLE', 'unsupported')
+    const session = sessions.get(execution.parentID)
+    if (session.turnID !== execution.turnID) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
+    const signal = AbortSignal.any([event.signal, execution.signal, session.signal, session.turnSignal])
+    const pending = (async () => {
+      if (signal.aborted) throw new HostHookError('HOST_TOOL_CANCELLED', 'cancelled')
+      const failure = v1ShellFailure(event)
+      const base: NativeEvent = { host, event: event.event, ...(failure ? { dialectEvents: { codex: 'PostToolUse' } } : {}), sessionID: session.sessionID, cwd: directory, tool: event.tool, toolInput: event.event === 'PreToolUse' ? event.toolInput : event.effectiveInput }
+      const selected = matched(sources, base).filter(registration => !nativeSkip(registration, eventForDialect(base, registration.dialect)))
+      requireClassifiedFailure(sources, event, base, !!failure)
+      const parentEvent = { ...event, sessionID: session.sessionID }
+      let nativeData = selected.length && services.nativeData ? await runService(null, signal, current => services.nativeData!(parentEvent, session, current)) : undefined
+      const nativeID = context.nativeInput.session_id
+      if (typeof nativeID !== 'string' || !nativeID) throw new HostHookError('HOST_AGENT_CONTEXT_UNAVAILABLE', 'unsupported')
+      const identities: Partial<Record<'claude-code' | 'codex', string>> = { 'claude-code': nativeID }
+      nativeData = { ...nativeData, 'claude-code': { ...nativeData?.['claude-code'], ...context.nativeInput, ...(selected.length ? resultData(event, failure) : {}), tool_use_id: event.callID, permission_mode: 'dontAsk' } }
+      if (failure) nativeData = { ...nativeData, codex: { ...nativeData?.codex, tool_response: failure.output } }
+      if (selected.some(registration => registration.dialect === 'codex') && nativeData?.codex?.transcript_path === undefined && services.codexTranscripts) {
+        const view = await runService(null, signal, current => services.codexTranscripts!.prepare(parentEvent, session, current))
+        identities.codex = view.sessionID
+        nativeData = { ...nativeData, codex: { ...nativeData?.codex, transcript_path: view.transcriptPath, turn_id: view.turnID } }
+      }
+      const data = { ...(selected.length ? resultData(event, failure) : {}), transcript_path: null, tool_use_id: event.callID, turn_id: session.turnID!, ...(session.model ? { model: session.model } : {}), permission_mode: 'dontAsk' }
+      const nativeEvent: NativeEvent = { ...base, data, dialectData: nativeData, nativeSessionIDs: identities }
+      for (const registration of selected) {
+        try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
+      }
+      const dispatched = await dispatchEvent(sources, nativeEvent, { ...services.host, insideHookAgent: true, environment, projectRoot: directory, signal, sessionSignal: session.signal })
+      if (signal.aborted) throw new HostHookError('HOST_TOOL_CANCELLED', 'cancelled')
+      return observe(dispatched)
+    })()
+    active.add(pending)
+    try { return await pending } finally { active.delete(pending) }
   }
   const prompt = async (inputEvent: HostPromptEvent): Promise<DispatchResult> => {
     const event = { ...inputEvent }
@@ -245,9 +287,11 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     if (session.turnID !== event.messageID) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
     services.transcripts?.admitPrompt?.(event, session, dispatch)
   }
-  return { report, sessions, tools, prompt, admitPrompt, promptOperation, observeModel, needsModelArtifacts,
+  return { report, sessions, tools, agentTool, prompt, admitPrompt, promptOperation, observeModel, needsModelArtifacts,
+    hasAgentModelHooks: sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.some(registration => registration.handler.type === 'agent')),
     hasPromptModelHooks: sources.some(source => source.dialect === 'claude-code' && source.registrations.some(registration => registration.handler.type === 'prompt')),
-    modelOptions: Object.freeze({ ...(options.promptModel ? { promptModel: options.promptModel } : {}), ...(options.modelAliases ? { modelAliases: options.modelAliases } : {}) }),
+    modelOptions: Object.freeze({ ...(options.agentModel ? { agentModel: options.agentModel } : {}), ...(options.promptModel ? { promptModel: options.promptModel } : {}), ...(options.modelAliases ? { modelAliases: options.modelAliases } : {}) }),
+    nativeAgentModels: Object.freeze(sources.flatMap(source => source.enabled && source.dialect === 'claude-code' ? source.registrations.flatMap(registration => registration.handler.type === 'agent' && typeof registration.handler.model === 'string' ? [registration.handler.model] : []) : [])),
     nativePromptModels: Object.freeze(sources.flatMap(source => source.dialect === 'claude-code' ? source.registrations.flatMap(registration => registration.handler.type === 'prompt' && typeof registration.handler.model === 'string' ? [registration.handler.model] : []) : [])),
     removeStartupSession: async (sessionID: string) => { sessions.close(sessionID); if (starts) await starts.removeSession(sessionID); else await retainedEnvironments?.removeSession(sessionID) },
     start: (event: SessionStartEvent) => starts ? starts.start(event) : Promise.reject(new HostHookError('HOST_EVENT_UNAVAILABLE', 'unsupported')),

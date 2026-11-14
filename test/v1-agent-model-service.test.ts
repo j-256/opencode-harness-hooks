@@ -11,12 +11,12 @@ import { Sessions } from '../src/sessions.js'
 async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'v1-agent-model-'))), sessions = new Sessions()
   sessions.prompt('parent', 'turn', 'parent-model')
-  let models!: V1AgentModels, sequence = 0, invalid = false, foreign = false, limit = false, failedDelete = false
+  let models!: V1AgentModels, sequence = 0, invalid = false, foreign = false, limit = false, failedDelete = false, restricted = false, missingPolicy = false
   let hold: (() => Promise<void>) | undefined, omitFence = false, wrongError = false, wrongErrorText = false, wrongMessage = false, fencedAssistant = false, copied: (() => void) | undefined
   const calls: { phase: string; sessionID?: string; tool?: string; value?: unknown }[] = [], children = new Set<string>(), diagnostics: unknown[] = []
-  const client: V1ModelClient = { session: {
-    get: async () => ({ data: { id: 'parent', directory } }),
-    create: async request => { const info = { id: 'child-' + ++sequence, parentID: request.body.parentID, title: request.body.title, directory }; children.add(info.id); models.event('session.created', { info }); return { data: info } },
+  const client: V1ModelClient = { app: { agents: async () => ({ data: [{ name: 'build', permission: [{ permission: '*', pattern: '*', action: 'allow' }, ...(restricted ? [{ permission: 'bash', pattern: '*', action: 'deny' }] : [])] }] }) }, session: {
+    get: async () => ({ data: { id: 'parent', directory, agent: 'build' } }),
+    create: async request => { calls.push({ phase: 'create', value: request.body }); const info = { ...(missingPolicy ? {} : { permission: request.body.permission }), id: 'child-' + ++sequence, parentID: request.body.parentID, title: request.body.title, directory }; children.add(info.id); models.event('session.created', { info }); return { data: info } },
     prompt: async request => {
       calls.push({ phase: 'prompt', value: request.body })
       const sessionID = request.path.id, model = request.body.model, message = { id: request.body.messageID, agent: request.body.agent }, resolved = { providerID: model.providerID, id: model.modelID }
@@ -55,7 +55,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   const context = { host: 'v1' as const, dialect: 'claude-code' as const, event: 'UserPromptSubmit', sourceID: 'source', registrationID: 'registration', nativeInput: { session_id: 'native-parent', permission_mode: 'bypassPermissions' } }
   const request = (signal = sessions.get('parent').turnSignal, model?: string) => ({ prompt: 'OWNED_RULE', sessionID: 'parent', cwd: directory, maxTurns: 50, context, signal, ...(model ? { model } : {}) })
   t.after(async () => { failedDelete = false; await models.dispose(); sessions.dispose(); await rm(directory, { recursive: true, force: true }) })
-  return { models, calls, children, diagnostics, config, request, invalid: () => { invalid = true }, foreign: () => { foreign = true }, limit: () => { limit = true }, failDelete: (value: boolean) => { failedDelete = value }, hold: (fn: () => Promise<void>) => { hold = fn }, omitFence: () => { omitFence = true }, wrongError: () => { wrongError = true }, wrongErrorText: () => { wrongErrorText = true }, wrongMessage: () => { wrongMessage = true }, fencedAssistant: () => { fencedAssistant = true }, copied: (fn: () => void) => { copied = fn } }
+  return { restrict: () => { restricted = true }, omitPolicy: () => { missingPolicy = true }, models, calls, children, diagnostics, config, request, invalid: () => { invalid = true }, foreign: () => { foreign = true }, limit: () => { limit = true }, failDelete: (value: boolean) => { failedDelete = value }, hold: (fn: () => Promise<void>) => { hold = fn }, omitFence: () => { omitFence = true }, wrongError: () => { wrongError = true }, wrongErrorText: () => { wrongErrorText = true }, wrongMessage: () => { wrongMessage = true }, fencedAssistant: () => { fencedAssistant = true }, copied: (fn: () => void) => { copied = fn } }
 }
 
 test('agent evaluator permits owned multi-turn tools and captures a validated call-bound verdict', async t => {
@@ -197,4 +197,25 @@ test('external deletion of an evaluator invalidates a still-live parent evaluati
   const f = await fixture(t)
   f.hold(async () => { f.children.delete('child-1'); f.models.event('session.deleted', { info: { id: 'child-1' } }) })
   await assert.rejects(f.models.evaluate(f.request()), { code: 'EXECUTION_CANCELLED' })
+})
+
+
+test('the owned child inherits resolved caller-agent restrictions before receiving a prompt', async t => {
+  const f = await fixture(t); f.restrict()
+  await f.models.evaluate(f.request())
+  const body = f.calls.find(row => row.phase === 'create')!.value as { permission?: { permission: string; action: string }[] }
+  assert.ok(body.permission?.some(rule => rule.permission === 'bash' && rule.action === 'deny'))
+})
+
+test('a missing per-child permission receipt prevents all model delegation', async t => {
+  const f = await fixture(t); f.omitPolicy()
+  await assert.rejects(f.models.evaluate(f.request()), { code: 'HOST_AGENT_PERMISSION_POLICY_MISMATCH' })
+  assert.equal(f.calls.some(row => row.phase === 'prompt'), false); assert.equal(f.children.size, 0)
+})
+
+test('an unverified host policy is diagnosed as unsupported rather than a native hook failure', async t => {
+  const f = await fixture(t); f.omitPolicy()
+  const { executeRegistration } = await import('../src/handlers.js')
+  const result = await executeRegistration({ id: 'agent:fixture', sourceID: 'native', dialect: 'claude-code', event: 'UserPromptSubmit', groupIndex: 0, handlerIndex: 0, handler: { type: 'agent', prompt: 'OWNED_RULE' } }, { host: 'v1', event: 'UserPromptSubmit', sessionID: 'parent', cwd: f.request().cwd, data: { prompt: 'Original', transcript_path: '/owned/reserved.jsonl', permission_mode: 'default' } }, { environment: {}, projectRoot: f.request().cwd, runAgent: request => f.models.evaluate(request) })
+  assert.equal(result.status, 'unsupported'); assert.equal(result.code, 'HOST_AGENT_PERMISSION_POLICY_MISMATCH')
 })

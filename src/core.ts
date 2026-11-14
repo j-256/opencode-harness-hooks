@@ -27,7 +27,7 @@ export type { CommandArtifact, HttpArtifact, NativeFailureArtifact } from './eff
 export { ModelApiError, ModelOutputError } from './model-artifact.js'
 export type { AgentModelArtifact, ModelArtifact, PromptModelArtifact } from './model-artifact.js'
 export type { HostModelEvent, ArtifactDiagnostic } from './model-types.js'
-export type { AgentHookContext, AgentHookRequest, HostServices, ModelHookRequest, SourceContext, RegistrationContext } from './host-services.js'
+export type { AgentExecutionContext, AgentHookContext, AgentHookRequest, HostServices, ModelHookRequest, SourceContext, RegistrationContext } from './host-services.js'
 export type { SourceSpec, NativeEvent, LoadedSource, Registration, JsonValue } from './types.js'
 export type { CodexConfigLayer, CodexConfigContext, LoadedCodexConfig } from './types.js'
 export { ClaudeTranscript } from './transcript.js'
