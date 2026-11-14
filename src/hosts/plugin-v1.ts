@@ -24,9 +24,14 @@ import { V1AgentModels, AGENT_VERDICT_TOOL } from './agent-v1.js'
 import type { V1ModelClient } from './model-v1.js'
 import { V1McpTools } from './mcp-v1.js'
 import type { V1McpClient } from './mcp-v1.js'
+import { BackgroundRecords } from '../background-records.js'
+import { V1Background } from './background-v1.js'
+import type { V1BackgroundDiagnostic } from './background-v1.js'
+import { BACKGROUND_REQUEST_HEADER, V1BackgroundProjection } from './background-projection-v1.js'
 
 const MAX_SESSION_CLEANUPS = 1024
 const NATIVE_VERDICT_TOOL = 'StructuredOutput'
+const BACKGROUND_TOAST_MS = 10000
 
 export interface V1Input {
   readonly serverUrl?: URL
@@ -46,6 +51,7 @@ export interface V1Input {
   }
 }
 export interface V1Services extends RuntimeServices {
+  readonly backgroundDiagnostic?: (value: V1BackgroundDiagnostic) => void
   readonly promptTransport?: {
     readonly providerID: string
     readonly attach: (wrap: (original: typeof fetch) => typeof fetch) => void
@@ -65,24 +71,25 @@ function auxiliary(prompt: Prompt & { readonly message: UserMessage }): boolean 
 
 export async function createHarnessHooks(input: V1Input, options: unknown, services: V1Services = {}) {
   services = { ...services }
+  const backgroundRecords = new BackgroundRecords()
   const readHistory = async (event: { readonly sessionID: string }, signal: AbortSignal) => {
     if (!input.client) throw new HostHookError('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE', 'unsupported')
     const [info, messages] = await Promise.all([input.client.session.get({ path: { id: event.sessionID }, signal }), input.client.session.messages({ path: { id: event.sessionID }, signal })])
     if (info.error || messages.error) throw new HostHookError('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE', 'unsupported')
     return { info: info.data, messages: messages.data }
   }
-  const transcripts = services.transcripts ?? new ClaudeTranscript({ host: 'v1', directory: input.directory, history: async (event, signal) => {
+  const transcripts = services.transcripts ?? new ClaudeTranscript({ host: 'v1', directory: input.directory, background: backgroundRecords, history: async (event, signal) => {
     const snapshot = await readHistory(event, signal)
     return history(snapshot.info, snapshot.messages)
   } })
-  const codexTranscripts = services.codexTranscripts ?? new CodexTranscript({ host: 'v1', directory: input.directory, history: async (event, signal) => {
+  const codexTranscripts = services.codexTranscripts ?? new CodexTranscript({ host: 'v1', directory: input.directory, background: backgroundRecords, history: async (event, signal) => {
     const snapshot = await readHistory(event, signal)
     return codexHistoryV1(snapshot.info, snapshot.messages)
   } })
   const contexts = new PromptContexts()
   const project = await realpath(input.directory), environment = services.host?.environment ?? process.env
   const stateDirectory = join(environment.XDG_STATE_HOME ?? join(environment.HOME ?? homedir(), '.local', 'state'), 'opencode-harness-hooks', createHash('sha256').update(project).digest('hex'), 'native-state')
-  const nativeState = services.nativeState ? undefined : new V1SessionState(new SessionStore({ host: 'v1', project, directory: stateDirectory, diagnostic: value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', ...value })) } }), { ...(!services.transcripts ? { claude: transcripts as ClaudeTranscript } : {}), ...(!services.codexTranscripts ? { codex: codexTranscripts as CodexTranscript } : {}), contexts }, { persistedPrompts: async (sessionID, signal) => {
+  const nativeState = services.nativeState ? undefined : new V1SessionState(new SessionStore({ host: 'v1', project, directory: stateDirectory, diagnostic: value => { console.error(JSON.stringify({ component: 'opencode-harness-hooks', ...value })) } }), { ...(!services.transcripts ? { claude: transcripts as ClaudeTranscript } : {}), ...(!services.codexTranscripts ? { codex: codexTranscripts as CodexTranscript } : {}), contexts, background: backgroundRecords }, { persistedPrompts: async (sessionID, signal) => {
     const snapshot = await readHistory({ sessionID }, signal), saved = history(snapshot.info, snapshot.messages)
     if (saved.id !== sessionID) unavailable('HOST_TRANSCRIPT_HISTORY_UNAVAILABLE')
     const ids: string[] = []
@@ -94,12 +101,18 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     return ids
   } })
   const stateService = services.nativeState ?? nativeState!
+  const customBackground = services.host?.background
+  const background = new V1Background({ records: backgroundRecords, state: stateService, ...(services.backgroundDiagnostic ? { diagnostic: services.backgroundDiagnostic } : {}), ...(input.client?.tui ? { toast: async (text, _session, signal) => {
+    const result = await input.client!.tui!.showToast({ body: { title: 'Codex background hook', message: text, variant: 'error', duration: BACKGROUND_TOAST_MS }, query: { directory: input.directory }, signal })
+    if (result.error || result.data !== true) unavailable('HOST_BACKGROUND_UI_FAILED')
+  } } : {}) })
+  const backgroundProjection = new V1BackgroundProjection({ records: backgroundRecords, prepare: (session, anchor, signal) => background.prepare(session, anchor, signal) })
   const startup = new V1Startups(input, transcripts, codexTranscripts, services, stateService)
   let models: V1PromptModels | undefined, agents: V1AgentModels | undefined, mcp: V1McpTools | undefined
   let agentPermissions: V1AgentPermissions | undefined
   let agentTools: ReturnType<typeof createV1Hooks> | undefined
   const internal = (sessionID: string) => mcp?.owns(sessionID) ? mcp : agents?.owns(sessionID) ? agents : models?.owns(sessionID) ? models : undefined
-  const runtime = await createRuntime('v1', input.directory, options, { ...services, host: { ...services.host, environment, ...(!services.host?.evaluatePrompt ? { evaluatePrompt: request => {
+  const runtime = await createRuntime('v1', input.directory, options, { ...services, host: { ...services.host, environment, ...(!customBackground ? { background } : {}), ...(!services.host?.evaluatePrompt ? { evaluatePrompt: request => {
     if (!models) unavailable('HOST_PROMPT_MODEL_UNAVAILABLE')
     return models.evaluate(request)
   } } : {}), ...(!services.host?.runAgent ? { runAgent: request => {
@@ -110,6 +123,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     return mcp.execute(request)
   } } } : {}) }, transcripts, codexTranscripts, nativeState: stateService, sessionStart: startup.service })
   startup.attach(runtime)
+  background.attach(runtime.sessions, customBackground ? [] : runtime.backgroundRegistrations)
   if (!services.host?.evaluatePrompt && runtime.hasPromptModelHooks) {
     models = await V1PromptModels.create({ directory: input.directory, ...(input.client ? { client: input.client } : {}) })
     models.attach(runtime.sessions, runtime.modelOptions)
@@ -141,8 +155,11 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     mcp.attach(runtime.sessions)
   }
   const hasContextHooks = runtime.hasPromptHooks || runtime.hasStartHooks
+  const hasBackgroundHooks = !customBackground && runtime.backgroundRegistrations.length > 0
   const approvals = new CallApprovals({ diagnostic: runtime.tools.diagnostic })
-  const needsProjection = (sessionID: string) => hasContextHooks || contexts.requiresProjection(sessionID)
+  const needsPromptProjection = (sessionID: string) => hasContextHooks || contexts.requiresProjection(sessionID)
+  const needsBackgroundProjection = (sessionID: string) => hasBackgroundHooks || backgroundRecords.requiresProjection(sessionID)
+  const needsProjection = (sessionID: string) => needsPromptProjection(sessionID) || needsBackgroundProjection(sessionID)
   const admit = async (session: ReturnType<typeof runtime.sessions.get>, text: readonly string[]) => {
     try {
       await submit(runtime, contexts, { host: 'v1', event: 'UserPromptSubmit', sessionID: session.sessionID, messageID: session.turnID!, prompt: text.join('\n'), signal: session.turnSignal }, text, services)
@@ -166,13 +183,22 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
       if (headers.has(MODEL_REQUEST_HEADER)) {
         const evaluator = [models, agents, mcp].find(service => service?.ownsRequest(headers.get(MODEL_REQUEST_HEADER)!))
-        if (!evaluator || headers.has(PROMPT_REQUEST_HEADER)) unavailable('HOST_MODEL_REQUEST_OWNER_MISMATCH')
+        if (!evaluator || headers.has(PROMPT_REQUEST_HEADER) || headers.has(BACKGROUND_REQUEST_HEADER)) unavailable('HOST_MODEL_REQUEST_OWNER_MISMATCH')
         return evaluator.fetch(id, original, input, init)
       }
       const token = headers.get(PROMPT_REQUEST_HEADER)
-      if (!token) return original(input, init)
-      return runtime.promptOperation('request', contexts.owner(token) ?? {}, async () => {
-        const projected = await contexts.project(new Request(input, init), token)
+      const backgroundToken = headers.get(BACKGROUND_REQUEST_HEADER)
+      if (headers.has(PROMPT_REQUEST_HEADER) && !token || headers.has(BACKGROUND_REQUEST_HEADER) && !backgroundToken) unavailable('HOST_PROMPT_REQUEST_UNAVAILABLE')
+      if (!token && !backgroundToken) return original(input, init)
+      const owner = token ? contexts.owner(token) : backgroundProjection.owner(backgroundToken!)
+      if (token && backgroundToken) {
+        const second = backgroundProjection.owner(backgroundToken)
+        if (!owner || !second || owner.sessionID !== second.sessionID || owner.messageID !== second.messageID) unavailable('HOST_BACKGROUND_OWNER_MISMATCH')
+      }
+      return runtime.promptOperation('request', owner ?? {}, async () => {
+        let projected = new Request(input, init)
+        if (token) projected = await contexts.project(projected, token)
+        if (backgroundToken) projected = await backgroundProjection.project(projected, backgroundToken, id)
         return original(input instanceof Request ? projected : input, { ...init, headers: projected.headers, body: await projected.clone().text(), signal: projected.signal })
       })
     }
@@ -183,8 +209,8 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   }
   let retainedProjection = false
   try { retainedProjection = !hasContextHooks && nativeState ? await nativeState.requiresProjection() : false }
-  catch (error) { await Promise.allSettled([startup.dispose(), runtime.dispose(), nativeState?.dispose()]); contexts.dispose(); throw error }
-  if ((hasContextHooks || retainedProjection || models || agents || mcp) && managed) managed.attach(original => wrap(managed.providerID, original))
+  catch (error) { await Promise.allSettled([startup.dispose(), background.dispose(), runtime.dispose(), nativeState?.dispose()]); contexts.dispose(); backgroundProjection.dispose(); backgroundRecords.dispose(); throw error }
+  if ((hasContextHooks || hasBackgroundHooks || retainedProjection || models || agents || mcp) && managed) managed.attach(original => wrap(managed.providerID, original))
   const protocols = new Map<string, { readonly turnID: string; readonly providerID: string; readonly protocol: PromptProtocol }>()
   const reply = input.client?.postSessionIdPermissionsPermissionId?.bind(input.client)
   const tools = createV1Hooks({ ...runtime.tools, ...(!runtime.tools.preapprove && reply ? { preapprove: async (event: HostToolEvent) => approvals.remember(event, runtime.sessions.get(event.sessionID)) } : {}) })
@@ -192,7 +218,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     agentPermissions = new V1AgentPermissions({ directory: input.directory, environment, ...(input.serverUrl ? { serverUrl: input.serverUrl } : {}), owner: request => agents!.permissionOwner(request) })
     agentTools = createV1Hooks({ ...runtime.tools, dispatch: event => runtime.agentTool(agents!.execution(event.sessionID), event), ...(!runtime.tools.preapprove ? { preapprove: async (event: HostToolEvent) => { agentPermissions!.approve(agents!.execution(event.sessionID), { ...event, tool: event.tool === NATIVE_VERDICT_TOOL ? AGENT_VERDICT_TOOL : event.tool }) } } : {}) })
   }
-  const disposeSession = async (sessionID: string) => { runtime.sessions.close(sessionID); agentPermissions?.removeSession(sessionID); protocols.delete(sessionID); await Promise.all([tools.disposeSession(sessionID), models?.removeSession(sessionID), agents?.removeSession(sessionID), mcp?.removeSession(sessionID), agentTools?.disposeSession(sessionID)]) }
+  const disposeSession = async (sessionID: string) => { runtime.sessions.close(sessionID); backgroundProjection.removeSession(sessionID); agentPermissions?.removeSession(sessionID); protocols.delete(sessionID); await Promise.all([tools.disposeSession(sessionID), models?.removeSession(sessionID), agents?.removeSession(sessionID), mcp?.removeSession(sessionID), agentTools?.disposeSession(sessionID), background.removeSession(sessionID)]); backgroundRecords.removeSession(sessionID) }
   const cleanups = new Map<string, Promise<void>>()
   const cleanupFailures = new Map<string, readonly { readonly phase: string; readonly code: string }[]>()
   let cleanupObserverFailures = 0
@@ -251,7 +277,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
         if (id === managed?.providerID) {
           if (provider.options.fetch !== undefined) {
             rejectedTransports.add(id)
-            if (hasContextHooks || models || agents || mcp) unavailable('HOST_PROMPT_TRANSPORT_UNAVAILABLE')
+            if (hasContextHooks || hasBackgroundHooks || retainedProjection || models || agents || mcp) unavailable('HOST_PROMPT_TRANSPORT_UNAVAILABLE')
             continue
           }
           rejectedTransports.delete(id)
@@ -269,6 +295,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       if (agents && providerID && modelID) agents.observe(prompt.sessionID, output.message.id, { providerID, modelID }, { agent: output.message.agent, tools: output.message.tools })
       const session = runtime.sessions.get(prompt.sessionID)
       await stateService.ensure(session, session.turnSignal)
+      await background.resume(session)
       if (!needsProjection(prompt.sessionID)) {
         if (Array.isArray(output.parts) && output.parts.length && output.parts.every(part => record(part) && part.type === 'text' && typeof part.text === 'string')) {
           const text = partsText(output.parts)
@@ -308,7 +335,8 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       await stateService.ensure(session, session.turnSignal)
       if (!needsProjection(last.info.sessionID)) return
       if (!record(last) || !record(last.info) || typeof last.info.sessionID !== 'string') unavailable('HOST_PROMPT_LAYOUT_UNAVAILABLE')
-      contexts.layout(runtime.sessions.get(last.info.sessionID), layout('v1', output.messages))
+      if (needsPromptProjection(last.info.sessionID)) contexts.layout(session, layout('v1', output.messages))
+      if (needsBackgroundProjection(last.info.sessionID)) backgroundProjection.capture(session, output.messages)
     },
     'chat.headers': async (prompt: Prompt & { readonly message: UserMessage }, output: { readonly headers: Record<string, string> }) => {
       if (auxiliary(prompt)) return
@@ -323,8 +351,9 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       const provider = prompt.model?.providerID ?? prompt.message.model?.providerID
       const selected = protocols.get(prompt.sessionID)
       if (!selected || selected.turnID !== prompt.message.id || selected.providerID !== provider) unavailable('HOST_PROMPT_PROVIDER_UNAVAILABLE')
-      const token = contexts.issue(session, selected.protocol)
+      const token = needsPromptProjection(prompt.sessionID) ? contexts.issue(session, selected.protocol) : undefined
       if (token) output.headers[PROMPT_REQUEST_HEADER] = token
+      if (needsBackgroundProjection(prompt.sessionID)) output.headers[BACKGROUND_REQUEST_HEADER] = backgroundProjection.issue(session, selected.providerID, selected.protocol)
     },
     event: async ({ event }: { readonly event: { readonly type: string; readonly properties?: unknown } }) => {
       if (event.type === 'permission.asked' && record(event.properties) && typeof event.properties.sessionID === 'string' && agents?.owns(event.properties.sessionID)) {
@@ -362,9 +391,9 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       if (agents?.owns(input.sessionID)) { const execution = agents.execution(input.sessionID); Object.assign(output.env, await startup.shellEnvironment(runtime.sessions.get(execution.parentID))); return }
       Object.assign(output.env, await startup.shellEnvironment(runtime.sessions.get(input.sessionID)))
     },
-    inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), ...(models ? { models: models.inspect() } : {}), ...(mcp ? { mcp: mcp.inspect() } : {}), ...(agents ? { agents: agents.inspect(), agentPermissions: agentPermissions!.inspect(), agentTools: agentTools!.inspect() } : {}), cleanup: Object.freeze({ pending: cleanups.size, failedSessions: cleanupFailures.size, overflowFailures: cleanupOverflowFailures, observerFailures: cleanupObserverFailures }), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
+    inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), ...(!customBackground ? { background: background.inspect() } : {}), backgroundRecords: backgroundRecords.inspect(), backgroundProjection: backgroundProjection.inspect(), ...(models ? { models: models.inspect() } : {}), ...(mcp ? { mcp: mcp.inspect() } : {}), ...(agents ? { agents: agents.inspect(), agentPermissions: agentPermissions!.inspect(), agentTools: agentTools!.inspect() } : {}), cleanup: Object.freeze({ pending: cleanups.size, failedSessions: cleanupFailures.size, overflowFailures: cleanupOverflowFailures, observerFailures: cleanupObserverFailures }), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
     disposeSession,
-    dispose: async () => { runtime.sessions.dispose(); await Promise.all([models?.dispose(), agents?.dispose(), mcp?.dispose()]); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await Promise.allSettled([...cleanups.values()]); try { await startup.dispose(); await tools.dispose(); await agentTools?.dispose(); await agentPermissions?.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose() } },
+    dispose: async () => { runtime.sessions.dispose(); backgroundProjection.dispose(); await Promise.all([models?.dispose(), agents?.dispose(), mcp?.dispose(), background.dispose()]); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await Promise.allSettled([...cleanups.values()]); try { await startup.dispose(); await tools.dispose(); await agentTools?.dispose(); await agentPermissions?.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose(); backgroundRecords.dispose() } },
   }
   const message = guarded(runtime, 'admission', hooks['chat.message'], (prompt, output) => ({ sessionID: prompt.sessionID, messageID: output.message.id }))
   const parameters = guarded(runtime, 'parameters', hooks['chat.params'], prompt => ({ sessionID: prompt.sessionID, messageID: prompt.message.id }))

@@ -66,6 +66,7 @@ export class StartupRecords {
       const result = entry.result
       if (!id(entry.sourceID) || !id(entry.registrationID) || result.diagnostic.sourceID !== entry.sourceID || result.diagnostic.registrationID !== entry.registrationID || result.diagnostic.dialect !== entry.dialect || result.diagnostic.event !== 'SessionStart' || !Number.isSafeInteger(entry.completionOrder) || entry.completionOrder < 0 || completions.has(entry.completionOrder) || seen.has(entry.registrationID)) fail('STARTUP_OWNER_MISMATCH')
       seen.add(entry.registrationID); completions.add(entry.completionOrder)
+      if (result.status === 'background') { if (result.code !== 'BACKGROUND_QUEUED' || !id(result.jobID) || result.actions.length) fail('STARTUP_EXECUTION_UNAVAILABLE'); continue }
       if (entry.dialect === 'codex') {
         if (result.status === 'skipped') continue
         if (result.status !== 'success' || result.actions.some(action => action.kind !== 'context' || action.placement !== 'model')) fail('STARTUP_EFFECT_UNAVAILABLE')

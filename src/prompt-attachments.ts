@@ -49,6 +49,7 @@ export class PromptAttachments {
     for (const entry of [...dispatch.entries].filter(entry => entry.dialect === 'claude-code').sort((a, b) => a.completionOrder - b.completionOrder)) {
       const result = entry.result
       if (result.status === 'skipped') continue
+      if (result.status === 'background') { if (result.code !== 'BACKGROUND_QUEUED' || !snapshotID(result.jobID) || result.actions.length) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE'); continue }
       if (result.status !== 'success' && result.status !== 'failed') fail('TRANSCRIPT_HOOK_RESULT_UNSUPPORTED')
       const command = 'commandArtifact' in result ? result.commandArtifact : undefined
       const http = result.httpArtifact

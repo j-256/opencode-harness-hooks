@@ -422,5 +422,24 @@
       ],
       "renderedRole": "system"
     }
-  ]
+  ],
+  "deliveryFormatting": {
+    "toolSuffix": "\n\n<system-reminder>\nBG_PRETTY_SYSTEM\n</system-reminder>\n\n<system-reminder>\nBG_PRETTY_CONTEXT\n</system-reminder>",
+    "promptOriginal": "SECOND_BG_TURN: finish without calling any tools.",
+    "promptParts": [
+      {
+        "type": "text",
+        "text": "<system-reminder>\nBG_PRETTY_SYSTEM\n</system-reminder>"
+      },
+      {
+        "type": "text",
+        "text": "<system-reminder>\nBG_PRETTY_CONTEXT\n</system-reminder>\n"
+      },
+      {
+        "type": "text",
+        "text": "SECOND_BG_TURN: finish without calling any tools."
+      }
+    ],
+    "comparisonCase": "claude.background.idle"
+  }
 }

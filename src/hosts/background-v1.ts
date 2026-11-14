@@ -12,8 +12,8 @@ const MAX_JOBS = 64
 const MAX_PENDING = 128
 const MAX_SESSIONS = 1024
 const UI_MS = 5000
-interface Diagnostic { readonly component: 'opencode-harness-hooks'; readonly operationID: string; readonly sessionID: string; readonly phase: 'completion' | 'retention' | 'binding' | 'ui'; readonly code: string; readonly outcome: 'success' | 'failed'; readonly durationMs: number; readonly jobID?: string }
-interface Options { readonly records: BackgroundRecords; readonly state: Pick<NonNullable<RuntimeServices['nativeState']>, 'ensure' | 'checkpoint'>; readonly toast?: (text: string, session: SessionSnapshot, signal: AbortSignal) => Promise<void>; readonly diagnostic?: (value: Diagnostic) => void; readonly maxJobs?: number }
+export interface V1BackgroundDiagnostic { readonly component: 'opencode-harness-hooks'; readonly operationID: string; readonly sessionID: string; readonly phase: 'completion' | 'retention' | 'binding' | 'ui'; readonly code: string; readonly outcome: 'success' | 'failed'; readonly durationMs: number; readonly jobID?: string }
+interface Options { readonly records: BackgroundRecords; readonly state: Pick<NonNullable<RuntimeServices['nativeState']>, 'ensure' | 'checkpoint'>; readonly toast?: (text: string, session: SessionSnapshot, signal: AbortSignal) => Promise<void>; readonly diagnostic?: (value: V1BackgroundDiagnostic) => void; readonly maxJobs?: number }
 function fail(code: string): never { throw new HostHookError(code, code === 'HOST_BACKGROUND_CANCELLED' ? 'cancelled' : 'unsupported') }
 function code(error: unknown, fallback: string): string { return error instanceof HostHookError ? error.code : fallback }
 
@@ -53,6 +53,7 @@ export class V1Background implements BackgroundExecutor {
   }
   async completed(sessionID: string): Promise<void> { await this.manager.waitForIdle(sessionID); await this.schedule(sessionID) }
   async settled(sessionID: string): Promise<void> { await this.completed(sessionID); await this.ui.get(sessionID) }
+  async resume(session: SessionSnapshot): Promise<void> { this.owner(session); await this.schedule(session.sessionID) }
   async prepare(session: SessionSnapshot, anchor: BackgroundAnchor, signal: AbortSignal): Promise<void> {
     const started = performance.now()
     try {
@@ -62,7 +63,7 @@ export class V1Background implements BackgroundExecutor {
         if (current.turnID !== session.turnID || current.turnSignal !== session.turnSignal || session.turnSignal.aborted) fail('HOST_BACKGROUND_OWNER_MISMATCH')
         await this.drain(session)
         const reservation = this.options.records.reserveBind(session, anchor)
-        try { await this.options.state.checkpoint(session, signal); if (signal.aborted) fail('HOST_BACKGROUND_CANCELLED'); reservation.commit() } catch (error) { reservation.release(); throw error }
+        try { await reservation.persist(() => this.options.state.checkpoint(session, signal)); if (signal.aborted) fail('HOST_BACKGROUND_CANCELLED'); reservation.commit() } catch (error) { reservation.release(); throw error }
       })
       this.launchUI(session.sessionID)
     } catch (error) { this.report(session.sessionID, 'binding', code(error, 'HOST_BACKGROUND_BINDING_FAILED'), 'failed', started); throw error }
@@ -97,6 +98,7 @@ export class V1Background implements BackgroundExecutor {
     this.tails.set(sessionID, pending); return pending
   }
   private async drain(session: SessionSnapshot): Promise<void> {
+    const started = performance.now()
     this.owner(session); await this.options.state.ensure(session, session.signal)
     let failure: unknown
     try {
@@ -106,7 +108,7 @@ export class V1Background implements BackgroundExecutor {
           for (const row of batch) this.options.records.admit(session, row)
           await this.options.state.checkpoint(session, session.signal)
           this.owner(session)
-          for (const row of batch) this.jobs.delete(row.id)
+          for (const row of batch) { this.jobs.delete(row.id); this.report(session.sessionID, 'retention', 'HOST_BACKGROUND_RETAINED', 'success', started, row.id) }
         } catch (error) { failure = error; throw error }
       })
     } catch (error) { throw failure ?? error }
@@ -140,7 +142,7 @@ export class V1Background implements BackgroundExecutor {
     })().catch(error => { this.report(sessionID, 'ui', code(error, 'HOST_BACKGROUND_UI_FAILED'), 'failed', started) }).finally(() => { this.ui.delete(sessionID); this.uiAgain.delete(sessionID) })
     this.ui.set(sessionID, pending)
   }
-  private report(sessionID: string, phase: Diagnostic['phase'], code: string, outcome: Diagnostic['outcome'], started: number, jobID?: string): void {
+  private report(sessionID: string, phase: V1BackgroundDiagnostic['phase'], code: string, outcome: V1BackgroundDiagnostic['outcome'], started: number, jobID?: string): void {
     try { (this.options.diagnostic ?? (value => { console.error(JSON.stringify(value)) }))({ component: 'opencode-harness-hooks', operationID: randomUUID(), sessionID, phase, code, outcome, durationMs: Math.round(performance.now() - started), ...(jobID ? { jobID } : {}) }) } catch { this.observerFailures++ }
   }
 }

@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto'
+import { AsyncLocalStorage } from 'node:async_hooks'
 import { z } from 'zod'
 import { claudeBackgroundArtifact } from './background-artifacts.js'
 import type { BackgroundArtifact } from './background-artifacts.js'
@@ -10,6 +11,7 @@ import { EXECUTION_LIMITS } from './runner.js'
 import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotID } from './session-snapshot.js'
 import type { SessionSnapshot } from './sessions.js'
 import type { Registration } from './types.js'
+import { runService } from './service-execution.js'
 
 const KIND = 'background-records-v1'
 const DEFAULT_RECORDS = 10000
@@ -37,7 +39,8 @@ export interface BackgroundEntry {
   readonly completedAt: number
 }
 interface Row { readonly delivery: Delivery; readonly artifact?: BackgroundArtifact; readonly model: readonly string[]; readonly warnings: readonly string[]; anchor?: BackgroundAnchor; warningsDelivered: boolean }
-interface State { readonly owner: AbortSignal; readonly rows: Map<string, Row>; readonly receipts: Map<string, string>; bytes: number; revision: number; binding?: symbol }
+interface State { readonly owner: AbortSignal; readonly rows: Map<string, Row>; readonly receipts: Map<string, string>; bytes: number; revision: number; binding?: symbol; bindingDone?: { readonly promise: Promise<void>; readonly resolve: () => void } }
+export interface BackgroundBinding { readonly commit: () => void; readonly release: () => void; readonly persist: <T>(operation: () => Promise<T>) => Promise<T> }
 interface Options { readonly registrations?: readonly Registration[]; readonly maxRecords?: number; readonly maxBytes?: number; readonly maxSessions?: number }
 function fail(code: string): never { throw new HostHookError(code, code === 'BACKGROUND_TURN_UNAVAILABLE' || code === 'BACKGROUND_SESSION_CLOSED' ? 'cancelled' : 'unsupported') }
 function canonical(value: unknown): string {
@@ -52,15 +55,17 @@ function snapshotRow(row: Row) { return { delivery: row.delivery, anchor: row.an
 function rowBytes(row: Row): number { return Buffer.byteLength(JSON.stringify(snapshotRow(row))) }
 function receiptBytes(id: string, hash: string): number { return Buffer.byteLength(JSON.stringify({ id, hash })) }
 function headerBytes(sessionID: string): number { return Buffer.byteLength(JSON.stringify({ value: { kind: KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, rows: [], receipts: [] } })) }
-function reservation(commit: () => void, release: () => void) {
+function reservation(commit: () => void, release: () => void, persist: BackgroundBinding['persist'] = operation => operation()): BackgroundBinding {
   let status: typeof BINDING[keyof typeof BINDING] = BINDING.OPEN
-  return Object.freeze({ commit: () => { if (status === BINDING.COMMITTED) return; if (status === BINDING.RELEASED) fail('BACKGROUND_BINDING_STALE'); commit(); status = BINDING.COMMITTED }, release: () => { if (status !== BINDING.OPEN) return; release(); status = BINDING.RELEASED } })
+  return Object.freeze({ commit: () => { if (status === BINDING.COMMITTED) return; if (status === BINDING.RELEASED) fail('BACKGROUND_BINDING_STALE'); commit(); status = BINDING.COMMITTED }, release: () => { if (status !== BINDING.OPEN) return; release(); status = BINDING.RELEASED }, persist: <T>(operation: () => Promise<T>) => { if (status !== BINDING.OPEN) fail('BACKGROUND_BINDING_STALE'); return persist(operation) } })
 }
 
 export class BackgroundRecords {
   private readonly states = new Map<string, State>()
   private readonly closed = new Set<string>()
   private readonly authorized = new Map<string, string>()
+  // Only the reserving operation may checkpoint a provisional anchor
+  private readonly bindingScope = new AsyncLocalStorage<symbol>()
   private authorizedBytes = 0
   private readonly maxRecords: number
   private readonly maxBytes: number
@@ -97,7 +102,7 @@ export class BackgroundRecords {
     state.receipts.set(delivery.id, digest); if (meaningful) state.rows.set(delivery.id, row); state.bytes += bytes; state.revision++
     return meaningful
   }
-  reserveBind(session: SessionSnapshot, input: BackgroundAnchor): { readonly commit: () => void; readonly release: () => void } {
+  reserveBind(session: SessionSnapshot, input: BackgroundAnchor): BackgroundBinding {
     this.turn(session)
     const parsed = ANCHOR.safeParse(this.copy(input)); if (!parsed.success) fail('BACKGROUND_ANCHOR_INVALID')
     const anchor = freeze(parsed.data)
@@ -108,13 +113,15 @@ export class BackgroundRecords {
     const pending = [...state.rows.values()].filter(row => !row.anchor && (row.artifact || row.model.length)), bytes = pending.reduce((total, row) => total + rowBytes({ ...row, anchor }) - rowBytes(row), 0)
     if (this.usedBytes() + bytes > this.maxBytes) fail('BACKGROUND_RECORD_LIMIT')
     const token = Symbol(), generation = state.owner
+    let resolve!: () => void
+    state.bindingDone = { promise: new Promise<void>(done => { resolve = done }), resolve: () => resolve() }
     state.binding = token; for (const row of pending) row.anchor = anchor; state.bytes += bytes; state.revision++
     const release = () => {
       if (this.states.get(session.sessionID) !== state || state.owner !== generation || state.binding !== token) return
       for (const row of pending) if (row.anchor === anchor) delete row.anchor
-      state.bytes -= bytes; delete state.binding; state.revision++
+      state.bytes -= bytes; delete state.binding; state.bindingDone!.resolve(); delete state.bindingDone; state.revision++
     }
-    return reservation(() => { this.turn(session); if (this.state(session) !== state || state.binding !== token) fail('BACKGROUND_BINDING_STALE'); delete state.binding; state.revision++ }, release)
+    return reservation(() => { this.turn(session); if (this.state(session) !== state || state.binding !== token) fail('BACKGROUND_BINDING_STALE'); delete state.binding; state.bindingDone!.resolve(); delete state.bindingDone; state.revision++ }, release, operation => this.bindingScope.run(token, operation))
   }
   read(session: SessionSnapshot): readonly BackgroundEntry[] {
     const state = this.state(session); if (state?.binding) fail('BACKGROUND_BINDING_PENDING')
@@ -140,7 +147,16 @@ export class BackgroundRecords {
   snapshotV1(sessionID: string): unknown {
     if (this.disposed || this.closed.has(sessionID) || !snapshotID(sessionID)) fail('BACKGROUND_SESSION_CLOSED')
     const state = this.states.get(sessionID)
+    if (state?.binding && this.bindingScope.getStore() !== state.binding) fail('BACKGROUND_BINDING_PENDING')
     return this.copy({ kind: KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, rows: [...(state?.rows.values() ?? [])].map(snapshotRow), receipts: [...(state?.receipts ?? [])].map(([id, hash]) => ({ id, hash })) })
+  }
+  async snapshotReady(session: SessionSnapshot, signal: AbortSignal): Promise<void> {
+    let state = this.state(session)
+    while (state?.binding && this.bindingScope.getStore() !== state.binding) {
+      const done = state.bindingDone!.promise
+      await runService(null, AbortSignal.any([session.signal, signal]), () => done)
+      state = this.state(session)
+    }
   }
   restoreV1(session: SessionSnapshot, value: unknown): () => void {
     if (this.state(session)) fail('SESSION_SNAPSHOT_STATE_CONFLICT')
@@ -166,8 +182,8 @@ export class BackgroundRecords {
     const state = this.create(session); for (const [id, receipt] of receipts) state.receipts.set(id, receipt); for (const [id, row] of rows) state.rows.set(id, row); state.bytes = bytes
     return () => { if (this.states.get(session.sessionID) !== state || state.revision !== 0) fail('BACKGROUND_STATE_CHANGED'); this.states.delete(session.sessionID) }
   }
-  removeSession(sessionID: string): void { if (!snapshotID(sessionID)) fail('BACKGROUND_SESSION_CLOSED'); if (!this.closed.has(sessionID) && this.closed.size >= this.maxSessions) fail('BACKGROUND_RECORD_LIMIT'); this.states.delete(sessionID); this.closed.add(sessionID) }
-  dispose(): void { this.disposed = true; this.states.clear(); this.authorized.clear(); this.authorizedBytes = 0; this.closed.clear() }
+  removeSession(sessionID: string): void { if (!snapshotID(sessionID)) fail('BACKGROUND_SESSION_CLOSED'); if (!this.closed.has(sessionID) && this.closed.size >= this.maxSessions) fail('BACKGROUND_RECORD_LIMIT'); const state = this.states.get(sessionID); this.states.delete(sessionID); this.closed.add(sessionID); state?.bindingDone?.resolve() }
+  dispose(): void { this.disposed = true; for (const state of this.states.values()) state.bindingDone?.resolve(); this.states.clear(); this.authorized.clear(); this.authorizedBytes = 0; this.closed.clear(); this.bindingScope.disable() }
   inspect() { return Object.freeze({ sessions: this.states.size, records: [...this.states.values()].reduce((sum, state) => sum + state.rows.size, 0), receipts: this.receiptCount(), bytes: this.usedBytes(), pendingBindings: [...this.states.values()].filter(state => state.binding).length, closed: this.closed.size, disposed: this.disposed }) }
   private copy(value: unknown): unknown { return snapshotJsonObject({ value }, this.maxBytes, kind => fail(kind === 'size' ? 'BACKGROUND_RECORD_LIMIT' : 'BACKGROUND_DELIVERY_INVALID')).value.value }
   private delivery(value: unknown): Delivery {

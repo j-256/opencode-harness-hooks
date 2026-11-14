@@ -114,3 +114,20 @@ test('cold startup detects accepted background model history without enabling it
     await cold.dispose(); coldRecords.dispose(); coldSessions.dispose()
   }
 })
+
+test('an unrelated checkpoint waits for a background binding decision and cannot persist a released anchor', async t => {
+  const f = await fixture(t), sessions = new Sessions(), digest = 'a'.repeat(64); sessions.prompt('session', 'turn')
+  const registration: Registration = { id: 'hook', sourceID: 'source', sourceDigest: digest, dialect: 'codex', event: 'UserPromptSubmit', groupIndex: 0, handlerIndex: 0, handler: { type: 'command', command: 'fixture', async: true } }
+  const records = new BackgroundRecords({ registrations: [registration] }), state = new V1SessionState(f.store(), { background: records }), session = sessions.get('session')
+  await state.ensure(session)
+  records.admit(session, { id: 'job', sourceID: 'source', sourceDigest: digest, registrationID: 'hook', dialect: 'codex', event: 'UserPromptSubmit', mode: 'safe-point', actions: [{ kind: 'context', placement: 'model', text: 'CONTEXT' }], completion: { completedAt: 1700000000000, execution: { status: 'exited', exitCode: 0, signal: null, stdout: '{}', stderr: '', durationMs: 1 } } })
+  const binding = records.reserveBind(session, { kind: 'prompt', sessionID: 'session', turnID: 'turn', messageID: 'turn', signature: 'b'.repeat(64) })
+  let sampled = false; const snapshot = records.snapshotV1.bind(records); records.snapshotV1 = sessionID => { sampled = true; return snapshot(sessionID) }
+  const external = state.checkpoint(session)
+  await new Promise(resolve => setImmediate(resolve)); const sampledBeforeDecision = sampled
+  binding.release(); await external; await state.dispose()
+  const store = f.store(), receipt = await store.load('session'), cold = new BackgroundRecords(); cold.restoreV1(session, receipt.payload!.background)
+  const restoredAnchor = cold.read(session)[0]!.anchor
+  await store.dispose(); cold.dispose(); records.dispose(); sessions.dispose()
+  assert.equal(sampledBeforeDecision, false); assert.equal(restoredAnchor, undefined)
+})

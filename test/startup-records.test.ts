@@ -127,3 +127,15 @@ test('rollback removes only its unbound startup batch and enforces binding owner
   assert.deepEqual(records.read('session'), [])
   sessions.dispose(); records.dispose()
 })
+
+test('accepted async startup receipts create no foreground artifact or model block and reject malformed queue receipts', () => {
+  const base = success('ASYNC', 0, 0)
+  const queued: DispatchEntry = { ...base, result: { status: 'background', code: 'BACKGROUND_QUEUED', jobID: 'owned-job', actions: [], diagnostic: { ...base.result.diagnostic, code: 'BACKGROUND_QUEUED', outcome: 'background' } } }
+  const records = new StartupRecords(), batch = records.admit(delivery([queued]))
+  assert.deepEqual(batch.records, []); assert.deepEqual(batch.model, { claude: [], codex: [] }); records.dispose()
+  for (const change of [{ jobID: '' }, { code: 'unknown' }, { actions: [{ kind: 'context', placement: 'model', text: 'Invented foreground context' }] }]) {
+    const invalid = new StartupRecords()
+    assert.throws(() => invalid.admit(delivery([{ ...queued, result: { ...queued.result, ...change } } as DispatchEntry])), { code: 'STARTUP_EXECUTION_UNAVAILABLE' })
+    assert.deepEqual(invalid.read('session'), []); invalid.dispose()
+  }
+})

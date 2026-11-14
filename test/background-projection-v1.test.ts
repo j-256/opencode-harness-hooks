@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 import { BackgroundRecords } from '../src/background-records.js'
 import { BACKGROUND_REQUEST_HEADER, V1BackgroundProjection } from '../src/hosts/background-projection-v1.js'
@@ -51,7 +52,7 @@ test('identical prompts retain different anchor positions, including normal prom
   const second = f.projection.issue(f.owner(), 'provider', 'openai')
   const input = { messages: [{ role: 'user', content: 'Same' }, { role: 'assistant', content: 'Previous' }, { role: 'user', content: [{ type: 'text', text: 'Foreground reminder' }, { type: 'text', text: 'Same', cache_control: { type: 'ephemeral' } }] }] }
   const actual = await (await f.projection.project(request(input), second, 'provider')).json()
-  assert.deepEqual(actual.messages, [{ role: 'user', content: reminder + '\nSame' }, input.messages[1], input.messages[2], { role: 'developer', content: 'CODEX_BACKGROUND' }])
+  assert.deepEqual(actual.messages, [{ role: 'user', content: [{ type: 'text', text: reminder + '\n' }, { type: 'text', text: 'Same' }] }, input.messages[1], input.messages[2], { role: 'developer', content: 'CODEX_BACKGROUND' }])
   const cold = new BackgroundRecords(); t.after(() => cold.dispose()); cold.restoreV1(f.owner(), f.records.snapshotV1('session'))
   const replay = new V1BackgroundProjection({ records: cold, prepare: async () => {} }); t.after(() => replay.dispose())
   replay.capture(f.owner(), [user('first'), { info: { role: 'assistant', id: 'answer', parentID: 'first', sessionID: 'session' }, parts: [] }, user('second')])
@@ -116,7 +117,13 @@ test('multiple Claude completions retain completion order at one prompt rather t
   f.records.admit(f.owner(), { ...third, completion: { ...third.completion!, execution: { ...third.completion!.execution, stdout: '{"systemMessage":"FOURTH"}' } } })
   f.projection.capture(f.owner(), [user('first')])
   const output = await (await f.projection.project(request({ messages: [{ role: 'user', content: [{ type: 'text', text: 'Same' }] }] }), f.projection.issue(f.owner(), 'provider', 'openai'), 'provider')).json()
-  assert.deepEqual(output.messages[0].content.map((part: { text: string }) => part.text), [reminder, ...['SECOND', 'THIRD', 'FOURTH'].map(text => '<system-reminder>\n' + text + '\n</system-reminder>'), 'Same'])
+  assert.deepEqual(output.messages[0].content.map((part: { text: string }) => part.text), [reminder, ...['SECOND', 'THIRD', 'FOURTH'].map((text, index) => '<system-reminder>\n' + text + '\n</system-reminder>' + (index === 2 ? '\n' : '')), 'Same'])
+})
+
+test('the last Claude reminder text part separates the next genuine prompt with the native newline', async t => {
+  const f = fixture(t); f.records.admit(f.owner(), delivery('claude-code')); f.projection.capture(f.owner(), [user('first')])
+  const output = await (await f.projection.project(request({ messages: [{ role: 'user', content: 'Same' }] }), f.projection.issue(f.owner(), 'provider', 'openai'), 'provider')).json()
+  assert.deepEqual(output.messages[0].content, [{ type: 'text', text: '<system-reminder>\nCLAUDE_BACKGROUND\n</system-reminder>\n' }, { type: 'text', text: 'Same' }])
 })
 
 test('internal evaluator tickets and unsupported Codex roles cannot bind or expose pending output', async t => {
@@ -147,4 +154,17 @@ test('held transport readers are bounded and disposal cancels every owned projec
   const result = await Promise.all(outcomes)
   assert.ok(result.includes('HOST_BACKGROUND_LIMIT')); assert.ok(result.includes('HOST_BACKGROUND_CANCELLED')); assert.equal(f.projection.inspect().pending, 0)
   assert.equal(f.prepared(), 0)
+})
+
+test('Claude wire formatting preserves the captured native prompt part boundaries and tool reminder separators', async t => {
+  const capture = JSON.parse(readFileSync(new URL('./fixtures/claude-background-artifacts-oracle.json', import.meta.url), 'utf8'))
+  const output = capture.cases.find((row: { name: string }) => row.name === 'pretty').stdout, expected = capture.deliveryFormatting
+  for (const kind of ['tool', 'prompt'] as const) {
+    const f = fixture(t), original = delivery('claude-code')
+    f.records.admit(f.owner(), { ...original, completion: { ...original.completion!, execution: { ...original.completion!.execution, stdout: output } } })
+    f.projection.capture(f.owner(), kind === 'prompt' ? [user('first', expected.promptOriginal)] : [user('first'), tool('first')])
+    const input = kind === 'prompt' ? [{ role: 'user', content: expected.promptOriginal }] : [{ role: 'user', content: 'Same' }, { role: 'tool', tool_call_id: 'call', content: 'Original tool output' }]
+    const result = await (await f.projection.project(request({ messages: input }), f.projection.issue(f.owner(), 'provider', 'openai'), 'provider')).json()
+    assert.deepEqual(result.messages.at(-1).content, kind === 'prompt' ? expected.promptParts : 'Original tool output' + expected.toolSuffix)
+  }
 })

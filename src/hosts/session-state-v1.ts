@@ -18,7 +18,7 @@ const MAX_PENDING = 128
 const MAX_PROMPTS = 10000
 const SCAN_MS = 5000
 const HISTORY_MS = 5000
-interface Participant { snapshotV1(sessionID: string): unknown; restoreV1(session: SessionSnapshot, input: unknown): () => void; discardPendingPrompt?(session: SessionSnapshot, messageID: string): void }
+interface Participant { snapshotV1(sessionID: string): unknown; restoreV1(session: SessionSnapshot, input: unknown): () => void; discardPendingPrompt?(session: SessionSnapshot, messageID: string): void; snapshotReady?(session: SessionSnapshot, signal: AbortSignal): Promise<void> }
 type Participants = Partial<Record<typeof PARTICIPANTS[number], Participant>>
 interface Options { readonly persistedPrompts?: (sessionID: string, signal: AbortSignal) => Promise<readonly string[]> }
 interface State { readonly signal: AbortSignal; readonly loading: Promise<void>; readonly pendingPrompts: Set<string>; tail: Promise<unknown>; receipt?: StoredSession; failure?: unknown }
@@ -141,6 +141,7 @@ export class V1SessionState {
     if (this.active.size >= MAX_PENDING) return Promise.reject(new HostHookError('SESSION_STORE_LIMIT', 'unsupported'))
     const pending = (async () => {
       await this.ensure(session, waiter)
+      await this.participants.background?.snapshotReady?.(session, waiter)
       const state = this.states.get(session.sessionID)!
       const previous = state.receipt!.payload
       const payload = snapshotCopy({ kind: KIND, version: SESSION_SNAPSHOT_VERSION, sessionID: session.sessionID, pendingPrompts: [...state.pendingPrompts], ...Object.fromEntries(PARTICIPANTS.map(name => [name, this.participants[name]?.snapshotV1(session.sessionID) ?? previous?.[name] ?? null])) }) as Readonly<Record<string, JsonValue>>

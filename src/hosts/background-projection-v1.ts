@@ -15,6 +15,7 @@ const MAX_TICKETS = 1024
 const MAX_VARIANTS = 128
 const MAX_PENDING = 8
 const READ_MS = 5000
+const TOOL_REMINDER_SEPARATOR = '\n\n'
 interface Carrier { readonly anchor: BackgroundAnchor; readonly parts?: readonly string[] }
 interface Layout { readonly session: SessionSnapshot; readonly users: readonly Carrier[]; readonly tools: readonly Carrier[]; readonly current: Carrier; readonly bytes: number }
 interface Ticket { readonly layout: Layout; readonly providerID: string; readonly protocol: PromptProtocol; readonly signal: AbortSignal; readonly cleanup: () => void; readonly hashes: Map<string, string>; rows?: readonly BackgroundEntry[]; preparing?: Promise<void> }
@@ -194,16 +195,15 @@ export class V1BackgroundProjection {
       group.model.push(...row.model); groups.set(key, group)
     }
     for (const group of groups.values()) {
-      const target = wire.targets.get(carrierKey(group.anchor))!, raw = changes.get(target.position) ?? wire.source[target.position]!, suffix = group.model.join('\n')
+      const target = wire.targets.get(carrierKey(group.anchor))!, raw = changes.get(target.position) ?? wire.source[target.position]!, suffix = group.model.join(TOOL_REMINDER_SEPARATOR)
       if (group.anchor.kind === 'prompt') {
         const type = wire.responses ? 'input_text' : 'text', content = textParts(raw.content, type)
-        if (typeof raw.content === 'string') changes.set(target.position, { ...raw, content: suffix + '\n' + raw.content })
-        else changes.set(target.position, { ...raw, content: [...group.model.map(text => ({ type, text })), ...content] })
+        changes.set(target.position, { ...raw, content: [...group.model.map((text, index) => ({ type, text: text + (index === group.model.length - 1 ? '\n' : '') })), ...content] })
       } else if (target.part !== undefined) {
         const content = [...raw.content as Record<string, unknown>[]], part = content[target.part]!
-        content[target.part] = { ...part, content: toolText(part.content) + '\n\n' + suffix }; changes.set(target.position, { ...raw, content })
+        content[target.part] = { ...part, content: toolText(part.content) + TOOL_REMINDER_SEPARATOR + suffix }; changes.set(target.position, { ...raw, content })
       } else {
-        const field = wire.responses ? 'output' : 'content'; changes.set(target.position, { ...raw, [field]: toolText(raw[field]) + '\n\n' + suffix })
+        const field = wire.responses ? 'output' : 'content'; changes.set(target.position, { ...raw, [field]: toolText(raw[field]) + TOOL_REMINDER_SEPARATOR + suffix })
       }
     }
     return { ...wire.value, [wire.field]: wire.source.flatMap((raw, index) => [changes.get(index) ?? raw, ...(developers.get(index) ?? [])]) }
