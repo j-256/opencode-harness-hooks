@@ -51,6 +51,8 @@ function freeze<T>(value: T): T {
   return value
 }
 
+function deliveryBytes(delivery: BackgroundDelivery): number { return Buffer.byteLength(JSON.stringify(delivery)) }
+
 export class BackgroundManager implements BackgroundExecutor {
   readonly supportsRewake: boolean
   private readonly states = new Map<string, SessionState>()
@@ -183,14 +185,15 @@ export class BackgroundManager implements BackgroundExecutor {
     let cancelled = false
     try {
       const execution = await runCommand({
-        ...invocation, signal: job.controller.signal,
+        ...invocation, signal: job.controller.signal, captureProcessIdentity: true,
         timeoutMs: registration.dialect === 'claude-code' && registration.handler.asyncRewake !== true ? null : invocation.timeoutMs,
       })
       cancelled = execution.status === 'cancelled'
       effect = interpretOutput(registration, event, execution, { mode: 'background' })
-      if (!state.closed && effect.actions.length) {
-        const delivery = freeze({ id: job.id, sourceID: registration.sourceID, ...(registration.sourceDigest ? { sourceDigest: registration.sourceDigest } : {}), registrationID: registration.id, dialect: registration.dialect, event: registration.event, mode: effect.actions.some(action => action.kind === 'native-extension' && action.name === 'asyncRewake') ? 'wake' as const : 'safe-point' as const, actions: structuredClone(effect.actions) })
-        const bytes = Buffer.byteLength(JSON.stringify(delivery.actions))
+      const retainCompletion = execution.status === 'exited' && (registration.dialect === 'claude-code' && registration.handler.asyncRewake !== true || effect.actions.length > 0)
+      if (!state.closed && (effect.actions.length || retainCompletion)) {
+        const delivery = freeze({ id: job.id, sourceID: registration.sourceID, ...(registration.sourceDigest ? { sourceDigest: registration.sourceDigest } : {}), registrationID: registration.id, dialect: registration.dialect, event: registration.event, mode: effect.actions.some(action => action.kind === 'native-extension' && action.name === 'asyncRewake') ? 'wake' as const : 'safe-point' as const, actions: structuredClone(effect.actions), ...(retainCompletion ? { completion: { completedAt: Date.now(), execution: { ...execution } } } : {}) })
+        const bytes = deliveryBytes(delivery)
         if (state.pendingBytes + bytes > this.maxBytes) {
           effect = { ...effect, status: 'failed', code: 'BACKGROUND_DELIVERY_LIMIT', actions: [] }
         } else {
@@ -228,7 +231,7 @@ export class BackgroundManager implements BackgroundExecutor {
 
   private removePending(state: SessionState, ids: ReadonlySet<string>): void {
     state.pending = state.pending.filter(delivery => !ids.has(delivery.id))
-    state.pendingBytes = state.pending.reduce((sum, delivery) => sum + Buffer.byteLength(JSON.stringify(delivery.actions)), 0)
+    state.pendingBytes = state.pending.reduce((sum, delivery) => sum + deliveryBytes(delivery), 0)
   }
 
   private settle(state: SessionState): void {

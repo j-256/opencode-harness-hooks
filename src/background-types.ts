@@ -1,6 +1,6 @@
 import type { Dialect } from './contracts.js'
 import type { HookAction } from './effect-types.js'
-import type { CommandInvocation } from './runner.js'
+import type { CommandInvocation, ExecutionResult } from './runner.js'
 import type { NativeEvent, Registration } from './types.js'
 
 export interface BackgroundWork {
@@ -28,6 +28,12 @@ export interface BackgroundDelivery {
   readonly event: string
   readonly mode: 'safe-point' | 'wake'
   readonly actions: readonly HookAction[]
+  readonly completion?: BackgroundCompletion
+}
+
+export interface BackgroundCompletion {
+  readonly completedAt: number
+  readonly execution: ExecutionResult
 }
 
 export interface BackgroundRecord {

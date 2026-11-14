@@ -22,6 +22,7 @@ export interface CommandInvocation {
   readonly signal?: AbortSignal
   readonly maxInputBytes?: number
   readonly maxOutputBytes?: number
+  readonly captureProcessIdentity?: true
 }
 
 export interface ExecutionResult {
@@ -31,12 +32,14 @@ export interface ExecutionResult {
   readonly stdout: string
   readonly stderr: string
   readonly durationMs: number
+  readonly processID?: number
 }
 
 export async function runCommand(invocation: CommandInvocation): Promise<ExecutionResult> {
   const started = performance.now()
+  let processID: number | undefined
   const result = (status: ExecutionStatus, exitCode: number | null = null, signal: NodeJS.Signals | null = null, stdout = '', stderr = ''): ExecutionResult => ({
-    status, exitCode, signal, stdout, stderr, durationMs: Math.round(performance.now() - started),
+    status, exitCode, signal, stdout, stderr, durationMs: Math.round(performance.now() - started), ...(invocation.captureProcessIdentity && processID !== undefined ? { processID } : {}),
   })
   const inputLimit = invocation.maxInputBytes ?? EXECUTION_LIMITS.inputBytes
   const outputLimit = invocation.maxOutputBytes ?? EXECUTION_LIMITS.outputBytes
@@ -53,6 +56,7 @@ export async function runCommand(invocation: CommandInvocation): Promise<Executi
       const command = invocation.args !== undefined ? invocation.command : shell.program
       const args = invocation.args !== undefined ? [...invocation.args] : [...shell.args, invocation.command]
       child = spawn(command, args, { cwd: invocation.cwd, env: { ...invocation.env }, detached: process.platform !== 'win32', stdio: ['pipe', 'pipe', 'pipe'] })
+      processID = child.pid
     } catch {
       resolve(result(EXECUTION_STATUS.SPAWN_ERROR))
       return

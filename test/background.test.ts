@@ -35,6 +35,48 @@ function readyFile(root: string, file: string): Promise<string> {
 }
 const contextScript = `console.log(JSON.stringify({hookSpecificOutput:{hookEventName:'PreToolUse',additionalContext:'Context'}}))`
 
+test('background completion retains immutable raw evidence and actual process identity for non-rendering output', async t => {
+  const { BackgroundManager } = await import('../src/background.js')
+  const root = await fixture(t), manager = new BackgroundManager()
+  t.after(() => manager.dispose())
+  const stdout = '{"continue":false,"suppressOutput":true,"stopReason":"Ignored control"}'
+  const script = `require('node:fs').writeFileSync('pid',String(process.pid));process.stdout.write(${JSON.stringify(stdout)});process.stderr.write('Raw error');process.exitCode=2`
+  manager.enqueue(work(root, 'claude-code', script)); await manager.waitForIdle('session')
+  assert.equal(manager.inspect('session').pending, 1)
+  const executedPID = Number(await readFile(join(root, 'pid'), 'utf8'))
+  await manager.deliver('session', 'safe-point', records => {
+    assert.equal(records.length, 1); assert.deepEqual(records[0]!.actions, [])
+    const completion = records[0]!.completion!
+    assert.ok(completion); assert.ok(Number.isSafeInteger(completion.completedAt))
+    assert.equal(completion.execution.stdout, stdout); assert.equal(completion.execution.stderr, 'Raw error'); assert.equal(completion.execution.exitCode, 2)
+    assert.equal(completion.execution.processID, executedPID)
+    assert.ok(Object.isFrozen(completion)); assert.ok(Object.isFrozen(completion.execution))
+  })
+  assert.equal(JSON.stringify(manager.inspect('session')).includes('Ignored control'), false)
+})
+
+test('raw background evidence is charged to the pending byte budget even when it renders nothing', async t => {
+  const { BackgroundManager } = await import('../src/background.js')
+  const root = await fixture(t), manager = new BackgroundManager({ maxPendingBytes: 1024 })
+  t.after(() => manager.dispose())
+  manager.enqueue(work(root, 'claude-code', `process.stdout.write('x'.repeat(2048))`)); await manager.waitForIdle('session')
+  assert.equal(manager.inspect('session').pending, 0)
+  assert.ok(manager.inspect('session').history.some(row => row.code === 'BACKGROUND_DELIVERY_LIMIT'))
+})
+
+test('empty and unknown output retain copied completion evidence without inventing effects or changing the source revision', async t => {
+  const { BackgroundManager } = await import('../src/background.js')
+  const root = await fixture(t), manager = new BackgroundManager()
+  t.after(() => manager.dispose())
+  for (const stdout of ['{}', '{"unknown":"Ignored"}', 'Ignored plain output']) {
+    const prepared = work(root, 'claude-code', `process.stdout.write(${JSON.stringify(stdout)})`)
+    const input = { ...prepared, registration: { ...prepared.registration, sourceDigest: 'reviewed-source' } }
+    manager.enqueue(input); input.registration.sourceDigest = 'unreviewed-change'
+    await manager.waitForIdle('session')
+    await manager.deliver('session', 'safe-point', rows => { assert.equal(rows.length, 1); assert.equal(rows[0]!.sourceDigest, 'reviewed-source'); assert.deepEqual(rows[0]!.actions, []); assert.equal(rows[0]!.completion?.execution.stdout, stdout) })
+  }
+})
+
 test('background submission returns before completion and delivery preserves distinct native channels without controls', async t => {
   const { BackgroundManager } = await import('../src/background.js')
   const { executeRegistration } = await import('../src/handlers.js')

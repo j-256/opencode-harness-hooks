@@ -13,6 +13,15 @@ async function fixture(t: { after(fn: () => Promise<void>): void }) {
 
 const invocation = (args: readonly string[]) => ({ command: process.execPath, args, cwd: process.cwd(), env: process.env, stdin: '{}', timeoutMs: 2000 })
 
+test('explicit process identity capture reports the executed child without changing ordinary result fields', async () => {
+  const { runCommand } = await import('../src/runner.js')
+  const captured = await runCommand({ ...invocation(['-e', 'process.stdout.write(String(process.pid))']), captureProcessIdentity: true })
+  assert.equal(captured.status, 'exited'); assert.equal(captured.processID, Number(captured.stdout))
+  assert.ok(Number.isSafeInteger(captured.processID) && captured.processID! > 0)
+  const ordinary = await runCommand(invocation(['-e', 'process.exit(0)']))
+  assert.equal(Object.hasOwn(ordinary, 'processID'), false)
+})
+
 test('exec form preserves literal args, exact stdin, working directory, and explicit environment', async t => {
   const { runCommand } = await import('../src/runner.js')
   const cwd = await fixture(t)

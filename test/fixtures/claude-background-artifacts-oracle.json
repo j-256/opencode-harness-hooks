@@ -1,0 +1,304 @@
+{
+  "oracle": "native-cli-loopback",
+  "runtime": "Claude Code",
+  "version": "2.1.318",
+  "reference": "https://code.claude.com/docs/en/hooks",
+  "scope": "Ordinary async UserPromptSubmit completion artifact response sanitation and rendering, including non-rendering controls and ignored empty/unknown-only objects",
+  "processIdentity": "async_hook_<actual command process.pid>",
+  "cases": [
+    {
+      "name": "pretty",
+      "stdout": "{\n  \"systemMessage\": \"BG_PRETTY_SYSTEM\",\n  \"hookSpecificOutput\": {\n    \"hookEventName\": \"UserPromptSubmit\",\n    \"additionalContext\": \"BG_PRETTY_CONTEXT\"\n  }\n}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "BG_PRETTY_SYSTEM",
+        "hookSpecificOutput": {
+          "hookEventName": "UserPromptSubmit",
+          "additionalContext": "BG_PRETTY_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_PRETTY_SYSTEM\n</system-reminder>",
+        "<system-reminder>\nBG_PRETTY_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "logs",
+      "stdout": "start log\n{\"systemMessage\":\"BG_LOG_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_LOG_CONTEXT\"}}\nend log",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "BG_LOG_SYSTEM",
+        "hookSpecificOutput": {
+          "hookEventName": "UserPromptSubmit",
+          "additionalContext": "BG_LOG_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_LOG_SYSTEM\n</system-reminder>",
+        "<system-reminder>\nBG_LOG_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "bad-system",
+      "stdout": "{\"systemMessage\":7,\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_KEEP_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "hookSpecificOutput": {
+          "hookEventName": "UserPromptSubmit",
+          "additionalContext": "BG_KEEP_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_KEEP_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "bad-context",
+      "stdout": "{\"systemMessage\":\"BG_KEEP_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":7}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "BG_KEEP_SYSTEM",
+        "hookSpecificOutput": {
+          "hookEventName": "UserPromptSubmit"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_KEEP_SYSTEM\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "bad-continue",
+      "stdout": "{\"continue\":\"wrong\",\"systemMessage\":\"BG_BAD_CONTINUE_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_BAD_CONTINUE_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "BG_BAD_CONTINUE_SYSTEM",
+        "hookSpecificOutput": {
+          "hookEventName": "UserPromptSubmit",
+          "additionalContext": "BG_BAD_CONTINUE_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_BAD_CONTINUE_SYSTEM\n</system-reminder>",
+        "<system-reminder>\nBG_BAD_CONTINUE_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "unknown-event",
+      "stdout": "{\"systemMessage\":\"BG_UNKNOWN_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"Unknown\",\"additionalContext\":\"BG_UNKNOWN_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "BG_UNKNOWN_SYSTEM",
+        "hookSpecificOutput": {
+          "hookEventName": "Unknown",
+          "additionalContext": "BG_UNKNOWN_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_UNKNOWN_SYSTEM\n</system-reminder>",
+        "<system-reminder>\nBG_UNKNOWN_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "missing-event",
+      "stdout": "{\"systemMessage\":\"BG_MISSING_SYSTEM\",\"hookSpecificOutput\":{\"additionalContext\":\"BG_MISSING_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "BG_MISSING_SYSTEM",
+        "hookSpecificOutput": {
+          "additionalContext": "BG_MISSING_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_MISSING_SYSTEM\n</system-reminder>",
+        "<system-reminder>\nBG_MISSING_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "foreign-event",
+      "stdout": "{\"systemMessage\":\"BG_FOREIGN_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"PostToolUse\",\"additionalContext\":\"BG_FOREIGN_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "BG_FOREIGN_SYSTEM",
+        "hookSpecificOutput": {
+          "hookEventName": "PostToolUse",
+          "additionalContext": "BG_FOREIGN_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_FOREIGN_SYSTEM\n</system-reminder>",
+        "<system-reminder>\nBG_FOREIGN_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "plain",
+      "stdout": "BG_PLAIN_TEXT",
+      "stderr": "",
+      "exitCode": 0,
+      "response": null,
+      "rendered": [],
+      "renderedRole": null
+    },
+    {
+      "name": "exit-one",
+      "stdout": "{\"systemMessage\":\"BG_EXIT_ONE_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_EXIT_ONE_CONTEXT\"}}",
+      "stderr": "",
+      "exitCode": 1,
+      "response": {
+        "systemMessage": "BG_EXIT_ONE_SYSTEM",
+        "hookSpecificOutput": {
+          "hookEventName": "UserPromptSubmit",
+          "additionalContext": "BG_EXIT_ONE_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_EXIT_ONE_SYSTEM\n</system-reminder>",
+        "<system-reminder>\nBG_EXIT_ONE_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "exit-two",
+      "stdout": "{\"systemMessage\":\"BG_EXIT_TWO_SYSTEM\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"BG_EXIT_TWO_CONTEXT\"}}",
+      "stderr": "BG_EXIT_TWO_STDERR",
+      "exitCode": 2,
+      "response": {
+        "systemMessage": "BG_EXIT_TWO_SYSTEM",
+        "hookSpecificOutput": {
+          "hookEventName": "UserPromptSubmit",
+          "additionalContext": "BG_EXIT_TWO_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_EXIT_TWO_SYSTEM\n</system-reminder>",
+        "<system-reminder>\nBG_EXIT_TWO_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "two-lines",
+      "stdout": "{\"systemMessage\":\"BG_FIRST_JSON\"}\n{\"systemMessage\":\"BG_SECOND_JSON\"}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "BG_FIRST_JSON"
+      },
+      "rendered": [
+        "<system-reminder>\nBG_FIRST_JSON\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "log-object",
+      "stdout": "{\"log\":\"ignored\"}\n{\"systemMessage\":\"BG_AFTER_LOG_OBJECT\"}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": null,
+      "rendered": [],
+      "renderedRole": null
+    },
+    {
+      "name": "timeout",
+      "stdout": "{\"systemMessage\":\"BG_TIMEOUT_IGNORED\"}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "systemMessage": "BG_TIMEOUT_IGNORED"
+      },
+      "rendered": [
+        "<system-reminder>\nBG_TIMEOUT_IGNORED\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "control-only",
+      "stdout": "{\"continue\":false,\"stopReason\":\"BG_IGNORED_CONTROL\",\"suppressOutput\":true}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "continue": false,
+        "suppressOutput": true,
+        "stopReason": "BG_IGNORED_CONTROL"
+      },
+      "rendered": [],
+      "renderedRole": null
+    },
+    {
+      "name": "empty-object",
+      "stdout": "{}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": null,
+      "rendered": [],
+      "renderedRole": null
+    },
+    {
+      "name": "unknown-only",
+      "stdout": "{\"unknown\":\"BG_UNKNOWN_ONLY\"}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": null,
+      "rendered": [],
+      "renderedRole": null
+    },
+    {
+      "name": "rich",
+      "stdout": "{\"continue\":false,\"suppressOutput\":true,\"stopReason\":\"BG_STOP\",\"systemMessage\":\"BG_SYSTEM\",\"decision\":\"block\",\"reason\":\"BG_REASON\",\"unknown\":\"BG_UNKNOWN_TOP\",\"hookSpecificOutput\":{\"hookEventName\":\"PreToolUse\",\"permissionDecision\":\"deny\",\"permissionDecisionReason\":\"BG_PERMISSION\",\"updatedInput\":{\"command\":\"BG_UPDATED_INPUT\"},\"additionalContext\":\"BG_CONTEXT\",\"unknown\":\"BG_UNKNOWN_SPECIFIC\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "continue": false,
+        "suppressOutput": true,
+        "stopReason": "BG_STOP",
+        "decision": "block",
+        "reason": "BG_REASON",
+        "systemMessage": "BG_SYSTEM",
+        "hookSpecificOutput": {
+          "hookEventName": "PreToolUse",
+          "permissionDecision": "deny",
+          "permissionDecisionReason": "BG_PERMISSION",
+          "updatedInput": {
+            "command": "BG_UPDATED_INPUT"
+          },
+          "additionalContext": "BG_CONTEXT"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_SYSTEM\n</system-reminder>",
+        "<system-reminder>\nBG_CONTEXT\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    },
+    {
+      "name": "missing-tag",
+      "stdout": "{\"hookSpecificOutput\":{\"additionalContext\":\"BG_WITHOUT_TAG\",\"permissionDecision\":\"deny\"}}",
+      "stderr": "",
+      "exitCode": 0,
+      "response": {
+        "hookSpecificOutput": {
+          "additionalContext": "BG_WITHOUT_TAG",
+          "permissionDecision": "deny"
+        }
+      },
+      "rendered": [
+        "<system-reminder>\nBG_WITHOUT_TAG\n</system-reminder>"
+      ],
+      "renderedRole": "system"
+    }
+  ]
+}
