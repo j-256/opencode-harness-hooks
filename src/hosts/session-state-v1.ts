@@ -7,10 +7,12 @@ import type { JsonValue } from '../types.js'
 import { PromptContexts } from '../prompt-contexts.js'
 import { Sessions } from '../sessions.js'
 import { StartupRecords } from '../startup-records.js'
+import { BackgroundRecords } from '../background-records.js'
 
 const KIND = 'v1-session-state'
-const PARTICIPANTS = ['claude', 'codex', 'contexts'] as const
+const PARTICIPANTS = ['claude', 'codex', 'contexts', 'background'] as const
 const FIELDS = [...PARTICIPANTS, 'pendingPrompts']
+const PREVIOUS_FIELDS = ['claude', 'codex', 'contexts', 'pendingPrompts']
 const MAX_SESSIONS = 1024
 const MAX_PENDING = 128
 const MAX_PROMPTS = 10000
@@ -21,6 +23,10 @@ type Participants = Partial<Record<typeof PARTICIPANTS[number], Participant>>
 interface Options { readonly persistedPrompts?: (sessionID: string, signal: AbortSignal) => Promise<readonly string[]> }
 interface State { readonly signal: AbortSignal; readonly loading: Promise<void>; readonly pendingPrompts: Set<string>; tail: Promise<unknown>; receipt?: StoredSession; failure?: unknown }
 function fail(code: string): never { throw new HostHookError(code, code === 'SESSION_STORE_CANCELLED' ? 'cancelled' : 'unsupported') }
+function retained(value: unknown, session: SessionSnapshot) {
+  if (value !== null && typeof value === 'object' && !Array.isArray(value) && !Object.hasOwn(value, 'background')) return { ...sessionSnapshot(KIND, value, session, PREVIOUS_FIELDS), background: null }
+  return sessionSnapshot(KIND, value, session, FIELDS)
+}
 
 export class V1SessionState {
   readonly captureOriginals = true
@@ -36,9 +42,13 @@ export class V1SessionState {
     return this.store.someSession(receipt => {
       if (performance.now() - started > SCAN_MS) fail('SESSION_STORE_LIMIT')
       if (!receipt.payload) return false
-      const sessions = new Sessions(), contexts = new PromptContexts(), starts = new StartupRecords()
+      const sessions = new Sessions(), contexts = new PromptContexts(), starts = new StartupRecords(), background = new BackgroundRecords()
       try {
-        const session = sessions.get(receipt.sessionID), input = sessionSnapshot(KIND, receipt.payload, session, FIELDS)
+        const session = sessions.get(receipt.sessionID), input = retained(receipt.payload, session)
+        if (input.background !== null) {
+          background.restoreV1(session, input.background)
+          if (background.requiresProjection(receipt.sessionID)) return true
+        }
         if (input.contexts !== null) {
           contexts.restoreV1(session, input.contexts)
           if (contexts.requiresProjection(receipt.sessionID)) return true
@@ -58,7 +68,7 @@ export class V1SessionState {
           }
         }
         return false
-      } finally { contexts.dispose(); starts.dispose(); sessions.dispose() }
+      } finally { contexts.dispose(); starts.dispose(); background.dispose(); sessions.dispose() }
     }, AbortSignal.timeout(SCAN_MS))
   }
 
@@ -77,7 +87,7 @@ export class V1SessionState {
           const undo: (() => void)[] = []
           try {
             if (receipt.payload) {
-              const input = sessionSnapshot(KIND, receipt.payload, session, FIELDS)
+              const input = retained(receipt.payload, session)
               if (!Array.isArray(input.pendingPrompts) || input.pendingPrompts.length > MAX_PROMPTS || !input.pendingPrompts.every(snapshotID) || new Set(input.pendingPrompts).size !== input.pendingPrompts.length) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
               for (const name of PARTICIPANTS) {
                 const participant = this.participants[name]

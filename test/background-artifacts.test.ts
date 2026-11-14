@@ -41,3 +41,10 @@ test('artifact capture bounds the combined raw execution streams before retainin
   const input = delivery(oracle.cases[0]!)
   assert.throws(() => claudeBackgroundArtifact({ ...input, completion: { ...input.completion!, execution: { ...input.completion!.execution, stderr: 'x'.repeat(EXECUTION_LIMITS.outputBytes) } } }), { code: 'BACKGROUND_ARTIFACT_LIMIT' })
 })
+
+test('native qualified hook names survive artifact capture independently of the base hook event', () => {
+  const input = { ...delivery(oracle.cases[0]!), event: 'PreToolUse', hookName: 'PreToolUse:Bash' }
+  const artifact = claudeBackgroundArtifact(input)!
+  const attachment = artifact.body.attachment as Record<string, unknown>
+  assert.equal(attachment.hookName, 'PreToolUse:Bash'); assert.equal(attachment.hookEvent, 'PreToolUse')
+})

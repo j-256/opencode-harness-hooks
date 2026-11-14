@@ -24,6 +24,8 @@ import { StopRecords } from './stop-records.js'
 import type { StopModelBlocks, StopContinuationOptions, StopInterruptionReceipt, StopInterruptedModel, StopAbortedAssistant } from './stop-records.js'
 import { OriginalInputs } from './original-inputs.js'
 import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy } from './session-snapshot.js'
+import type { BackgroundRecords } from './background-records.js'
+import { BackgroundHistory } from './background-history.js'
 
 const HISTORY_MS = 5000
 const MAX_MESSAGES = 10000
@@ -69,6 +71,7 @@ interface Options {
   readonly directory: string
   readonly temporaryParent?: string
   readonly now?: () => number
+  readonly background?: BackgroundRecords
   readonly history: (event: TranscriptEvent, signal: AbortSignal) => Promise<TranscriptHistory>
 }
 interface Tool {
@@ -308,7 +311,7 @@ export class ClaudeTranscript implements TranscriptService {
       if (event.event === 'UserPromptSubmit') this.prompts.begin(session)
       const entries = messages(this.options.host, event.sessionID, array(history.messages), this.stops)
       const rawContinuations = new Set(history.messages.flatMap(row => record(row) && ['user', 'assistant', 'synthetic'].includes(String(row.type)) && typeof row.id === 'string' ? [row.id] : []))
-      const rows = this.project(event, entries, history.parentID !== undefined, rawContinuations)
+      const rows = this.project(event, session, entries, history.parentID !== undefined, rawContinuations)
       const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
       if (Buffer.byteLength(text) > MAX_BYTES) fail('TRANSCRIPT_SIZE_LIMIT')
       if (signal.aborted) fail('TRANSCRIPT_CANCELLED')
@@ -398,8 +401,9 @@ export class ClaudeTranscript implements TranscriptService {
 
   inspect() { return Object.freeze({ created: this.directoryPath !== undefined, disposed: this.lifetime.signal.aborted, originals: this.originals.inspect().calls, originalBytes: this.originals.inspect().bytes, pending: this.pendingCount, ...this.prompts.inspect(), ...this.stops.inspect(), ...this.models.inspect() }) }
 
-  private project(event: TranscriptEvent, history: readonly Message[], sidechain: boolean, rawContinuations: ReadonlySet<string>): readonly Record<string, JsonValue>[] {
+  private project(event: TranscriptEvent, session: SessionSnapshot, history: readonly Message[], sidechain: boolean, rawContinuations: ReadonlySet<string>): readonly Record<string, JsonValue>[] {
     const rows: Record<string, JsonValue>[] = []
+    const background = new BackgroundHistory(this.options.background, session, 'claude-code')
     let parent: string | null = null
     let current = false
     const currentTurnID = history.findLast(message => message.role === 'user')?.turnID
@@ -428,6 +432,7 @@ export class ClaudeTranscript implements TranscriptService {
         for (const attachment of this.prompts.read(event.sessionID, entry.id, content.join('\n'))) append('prompt/' + attachment.id, attachment.created, { ...attachment.body })
         const date = this.models.read(event.sessionID, entry.id, modeled.has(entry.id))
         if (date) append('date/' + date.id, date.created, { type: 'attachment', attachment: { type: 'date', date: date.date }, rendered: [{ content: `<system-reminder>\nToday's date is ${date.date}.\n</system-reminder>` }], renderedRole: 'system' })
+        for (const row of background.prompt(entry.id, content)) append('background/' + row.id, row.artifact!.created, { ...row.artifact!.body })
         continue
       }
       const results: { readonly id: string; readonly content: JsonValue; readonly created: number; readonly error: boolean }[] = []
@@ -449,7 +454,10 @@ export class ClaudeTranscript implements TranscriptService {
       }
       const stop = entry.finish === undefined ? content.some(item => record(item) && item.type === 'tool_use') ? 'tool_use' : null : Object.hasOwn(FINISH, entry.finish) ? FINISH[entry.finish]! : fail('TRANSCRIPT_FINISH_UNSUPPORTED')
       push(entry.id, entry.created, 'assistant', { id: entry.id, type: 'message', role: 'assistant', content, model: entry.model!, stop_reason: stop, stop_sequence: null })
-      for (const result of results) push(`${entry.id}/${result.id}/result`, result.created, 'user', { role: 'user', content: [{ type: 'tool_result', tool_use_id: result.id, content: result.content, ...(result.error ? { is_error: true } : {}) }] })
+      for (const result of results) {
+        push(`${entry.id}/${result.id}/result`, result.created, 'user', { role: 'user', content: [{ type: 'tool_result', tool_use_id: result.id, content: result.content, ...(result.error ? { is_error: true } : {}) }] })
+        if (typeof result.content === 'string') for (const row of background.tool(entry.id, entry.turnID, result.id, result.content)) append('background/' + row.id, row.artifact!.created, { ...row.artifact!.body })
+      }
       for (const record of this.stops.read(event.sessionID, entry.id, entry.turnID, completionSignature(entry))) append('stop/' + record.id, record.created, { ...record.body })
     }
     if (event.event === 'UserPromptSubmit' || event.event === 'SessionStart') {
@@ -457,6 +465,7 @@ export class ClaudeTranscript implements TranscriptService {
       for (const record of this.starts.unbound(event.sessionID)) append('startup/' + record.id, record.created, { ...record.body })
     }
     if (!current && event.event !== 'UserPromptSubmit' && event.event !== 'Stop' && event.event !== 'SessionStart') fail('TRANSCRIPT_CURRENT_CALL_MISSING')
+    background.complete()
     return rows
   }
 }

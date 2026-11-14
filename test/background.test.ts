@@ -296,3 +296,21 @@ test('failed wake delivery remains retryable and asynchronous telemetry failures
   assert.equal(manager.inspect('session').pending, 0)
   assert.equal(JSON.stringify(manager.inspect('session')).includes('PRIVATE_'), false)
 })
+
+test('Claude background tool labels retain the actual native tool identity independently of the matcher', async t => {
+  const { BackgroundManager } = await import('../src/background.js'), root = await fixture(t), manager = new BackgroundManager()
+  t.after(() => manager.dispose())
+  const input = work(root, 'claude-code', contextScript)
+  manager.enqueue({ ...input, registration: { ...input.registration, matcher: '*' } }); await manager.waitForIdle('session')
+  await manager.deliver('session', 'safe-point', rows => { assert.equal(rows[0]!.hookName, 'PreToolUse:Bash') })
+})
+
+test('Claude background startup labels use the actual startup source', async t => {
+  const { BackgroundManager } = await import('../src/background.js'), root = await fixture(t), manager = new BackgroundManager()
+  t.after(() => manager.dispose())
+  const input = work(root, 'claude-code', `console.log('{"systemMessage":"Startup context"}')`)
+  manager.enqueue({ ...input, registration: { ...input.registration, event: 'SessionStart' }, event: { event: 'SessionStart', sessionID: 'session', cwd: root, data: { source: 'startup' } } }); await manager.waitForIdle('session')
+  let hookName: string | undefined
+  await manager.deliver('session', 'safe-point', rows => { hookName = rows[0]!.hookName })
+  assert.equal(hookName, 'SessionStart:startup')
+})

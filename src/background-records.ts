@@ -24,7 +24,7 @@ const HASH = z.string().regex(DIGEST)
 const CONTEXT = z.object({ kind: z.literal('context'), text: z.string(), placement: z.literal('model'), channel: z.enum(['stdout', 'additionalContext', 'systemMessage']).optional() }).strict()
 const WARNING = z.object({ kind: z.literal('warning'), text: z.string() }).strict()
 const DELIVERY = z.object({
-  id: ID, sourceID: ID, sourceDigest: HASH, registrationID: ID, dialect: z.enum(['claude-code', 'codex']), event: ID, mode: z.literal('safe-point'), actions: z.array(z.union([CONTEXT, WARNING])).max(DEFAULT_RECORDS),
+  id: ID, sourceID: ID, sourceDigest: HASH, registrationID: ID, dialect: z.enum(['claude-code', 'codex']), event: ID, hookName: ID.optional(), mode: z.literal('safe-point'), actions: z.array(z.union([CONTEXT, WARNING])).max(DEFAULT_RECORDS),
   completion: z.object({ completedAt: z.number().int().min(0).max(DATE_LIMIT), execution: z.object({ status: z.literal('exited'), exitCode: z.number().int().nullable(), signal: z.null(), stdout: z.string(), stderr: z.string(), durationMs: z.number().int().nonnegative(), processID: z.number().int().positive().optional() }).strict() }).strict(),
 }).strict()
 const ANCHOR_FIELDS = { sessionID: ID, turnID: ID, messageID: ID, signature: HASH }
@@ -34,6 +34,7 @@ export type BackgroundAnchor = z.infer<typeof ANCHOR>
 export interface BackgroundEntry {
   readonly id: string; readonly sourceID: string; readonly sourceDigest: string; readonly registrationID: string; readonly dialect: Delivery['dialect']; readonly event: string
   readonly anchor?: BackgroundAnchor; readonly artifact?: BackgroundArtifact; readonly model: readonly string[]; readonly warnings: readonly string[]; readonly warningsDelivered: boolean
+  readonly completedAt: number
 }
 interface Row { readonly delivery: Delivery; readonly artifact?: BackgroundArtifact; readonly model: readonly string[]; readonly warnings: readonly string[]; anchor?: BackgroundAnchor; warningsDelivered: boolean }
 interface State { readonly owner: AbortSignal; readonly rows: Map<string, Row>; readonly receipts: Map<string, string>; bytes: number; revision: number; binding?: symbol }
@@ -117,11 +118,14 @@ export class BackgroundRecords {
   }
   read(session: SessionSnapshot): readonly BackgroundEntry[] {
     const state = this.state(session); if (state?.binding) fail('BACKGROUND_BINDING_PENDING')
-    return Object.freeze([...(state?.rows.values() ?? [])].map(row => freeze({ id: row.delivery.id, sourceID: row.delivery.sourceID, sourceDigest: row.delivery.sourceDigest, registrationID: row.delivery.registrationID, dialect: row.delivery.dialect, event: row.delivery.event, ...(row.anchor ? { anchor: row.anchor } : {}), ...(row.artifact ? { artifact: row.artifact } : {}), model: row.model, warnings: row.warnings, warningsDelivered: row.warningsDelivered })))
+    return Object.freeze([...(state?.rows.values() ?? [])].map(row => freeze({ id: row.delivery.id, sourceID: row.delivery.sourceID, sourceDigest: row.delivery.sourceDigest, registrationID: row.delivery.registrationID, dialect: row.delivery.dialect, event: row.delivery.event, completedAt: row.delivery.completion.completedAt, ...(row.anchor ? { anchor: row.anchor } : {}), ...(row.artifact ? { artifact: row.artifact } : {}), model: row.model, warnings: row.warnings, warningsDelivered: row.warningsDelivered })))
   }
   warnings(session: SessionSnapshot): readonly { readonly id: string; readonly texts: readonly string[] }[] { return Object.freeze(this.read(session).filter(row => row.warnings.length && !row.warningsDelivered).map(row => Object.freeze({ id: row.id, texts: row.warnings }))) }
   hasPending(session: SessionSnapshot): boolean { return this.read(session).some(row => !row.anchor && (row.artifact || row.model.length)) }
   requiresProjection(sessionID: string): boolean { if (this.disposed || this.closed.has(sessionID)) return false; return [...(this.states.get(sessionID)?.rows.values() ?? [])].some(row => row.model.length || !row.anchor && row.artifact) }
+  discardPendingPrompt(session: SessionSnapshot, messageID: string): void {
+    if (!snapshotID(messageID) || this.read(session).some(row => row.anchor?.turnID === messageID)) fail('SESSION_SNAPSHOT_PROMPT_RECONCILIATION_UNAVAILABLE')
+  }
   acknowledgeWarnings(session: SessionSnapshot, ids: readonly string[]): void {
     const state = this.state(session); if (state?.binding) fail('BACKGROUND_BINDING_PENDING')
     if (new Set(ids).size !== ids.length || ids.some(id => !state?.receipts.has(id) || state.rows.has(id) && !state.rows.get(id)!.warnings.length)) fail('BACKGROUND_WARNING_OWNER_MISMATCH')
@@ -170,8 +174,9 @@ export class BackgroundRecords {
     const parsed = DELIVERY.safeParse(this.copy(value)); if (!parsed.success) fail('BACKGROUND_DELIVERY_INVALID')
     if (Buffer.byteLength(parsed.data.completion.execution.stdout) + Buffer.byteLength(parsed.data.completion.execution.stderr) > EXECUTION_LIMITS.outputBytes) fail('BACKGROUND_RECORD_LIMIT')
     const { processID, ...execution } = parsed.data.completion.execution
+    const { hookName, ...base } = parsed.data
     const actions = parsed.data.actions.map(action => { if (action.kind === 'warning') return action; const { channel, ...context } = action; return { ...context, ...(channel !== undefined ? { channel } : {}) } })
-    return freeze({ ...parsed.data, actions, completion: { completedAt: parsed.data.completion.completedAt, execution: { ...execution, ...(processID !== undefined ? { processID } : {}) } } })
+    return freeze({ ...base, ...(hookName !== undefined ? { hookName } : {}), actions, completion: { completedAt: parsed.data.completion.completedAt, execution: { ...execution, ...(processID !== undefined ? { processID } : {}) } } })
   }
   private row(delivery: Delivery): Row {
     if (delivery.dialect === 'claude-code' && delivery.actions.some(action => action.kind !== 'context')) fail('BACKGROUND_DELIVERY_INVALID')

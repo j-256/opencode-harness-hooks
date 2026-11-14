@@ -19,6 +19,6 @@ export function claudeBackgroundArtifact(delivery: BackgroundDelivery): Backgrou
   if (Buffer.byteLength(execution.stdout) + Buffer.byteLength(execution.stderr) > EXECUTION_LIMITS.outputBytes) fail('BACKGROUND_ARTIFACT_LIMIT')
   const specific = record(response.hookSpecificOutput) ? response.hookSpecificOutput : undefined
   const model = [response.systemMessage, specific?.additionalContext].filter((value): value is string => typeof value === 'string' && value.length > 0).map(text => `<system-reminder>\n${text}\n</system-reminder>`)
-  const body: Record<string, JsonValue> = { type: 'attachment', attachment: { type: 'async_hook_response', processId: 'async_hook_' + execution.processID, hookName: delivery.event, hookEvent: delivery.event, response: { ...response }, stdout: execution.stdout, stderr: execution.stderr, exitCode: execution.exitCode! }, ...(model.length ? { rendered: model.map(content => ({ content })), renderedRole: 'system' } : {}) }
+  const body: Record<string, JsonValue> = { type: 'attachment', attachment: { type: 'async_hook_response', processId: 'async_hook_' + execution.processID, hookName: delivery.hookName ?? delivery.event, hookEvent: delivery.event, response: { ...response }, stdout: execution.stdout, stderr: execution.stderr, exitCode: execution.exitCode! }, ...(model.length ? { rendered: model.map(content => ({ content })), renderedRole: 'system' } : {}) }
   return freeze({ created: completion.completedAt, body, model })
 }

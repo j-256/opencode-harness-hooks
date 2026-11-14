@@ -13,6 +13,8 @@ import type { JsonValue } from './types.js'
 import type { SessionStartEvent } from './session-start.js'
 import { OriginalInputs } from './original-inputs.js'
 import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
+import type { BackgroundRecords } from './background-records.js'
+import { BackgroundHistory } from './background-history.js'
 
 const MAX_BYTES = 32 * 1024 * 1024
 const MAX_CALLS = 20000
@@ -39,7 +41,7 @@ export interface CodexTranscriptService {
   prepare(event: HostToolEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView>
   dispose(): Promise<void>
 }
-interface Options { readonly host: HostVersion; readonly directory: string; readonly temporaryParent?: string; readonly history: (event: HostToolEvent | SessionStartEvent, signal: AbortSignal) => Promise<CodexTranscriptHistory> }
+interface Options { readonly host: HostVersion; readonly directory: string; readonly temporaryParent?: string; readonly background?: BackgroundRecords; readonly history: (event: HostToolEvent | SessionStartEvent, signal: AbortSignal) => Promise<CodexTranscriptHistory> }
 interface Published { readonly path?: string; readonly created: string; readonly fingerprints: ReadonlyMap<string, string>; readonly layout: readonly string[] }
 interface Startup { readonly contexts: readonly string[]; readonly created: number; messageID?: string }
 interface Startups { readonly signal: AbortSignal; readonly batches: Map<string, Startup>; readonly cleanup: () => void; bytes: number }
@@ -278,7 +280,14 @@ export class CodexTranscript implements CodexTranscriptService {
 
   private project(event: HostToolEvent | SessionStartEvent, session: SessionSnapshot, history: CodexTranscriptHistory, requireCurrent = true): CodexRolloutHistoryRecord[] {
     const rows: CodexRolloutHistoryRecord[] = [], seen = new Set<string>()
+    const background = new BackgroundHistory(this.options.background, session, 'codex')
     let turn: string | undefined, found = false, lastText = ''
+    const appendBackground = (entries: ReturnType<BackgroundHistory['prompt']>) => {
+      for (const row of entries) for (const [index, text] of row.model.entries()) {
+        const completedAt = row.completedAt
+        rows.push({ timestamp: iso(completedAt), type: 'response_item', payload: { type: 'message', id: 'msg_' + identity(event.sessionID, 'background', row.id, String(index)), role: 'developer', content: [{ type: 'input_text', text }], internal_chat_message_metadata_passthrough: { turn_id: turn!, create_time: completedAt / MILLISECONDS_PER_SECOND, content_item_kinds: ['hooks.additional_context'], content_item_metadata: [{ provenance: { type: 'harness', hook: true } }] } } })
+      }
+    }
     for (const message of history.messages) {
       if (!message.id || seen.has(message.id) || !Array.isArray(message.content)) fail('CODEX_TRANSCRIPT_HISTORY_INVALID')
       seen.add(message.id)
@@ -300,7 +309,7 @@ export class CodexTranscript implements CodexTranscriptService {
         rows.push({ timestamp, type: 'event_msg', payload: message.role === 'user' ? { type: 'user_message', message: text, images: [], local_images: [], text_elements: [] } : { type: 'agent_message', message: text } })
         if (message.role === 'assistant') lastText = text
       }
-      if (message.role === 'user') { appendText(message.content.join('\n'), 0); continue }
+      if (message.role === 'user') { appendText(message.content.join('\n'), 0); appendBackground(background.prompt(message.id, message.content as readonly string[])); continue }
       for (const [index, part] of message.content.entries()) {
         if (typeof part === 'string') { if (part) appendText(part, index); continue }
         if (!part.id || !part.name || !['pending', 'running', 'completed', 'error'].includes(part.status)) fail('CODEX_TRANSCRIPT_HISTORY_INVALID')
@@ -316,10 +325,12 @@ export class CodexTranscript implements CodexTranscriptService {
         if (!current && ['completed', 'error'].includes(part.status)) {
           if (typeof part.output !== 'string' || part.completed === undefined) fail('CODEX_TRANSCRIPT_HISTORY_INVALID')
           rows.push({ timestamp: iso(part.completed), type: 'response_item', payload: { type: 'function_call_output', call_id: part.id, output: part.output, internal_chat_message_metadata_passthrough: attribution } })
+          appendBackground(background.tool(message.id, message.turnID, part.id, part.output))
         }
       }
     }
     if (requireCurrent && (!found || history.messages.findLast(message => message.role === 'user')?.id !== session.turnID)) fail('CODEX_TRANSCRIPT_CURRENT_CALL_MISSING')
+    background.complete()
     return rows
   }
 }

@@ -6,11 +6,13 @@ import type { HookEffect } from './effect-types.js'
 import { interpretOutput } from './protocol.js'
 import { runCommand } from './runner.js'
 import { HookServiceError, runService } from './service-execution.js'
+import { toolIdentity } from './matchers.js'
 
 const CODEX_CONCURRENCY = 8
 const DEFAULT_QUEUED_JOBS = 1024
 const DEFAULT_PENDING_BYTES = 8 * 1024 * 1024
 const HISTORY_LIMIT = 128
+const QUALIFIED_TOOL_EVENTS = new Set(['PreToolUse', 'PostToolUse', 'PostToolUseFailure'])
 
 interface Job {
   readonly id: string
@@ -192,7 +194,10 @@ export class BackgroundManager implements BackgroundExecutor {
       effect = interpretOutput(registration, event, execution, { mode: 'background' })
       const retainCompletion = execution.status === 'exited' && (registration.dialect === 'claude-code' && registration.handler.asyncRewake !== true || effect.actions.length > 0)
       if (!state.closed && (effect.actions.length || retainCompletion)) {
-        const delivery = freeze({ id: job.id, sourceID: registration.sourceID, ...(registration.sourceDigest ? { sourceDigest: registration.sourceDigest } : {}), registrationID: registration.id, dialect: registration.dialect, event: registration.event, mode: effect.actions.some(action => action.kind === 'native-extension' && action.name === 'asyncRewake') ? 'wake' as const : 'safe-point' as const, actions: structuredClone(effect.actions), ...(retainCompletion ? { completion: { completedAt: Date.now(), execution: { ...execution } } } : {}) })
+        const source = { ...event.data, ...event.dialectData?.['claude-code'] }.source
+        const qualifier = QUALIFIED_TOOL_EVENTS.has(event.event) && event.tool ? toolIdentity(registration.dialect, event.tool, event.host) : event.event === 'SessionStart' && typeof source === 'string' ? source : undefined
+        const hookName = registration.dialect === 'claude-code' && qualifier ? registration.event + ':' + qualifier : undefined
+        const delivery = freeze({ id: job.id, sourceID: registration.sourceID, ...(registration.sourceDigest ? { sourceDigest: registration.sourceDigest } : {}), registrationID: registration.id, dialect: registration.dialect, event: registration.event, ...(hookName ? { hookName } : {}), mode: effect.actions.some(action => action.kind === 'native-extension' && action.name === 'asyncRewake') ? 'wake' as const : 'safe-point' as const, actions: structuredClone(effect.actions), ...(retainCompletion ? { completion: { completedAt: Date.now(), execution: { ...execution } } } : {}) })
         const bytes = deliveryBytes(delivery)
         if (state.pendingBytes + bytes > this.maxBytes) {
           effect = { ...effect, status: 'failed', code: 'BACKGROUND_DELIVERY_LIMIT', actions: [] }

@@ -26,6 +26,7 @@ export interface BackgroundDelivery {
   readonly registrationID: string
   readonly dialect: Dialect
   readonly event: string
+  readonly hookName?: string
   readonly mode: 'safe-point' | 'wake'
   readonly actions: readonly HookAction[]
   readonly completion?: BackgroundCompletion

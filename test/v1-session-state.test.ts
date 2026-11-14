@@ -6,6 +6,9 @@ import { test } from 'node:test'
 import { SessionStore } from '../src/session-store.js'
 import { V1SessionState } from '../src/hosts/session-state-v1.js'
 import { Sessions } from '../src/sessions.js'
+import { BackgroundRecords } from '../src/background-records.js'
+import type { BackgroundDelivery } from '../src/background-types.js'
+import type { Registration } from '../src/types.js'
 
 async function fixture(t: { after: (callback: () => Promise<void>) => void }) {
   const project = await mkdtemp(join(tmpdir(), 'v1-native-state-'))
@@ -63,4 +66,51 @@ test('V1 state conflicts fail explicitly and cannot replace a newer durable snap
   second.set('stale'); await assert.rejects(stale.checkpoint(b.get('session')), { code: 'SESSION_STORE_CONFLICT' })
   await assert.rejects(stale.ensure(b.get('session')), { code: 'SESSION_STORE_CONFLICT' })
   await source.dispose(); await stale.dispose(); a.dispose(); b.dispose()
+})
+
+test('the known previous V1 state shape migrates narrowly while preserving untouched participant payloads', async t => {
+  const f = await fixture(t), store = f.store(), sessions = new Sessions(), session = sessions.get('session')
+  const previous = { kind: 'v1-session-state', version: 1, sessionID: 'session', claude: { original: 'retained' }, codex: null, contexts: null, pendingPrompts: [] }
+  await store.save(await store.load('session'), previous); await store.dispose()
+  const data = participant(), background = participant(), state = new V1SessionState(f.store(), { claude: data, background })
+  await state.ensure(session); assert.deepEqual(JSON.parse(JSON.stringify(data.value())), previous.claude); assert.equal(background.restored(), 0)
+  background.set({ retained: 'background' }); await state.checkpoint(session); await state.dispose()
+  const readback = f.store(), payload = (await readback.load('session')).payload!
+  assert.deepEqual(JSON.parse(JSON.stringify(payload.claude)), previous.claude); assert.deepEqual(JSON.parse(JSON.stringify(payload.background)), { retained: 'background' })
+  await readback.dispose(); sessions.dispose()
+})
+
+test('unknown or partial V1 state layouts cannot use migration to bypass strict restoration', async t => {
+  for (const extra of [{ unknown: true }, { background: null, unknown: true }]) {
+    const f = await fixture(t), store = f.store(), sessions = new Sessions(), session = sessions.get('session')
+    await store.save(await store.load('session'), { kind: 'v1-session-state', version: 1, sessionID: 'session', claude: null, codex: null, contexts: null, pendingPrompts: [], ...extra }); await store.dispose()
+    const state = new V1SessionState(f.store(), { background: participant() })
+    await assert.rejects(state.ensure(session), { code: 'SESSION_SNAPSHOT_SCHEMA_INVALID' }); await assert.rejects(state.requiresProjection(), { code: 'SESSION_SNAPSHOT_SCHEMA_INVALID' })
+    await state.dispose(); sessions.dispose()
+  }
+})
+
+test('extended background state participates in atomic restore rollback', async t => {
+  const f = await fixture(t), store = f.store(), sessions = new Sessions(), session = sessions.get('session')
+  const data = participant(), invalid = participant(), source = new V1SessionState(store, { claude: data, background: invalid })
+  await source.ensure(session); data.set('original'); invalid.set('invalid'); await source.checkpoint(session); await source.dispose()
+  const restoredData = participant(), restored = new V1SessionState(f.store(), { claude: restoredData, background: participant() })
+  await assert.rejects(restored.ensure(session), /invalid/); assert.equal(restoredData.restored(), 0)
+  await restored.dispose(); sessions.dispose()
+})
+
+test('cold startup detects accepted background model history without enabling its previous command source', async t => {
+  for (const warningOnly of [false, true]) {
+    const f = await fixture(t), sessions = new Sessions(), digest = 'a'.repeat(64)
+    sessions.prompt('session', 'turn')
+    const registration: Registration = { id: 'hook', sourceID: 'source', sourceDigest: digest, dialect: 'codex', event: 'UserPromptSubmit', groupIndex: 0, handlerIndex: 0, handler: { type: 'command', command: 'fixture', async: true } }
+    const delivery: BackgroundDelivery = { id: 'job', sourceID: 'source', sourceDigest: digest, registrationID: 'hook', dialect: 'codex', event: 'UserPromptSubmit', mode: 'safe-point', actions: warningOnly ? [{ kind: 'warning', text: 'UI_ONLY' }] : [{ kind: 'context', placement: 'model', text: 'MODEL_CONTEXT' }], completion: { completedAt: 1700000000000, execution: { status: 'exited', exitCode: 0, signal: null, stdout: '{}', stderr: '', durationMs: 1 } } }
+    const records = new BackgroundRecords({ registrations: [registration] }), source = new V1SessionState(f.store(), { background: records })
+    await source.ensure(sessions.get('session')); records.admit(sessions.get('session'), delivery); await source.checkpoint(sessions.get('session')); await source.dispose(); records.dispose(); sessions.dispose()
+    const coldSessions = new Sessions(), coldRecords = new BackgroundRecords(), cold = new V1SessionState(f.store(), { background: coldRecords })
+    assert.equal(await cold.requiresProjection(), !warningOnly)
+    await cold.ensure(coldSessions.get('session')); assert.equal(coldRecords.read(coldSessions.get('session'))[0]!.sourceDigest, digest)
+    assert.throws(() => coldRecords.admit(coldSessions.get('session'), { ...delivery, id: 'new' }), { code: 'BACKGROUND_SOURCE_UNAVAILABLE' })
+    await cold.dispose(); coldRecords.dispose(); coldSessions.dispose()
+  }
 })

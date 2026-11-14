@@ -142,3 +142,12 @@ test('registration authority includes the copied handler signature rather than o
   records.assertRegistration(registration)
   assert.throws(() => records.assertRegistration(source), { code: 'BACKGROUND_SOURCE_UNAVAILABLE' })
 })
+
+test('abandoning a pending prompt preserves unbound session work but cannot silently erase bound model history', () => {
+  const f = fixture(); f.records.admit(f.owner(), delivery())
+  f.records.discardPendingPrompt(f.owner(), 'user')
+  assert.equal(f.records.read(f.owner()).length, 1); assert.equal(f.records.read(f.owner())[0]!.anchor, undefined)
+  f.records.reserveBind(f.owner(), f.anchor).commit()
+  assert.throws(() => f.records.discardPendingPrompt(f.owner(), 'user'), { code: 'SESSION_SNAPSHOT_PROMPT_RECONCILIATION_UNAVAILABLE' })
+  assert.equal(f.records.read(f.owner())[0]!.anchor!.messageID, 'user')
+})
