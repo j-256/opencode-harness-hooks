@@ -12,7 +12,7 @@ import type { SessionSnapshot } from './sessions.js'
 import type { JsonValue } from './types.js'
 import type { SessionStartEvent } from './session-start.js'
 import { OriginalInputs } from './original-inputs.js'
-import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
+import { SESSION_SNAPSHOT_VERSION, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
 import type { BackgroundRecords } from './background-records.js'
 import { BackgroundHistory } from './background-history.js'
 import type { HostPromptEvent } from './prompt-types.js'
@@ -22,6 +22,7 @@ import { CodexPromptContexts } from './codex-prompt-contexts.js'
 import type { DispatchResult } from './engine.js'
 import type { WakeRecords } from './wake-records.js'
 import { WakeHistory } from './wake-history.js'
+import { CODEX_TRANSCRIPT_SNAPSHOT_KIND, codexTranscriptSnapshot } from './codex-snapshot.js'
 
 const MAX_BYTES = 32 * 1024 * 1024
 const MAX_CALLS = 20000
@@ -190,14 +191,13 @@ export class CodexTranscript implements CodexTranscriptService {
   snapshotV1(sessionID: string) {
     if (this.options.host !== 'v1') fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
     const published = this.published.get(sessionID)
-    return snapshotCopy({ kind: 'codex-transcript-v1', version: SESSION_SNAPSHOT_VERSION, sessionID, directory: this.options.directory, originals: this.originals.snapshot(sessionID), starts: [...(this.starts.get(sessionID)?.batches ?? [])].map(([activationID, batch]) => ({ activationID, contexts: batch.contexts, created: batch.created, messageID: batch.messageID ?? null })), prompts: this.prompts.snapshot(sessionID), published: published ? { created: published.created, fingerprints: [...published.fingerprints].map(([id, digest]) => ({ id, digest })), layout: published.layout } : null })
+    return snapshotCopy({ kind: CODEX_TRANSCRIPT_SNAPSHOT_KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, directory: this.options.directory, originals: this.originals.snapshot(sessionID), starts: [...(this.starts.get(sessionID)?.batches ?? [])].map(([activationID, batch]) => ({ activationID, contexts: batch.contexts, created: batch.created, messageID: batch.messageID ?? null })), prompts: this.prompts.snapshot(sessionID), published: published ? { created: published.created, fingerprints: [...published.fingerprints].map(([id, digest]) => ({ id, digest })), layout: published.layout } : null })
   }
 
   restoreV1(session: SessionSnapshot, value: unknown): () => void {
     if (this.options.host !== 'v1') fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
     if (this.lifetime.signal.aborted) fail('CODEX_TRANSCRIPT_CANCELLED')
-    const hasPrompts = value !== null && typeof value === 'object' && Object.hasOwn(value, 'prompts')
-    const input = sessionSnapshot('codex-transcript-v1', value, session, ['directory', 'originals', 'starts', 'published', ...(hasPrompts ? ['prompts'] : [])])
+    const input = codexTranscriptSnapshot(value, session)
     if (input.directory !== this.options.directory) fail('SESSION_SNAPSHOT_OWNER_MISMATCH')
     if (this.starts.has(session.sessionID) || this.published.has(session.sessionID) || this.serial.has(session.sessionID)) fail('SESSION_SNAPSHOT_STATE_CONFLICT')
     if (!Array.isArray(input.starts)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
@@ -220,7 +220,7 @@ export class CodexTranscript implements CodexTranscriptService {
       }
       published = { created: row.created, fingerprints, layout: row.layout as string[] }
     }
-    const undoPrompts = this.prompts.restore(session, hasPrompts ? input.prompts : [])
+    const undoPrompts = this.prompts.restore(session, input.prompts)
     let undo: () => void
     try { undo = this.originals.restore(session, input.originals) } catch (error) { undoPrompts(); throw error }
     let state: Startups | undefined

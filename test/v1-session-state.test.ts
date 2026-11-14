@@ -12,17 +12,61 @@ import type { Registration } from '../src/types.js'
 import { WakeRecords } from '../src/wake-records.js'
 import type { DispatchResult } from '../src/engine.js'
 import { V1WakeInputs, wakeInputPart } from '../src/hosts/wake-inputs-v1.js'
+import { CodexTranscript } from '../src/codex-transcript.js'
+import { executeRegistration } from '../src/handlers.js'
 
 async function fixture(t: { after: (callback: () => Promise<void>) => void }) {
   const project = await mkdtemp(join(tmpdir(), 'v1-native-state-'))
   t.after(() => rm(project, { recursive: true, force: true }))
   const store = () => new SessionStore({ directory: join(project, 'state'), project, host: 'v1', diagnostic: () => {} })
-  return { store }
+  return { store, project }
 }
 function participant() {
   let value: unknown = null, restored = 0
   return { set(input: unknown) { value = input }, value: () => value, restored: () => restored, snapshotV1: (_sessionID: string) => value, restoreV1: (_session: unknown, input: unknown) => { if (input === 'invalid') throw new Error('invalid'); const previous = value; value = input; restored++; return () => { value = previous; restored-- } } }
 }
+
+for (const legacy of [false, true]) for (const pendingStart of [false, true]) test(`cold projection inspection accepts the actual Codex snapshot writer, legacy ${legacy}, pending startup ${pendingStart}`, async t => {
+  const f = await fixture(t), sessions = new Sessions(), session = sessions.get('session')
+  const codex = new CodexTranscript({ host: 'v1', directory: f.project, history: async () => ({ id: 'session', messages: [] }) })
+  t.after(async () => { await codex.dispose(); sessions.dispose() })
+  if (pendingStart) codex.rememberStart(session, 'startup', ['START_CONTEXT'])
+  const snapshot = JSON.parse(JSON.stringify(codex.snapshotV1('session')))
+  if (legacy) delete snapshot.prompts
+  const store = f.store()
+  await store.save(await store.load('session'), { kind: 'v1-session-state', version: 1, sessionID: 'session', claude: null, codex: snapshot, contexts: null, background: null, wakes: null, wakeInputs: null, pendingPrompts: [] })
+  await store.dispose()
+  const cold = new V1SessionState(f.store(), {})
+  t.after(() => cold.dispose())
+  assert.equal(await cold.requiresProjection(), pendingStart)
+})
+
+for (const malformed of [{ prompts: null }, { prompts: [{ invalid: true }] }, { unknown: true }]) test(`cold Codex projection inspection rejects malformed retained schema ${JSON.stringify(malformed)}`, async t => {
+  const f = await fixture(t), codex = new CodexTranscript({ host: 'v1', directory: f.project, history: async () => ({ id: 'session', messages: [] }) })
+  const snapshot = { ...JSON.parse(JSON.stringify(codex.snapshotV1('session'))), ...malformed }, store = f.store()
+  await store.save(await store.load('session'), { kind: 'v1-session-state', version: 1, sessionID: 'session', claude: null, codex: snapshot, contexts: null, background: null, wakes: null, wakeInputs: null, pendingPrompts: [] })
+  await store.dispose(); await codex.dispose()
+  const cold = new V1SessionState(f.store(), {}); t.after(() => cold.dispose())
+  await assert.rejects(cold.requiresProjection(), { code: 'SESSION_SNAPSHOT_SCHEMA_INVALID' })
+})
+
+test('cold projection inspection validates populated Codex prompt context from the actual writer', async t => {
+  const f = await fixture(t), sessions = new Sessions()
+  sessions.prompt('session', 'turn', 'model'); const session = sessions.get('session')
+  const codex = new CodexTranscript({ host: 'v1', directory: f.project, history: async () => ({ id: 'session', messages: [] }) })
+  t.after(async () => { await codex.dispose(); sessions.dispose() })
+  const registration: Registration = { id: 'prompt', sourceID: 'source', sourceDigest: 'a'.repeat(64), dialect: 'codex', event: 'UserPromptSubmit', groupIndex: 0, handlerIndex: 0, handler: { type: 'command', command: `printf '%s' '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"RETAINED"}}'` } }
+  const result = await executeRegistration(registration, { host: 'v1', event: 'UserPromptSubmit', sessionID: 'session', cwd: f.project, data: { prompt: 'GENUINE', transcript_path: '/fixture', turn_id: 'turn', model: 'model', permission_mode: 'default' } }, { projectRoot: f.project, environment: {} })
+  const origin = { sourceID: registration.sourceID, sourceDigest: registration.sourceDigest!, registrationID: registration.id, dialect: registration.dialect, configuredOrder: 0, completionOrder: 0 }
+  const dispatch: DispatchResult = { entries: [{ ...origin, result }], actions: result.actions.map(action => ({ ...origin, action })), cancelled: false, diagnostic: { dispatchID: 'dispatch', sessionID: 'session', event: 'UserPromptSubmit', durationMs: 0, cancelled: false, failed: 0, unsupported: 0, skipped: 0, background: 0, handlers: [] } }
+  codex.admitPrompt({ host: 'v1', event: 'UserPromptSubmit', sessionID: 'session', messageID: 'turn', prompt: 'GENUINE', signal: session.turnSignal }, session, dispatch)
+  const snapshot = JSON.parse(JSON.stringify(codex.snapshotV1('session'))); assert.equal(snapshot.prompts.length, 1)
+  const store = f.store()
+  await store.save(await store.load('session'), { kind: 'v1-session-state', version: 1, sessionID: 'session', claude: null, codex: snapshot, contexts: null, background: null, wakes: null, wakeInputs: null, pendingPrompts: [] })
+  await store.dispose()
+  const cold = new V1SessionState(f.store(), {}); t.after(() => cold.dispose())
+  assert.equal(await cold.requiresProjection(), false)
+})
 
 test('V1 session state loads before use and serializes checkpoints across a cold runtime without reexecuting effects', async t => {
   const f = await fixture(t), sessions = new Sessions(), first = participant(), contexts = participant()

@@ -10,6 +10,8 @@ import { StartupRecords } from '../startup-records.js'
 import { BackgroundRecords } from '../background-records.js'
 import { WakeRecords } from '../wake-records.js'
 import { V1WakeInputs } from './wake-inputs-v1.js'
+import { codexTranscriptSnapshot } from '../codex-snapshot.js'
+import { CodexPromptContexts } from '../codex-prompt-contexts.js'
 
 const KIND = 'v1-session-state'
 const PARTICIPANTS = ['claude', 'codex', 'contexts', 'background', 'wakes', 'wakeInputs'] as const
@@ -48,7 +50,7 @@ export class V1SessionState {
     return this.store.someSession(receipt => {
       if (performance.now() - started > SCAN_MS) fail('SESSION_STORE_LIMIT')
       if (!receipt.payload) return false
-      const sessions = new Sessions(), contexts = new PromptContexts(), starts = new StartupRecords(), background = new BackgroundRecords(), wakes = new WakeRecords(), wakeInputs = new V1WakeInputs()
+      const sessions = new Sessions(), contexts = new PromptContexts(), starts = new StartupRecords(), background = new BackgroundRecords(), wakes = new WakeRecords(), wakeInputs = new V1WakeInputs(), codexPrompts = new CodexPromptContexts()
       try {
         const session = sessions.get(receipt.sessionID), input = retained(receipt.payload, session)
         if (input.wakeInputs !== null) {
@@ -73,7 +75,8 @@ export class V1SessionState {
           if (starts.pending(receipt.sessionID).some(batch => batch.model.claude.length || batch.model.codex.length)) return true
         }
         if (input.codex !== null) {
-          const codex = sessionSnapshot('codex-transcript-v1', input.codex, session, ['directory', 'originals', 'starts', 'published'])
+          const codex = codexTranscriptSnapshot(input.codex, session)
+          codexPrompts.restore(session, codex.prompts)
           if (!Array.isArray(codex.starts)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
           for (const raw of codex.starts) {
             const row = snapshotObject(raw, ['activationID', 'contexts', 'created', 'messageID'])
@@ -82,7 +85,7 @@ export class V1SessionState {
           }
         }
         return false
-      } finally { contexts.dispose(); starts.dispose(); background.dispose(); wakes.dispose(); wakeInputs.dispose(); sessions.dispose() }
+      } finally { contexts.dispose(); starts.dispose(); background.dispose(); wakes.dispose(); wakeInputs.dispose(); codexPrompts.dispose(); sessions.dispose() }
     }, AbortSignal.timeout(SCAN_MS))
   }
 
