@@ -14,6 +14,7 @@ const MAX_BYTES = 32 * 1024 * 1024
 const DATE_LIMIT = 8640000000000000
 const PHASE = Object.freeze({ ISSUED: 'issued', EVALUATING: 'evaluating', SAVED: 'saved', RESUMING: 'resuming', RUNNING: 'running', FINISHED: 'finished', FAILED: 'failed' } as const)
 const PARTIAL_PHASES = new Set<string>([PHASE.ISSUED, PHASE.EVALUATING, PHASE.FAILED])
+const UNRESOLVED_PHASES = new Set<string>([PHASE.ISSUED, PHASE.EVALUATING, PHASE.RESUMING, PHASE.RUNNING])
 const ID = z.string().refine(snapshotID)
 const UUID = z.string().regex(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/)
 const MODEL = z.object({ providerID: ID, modelID: ID, variant: z.string().optional() }).strict()
@@ -67,6 +68,12 @@ export class V1WakeInputs {
     const current = state ?? this.create(session); current.rows.set(row.saveNonce, row); current.bytes += rowBytes(row); current.revision++
     return row
   }
+  discardIssued(session: SessionSnapshot, nonce: string): void {
+    const { state, row } = this.owned(session, nonce)
+    if (row.phase !== PHASE.ISSUED || row.messageID !== null) fail('HOST_WAKE_INPUT_REUSED')
+    state.rows.delete(nonce); state.bytes -= rowBytes(row); state.revision++
+    if (!state.rows.size) this.states.delete(session.sessionID)
+  }
   claim(session: SessionSnapshot, message: unknown, parts: unknown): V1WakeInputClaim | undefined {
     const state = this.state(session), markers = this.markers(parts)
     if (!markers.length) {
@@ -102,6 +109,11 @@ export class V1WakeInputs {
     if (session.turnSignal.aborted || session.turnID !== row.messageID) fail('HOST_WAKE_INPUT_OWNER_MISMATCH')
     return this.update(state, row, { ...row, phase: PHASE.RESUMING })
   }
+  cancelResume(session: SessionSnapshot, nonce: string): void {
+    const { state, row } = this.owned(session, nonce)
+    if (row.phase !== PHASE.RESUMING) fail('HOST_WAKE_INPUT_REUSED')
+    this.update(state, row, { ...row, phase: PHASE.SAVED })
+  }
   finish(session: SessionSnapshot, nonce: string, value: unknown): V1WakeInput {
     const { state, row } = this.owned(session, nonce)
     if (row.phase !== PHASE.SAVED && row.phase !== PHASE.RUNNING) fail('HOST_WAKE_INPUT_REUSED')
@@ -131,6 +143,7 @@ export class V1WakeInputs {
     }) as T
   }
   read(session: SessionSnapshot): readonly V1WakeInput[] { return Object.freeze([...(this.state(session)?.rows.values() ?? [])]) }
+  hasUnresolved(session: SessionSnapshot): boolean { return this.read(session).some(row => UNRESOLVED_PHASES.has(row.phase)) }
   requiresProjection(sessionID: string): boolean { return !this.disposed && !this.closed.has(sessionID) && (this.states.get(sessionID)?.rows.size ?? 0) > 0 }
   discardPendingPrompt(session: SessionSnapshot, messageID: string): void { if (!snapshotID(messageID) || this.read(session).some(row => row.messageID === messageID)) fail('SESSION_SNAPSHOT_PROMPT_RECONCILIATION_UNAVAILABLE') }
   snapshotV1(sessionID: string): unknown {

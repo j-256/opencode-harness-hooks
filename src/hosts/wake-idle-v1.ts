@@ -25,7 +25,7 @@ function record(value: unknown): value is Record<string, unknown> { return value
 function digest(text: string): string { return createHash('sha256').update(text).digest('hex') }
 
 export class V1WakeIdle {
-  private readonly idle = new Set<string>()
+  private readonly idle = new Map<string, symbol>()
   private readonly tasks = new Map<string, Promise<void>>()
   private readonly controllers = new Map<string, AbortController>()
   private readonly closed = new Set<string>()
@@ -35,17 +35,21 @@ export class V1WakeIdle {
   event(type: string, properties: unknown): void {
     if (!record(properties) || typeof properties.sessionID !== 'string' || !properties.sessionID) return
     if (type === 'session.idle' || type === 'session.status' && record(properties.status) && properties.status.type === 'idle') {
-      this.owner(properties.sessionID); this.idle.add(properties.sessionID); this.resume(properties.sessionID)
+      this.owner(properties.sessionID); this.idle.set(properties.sessionID, Symbol()); this.resume(properties.sessionID)
     } else if (type === 'session.status' && record(properties.status) && ['busy', 'retry'].includes(String(properties.status.type))) this.busy(properties.sessionID)
   }
   busy(sessionID: string): void { this.idle.delete(sessionID) }
   resume(sessionID: string): void {
     if (!this.idle.has(sessionID) || this.tasks.has(sessionID) || this.lifetime.signal.aborted || this.closed.has(sessionID)) return
-    const started = performance.now()
-    const task = Promise.resolve().then(() => this.run(sessionID)).catch(error => { this.report(sessionID, error instanceof HostHookError ? error.code : 'HOST_WAKE_IDLE_FAILED', 'failed', started) }).finally(() => { if (this.tasks.get(sessionID) === task) this.tasks.delete(sessionID) })
+    const started = performance.now(), generation = this.idle.get(sessionID)
+    const task = Promise.resolve().then(() => this.run(sessionID)).catch(error => { this.report(sessionID, error instanceof HostHookError ? error.code : 'HOST_WAKE_IDLE_FAILED', 'failed', started) }).finally(() => {
+      if (this.tasks.get(sessionID) !== task) return
+      this.tasks.delete(sessionID)
+      if (this.idle.get(sessionID) !== generation) this.resume(sessionID)
+    })
     this.tasks.set(sessionID, task)
   }
-  async settled(sessionID: string): Promise<void> { await this.tasks.get(sessionID) }
+  async settled(sessionID: string): Promise<void> { for (;;) { const task = this.tasks.get(sessionID); if (!task) return; await task } }
   async message(sessionID: string, message: unknown, parts: unknown): Promise<boolean> {
     const before = this.owner(sessionID), claim = this.options.inputs.claim(before, message, parts)
     if (!claim) { this.busy(sessionID); return false }
@@ -75,7 +79,7 @@ export class V1WakeIdle {
     while (this.idle.has(sessionID)) {
       session = this.owner(sessionID)
       const row = this.options.records.pending(session)[0]
-      if (!row) return
+      if (!row) { if (this.options.inputs.hasUnresolved(session)) fail('HOST_WAKE_IDLE_UNRESOLVED'); return }
       const started = performance.now()
       const previous = this.options.inputs.read(session).find(input => input.jobID === row.delivery.id)
       if (previous) fail('HOST_WAKE_IDLE_UNRESOLVED')
@@ -88,10 +92,23 @@ export class V1WakeIdle {
       if (!this.idle.has(sessionID)) return
       this.current(session, signal)
       const input = this.options.inputs.prepare(session, { jobID: row.delivery.id, prompt: row.text.prompt, model: { providerID: latest.info.model.providerID, modelID: latest.info.model.modelID, ...(typeof latest.info.model.variant === 'string' ? { variant: latest.info.model.variant } : {}) }, agent: latest.info.agent, ...(record(latest.info.tools) ? { tools: latest.info.tools as Readonly<Record<string, boolean>> } : {}), promptIndex: genuine.length - 1, turnIndex: users.length + 1 })
-      await this.options.state.checkpoint(session, session.signal); this.current(session, signal)
-      if (!this.idle.has(sessionID)) return
-      this.idle.delete(sessionID)
-      const saved = await runService(null, signal, current => this.options.prompt(sessionID, this.body(input, row.text.prompt, true), current))
+      let submitted = false, saved: { readonly data?: unknown; readonly error?: unknown }
+      try {
+        await this.options.state.checkpoint(session, session.signal); this.current(session, signal)
+        if (!this.idle.has(sessionID)) return
+        this.idle.delete(sessionID)
+        saved = await runService(null, signal, current => {
+          const body = this.body(input, row.text.prompt, true)
+          submitted = true
+          return this.options.prompt(sessionID, body, current)
+        })
+      } finally {
+        if (!submitted && !session.signal.aborted) {
+          this.options.inputs.discardIssued(session, input.saveNonce)
+          try { await this.options.state.checkpoint(session, session.signal) } catch { fail('HOST_WAKE_ISSUE_ROLLBACK_FAILED') }
+          this.report(sessionID, 'HOST_WAKE_UNSENT_RELEASED', 'success', started, row.delivery.id)
+        }
+      }
       session = this.owner(sessionID)
       if (saved.error) {
         const result = this.options.records.read(session).find(value => value.delivery.id === row.delivery.id)!.attempts.at(-1)?.result
@@ -110,8 +127,21 @@ export class V1WakeIdle {
       }
       if (session.turnID !== ownedInput.messageID || session.turnSignal.aborted) return
       const resuming = this.options.inputs.resume(session, input.saveNonce)
-      await this.options.state.checkpoint(session, session.signal); this.current(session, signal)
-      const resumed = await runService(null, signal, current => this.options.prompt(sessionID, this.body(resuming, row.text.prompt, false), current))
+      let resumeSubmitted = false, resumed: { readonly data?: unknown; readonly error?: unknown }
+      try {
+        await this.options.state.checkpoint(session, session.signal); this.current(session, signal)
+        resumed = await runService(null, signal, current => {
+          const body = this.body(resuming, row.text.prompt, false)
+          resumeSubmitted = true
+          return this.options.prompt(sessionID, body, current)
+        })
+      } finally {
+        if (!resumeSubmitted && !session.signal.aborted) {
+          this.options.inputs.cancelResume(session, input.saveNonce)
+          try { await this.options.state.checkpoint(session, session.signal) } catch { fail('HOST_WAKE_RESUME_ROLLBACK_FAILED') }
+          this.report(sessionID, 'HOST_WAKE_RESUME_RELEASED', 'success', started, row.delivery.id)
+        }
+      }
       if (resumed.error) fail('HOST_WAKE_RESUME_FAILED')
       session = this.owner(sessionID)
       const raw = (await this.history(sessionID, signal)).find(raw => record(raw) && record(raw.info) && raw.info.id === ownedInput.messageID)

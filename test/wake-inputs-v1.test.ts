@@ -36,6 +36,29 @@ test('two distinct owned SDK phases reuse actual host IDs without repeating sour
   assert.ok(!JSON.stringify(f.inputs.inspect()).includes(PROMPT)); assert.ok(!JSON.stringify(f.inputs.inspect()).includes(f.ticket.saveNonce))
 })
 
+test('an unsubmitted issued ticket can be released without retaining nonce authority or its allocation', t => {
+  const f = fixture(t), session = f.sessions.get('session')
+  f.inputs.discardIssued(session, f.ticket.saveNonce)
+  assert.equal(f.inputs.inspect().inputs, 0); assert.equal(f.inputs.inspect().bytes, 0)
+  assert.throws(() => f.inputs.claim(session, f.message(), f.parts()), { code: 'HOST_WAKE_INPUT_OWNER_MISMATCH' })
+  const next = f.inputs.prepare(session, { jobID: 'job', prompt: PROMPT, model: MODEL, agent: 'build', promptIndex: 0, turnIndex: 2 })
+  assert.notEqual(next.saveNonce, f.ticket.saveNonce)
+  f.inputs.claim(session, f.message(), [{ ...wakeInputPart(next, PROMPT, 'save'), id: 'part' }])
+  assert.throws(() => f.inputs.discardIssued(session, next.saveNonce), { code: 'HOST_WAKE_INPUT_REUSED' })
+  assert.equal(f.inputs.inspect().inputs, 1)
+})
+
+test('an unsubmitted resume can return to saved state while a claimed resume remains irreversible', t => {
+  const f = fixture(t), message = f.message(), parts = f.parts()
+  f.inputs.claim(f.sessions.get('session'), message, parts); f.sessions.prompt('session', 'system', 'model'); const session = f.sessions.get('session')
+  f.inputs.saved(session, f.ticket.saveNonce, { info: message, parts }); f.inputs.resume(session, f.ticket.saveNonce)
+  f.inputs.cancelResume(session, f.ticket.saveNonce)
+  assert.equal(f.inputs.read(session)[0]!.phase, 'saved'); assert.equal(f.inputs.normalize('session', [{ info: message, parts }])[0]!.parts[0]!.synthetic, undefined)
+  const resumed = f.inputs.resume(session, f.ticket.saveNonce)
+  f.inputs.claim(session, message, [wakeInputPart(resumed, PROMPT, 'resume')])
+  assert.throws(() => f.inputs.cancelResume(session, f.ticket.saveNonce), { code: 'HOST_WAKE_INPUT_REUSED' })
+})
+
 test('text matching and unrelated synthetic input never grant notification ownership, while forged marked input fails closed', t => {
   const f = fixture(t), session = f.sessions.get('session')
   assert.equal(f.inputs.claim(session, f.message(), [{ type: 'text', text: PROMPT }]), undefined)
