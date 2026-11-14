@@ -563,6 +563,13 @@
       "event": "UserPromptSubmit",
       "area": "handlers",
       "summary": "Allow, deny, malformed and timeout prompt-model controls with exact private submission artifacts, isolated evaluation and owned child cleanup"
+    },
+    {
+      "id": "claude-code.handlers.agent-userprompt-controls",
+      "dialect": "claude-code",
+      "event": "UserPromptSubmit",
+      "area": "handlers",
+      "summary": "Owned agent verdicts, nested tool policies, permissions, incomplete and failure admission, bounded inference and child cleanup"
     }
   ],
   "evidence": [
@@ -1076,6 +1083,29 @@
         "handlers"
       ],
       "scope": "Bounded prompt model service ownership, structured verdict validation, raw failure evidence, cancellation and default V1 callback isolation; actual comparison is separate"
+    },
+    {
+      "id": "agent-model-service-controls",
+      "level": "unit-test",
+      "artifacts": [
+        "test/v1-agent-model-service.test.ts",
+        "test/plugin-agent-model.test.ts",
+        "test/agent-permissions-v1.test.ts",
+        "test/agent-policy-v1.test.ts",
+        "test/agent-tool-runtime.test.ts",
+        "test/agent-model-artifacts.test.ts",
+        "test/conformance-agent-model.test.mjs"
+      ],
+      "dialects": [
+        "claude-code"
+      ],
+      "events": [
+        "UserPromptSubmit"
+      ],
+      "areas": [
+        "handlers"
+      ],
+      "scope": "Owned V1 agent evaluation, nested native projections, caller policies, permission replies, cancellation and classified evidence; actual comparison is separate"
     }
   ],
   "cases": [
@@ -1455,6 +1485,27 @@
         "Malformed evaluation admits the exact native private error fields",
         "Successful evaluations and timeouts admit no submission attachment",
         "Parent completion and the owned shell effect for nonblocking controls",
+        "Owned child removal and unchanged source, hook and adapter bytes"
+      ]
+    },
+    {
+      "id": "claude.userpromptsubmit.agent-model",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.handlers.agent-userprompt-controls"
+      ],
+      "description": "Independent native and stock V1 agent verdict, tool, permission, failure and bounded-inference controls with unchanged source bytes and synthetic providers",
+      "observables": [
+        "Owned file Read followed by a validated verdict and matching tool callbacks",
+        "Denial prevents parent inference and effects",
+        "Effectful agent writes denied unless the source hook preapproves the actual call",
+        "Parent native identity, dontAsk and reserved absent transcript for evaluator tools",
+        "Command hooks run while prompt and agent model hooks do not recurse",
+        "Malformed verdicts do not reach tool hooks; incomplete, timeout, API 400 and turn-limit outcomes admit no submission attachments",
+        "Parent transcript excludes evaluator call identities and parent instructions stay outside evaluator requests",
         "Owned child removal and unchanged source, hook and adapter bytes"
       ]
     }

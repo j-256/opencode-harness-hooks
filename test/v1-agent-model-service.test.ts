@@ -11,7 +11,7 @@ import { Sessions } from '../src/sessions.js'
 async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   const directory = await realpath(await mkdtemp(join(tmpdir(), 'v1-agent-model-'))), sessions = new Sessions()
   sessions.prompt('parent', 'turn', 'parent-model')
-  let models!: V1AgentModels, sequence = 0, invalid = false, foreign = false, limit = false, failedDelete = false, restricted = false, missingPolicy = false
+  let models!: V1AgentModels, sequence = 0, invalid = false, foreign = false, limit = false, failedDelete = false, restricted = false, missingPolicy = false, incomplete = false, apiError = false
   let hold: (() => Promise<void>) | undefined, omitFence = false, wrongError = false, wrongErrorText = false, wrongMessage = false, fencedAssistant = false, copied: (() => void) | undefined
   const calls: { phase: string; sessionID?: string; tool?: string; value?: unknown }[] = [], children = new Set<string>(), diagnostics: unknown[] = []
   const client: V1ModelClient = { app: { agents: async () => ({ data: [{ name: 'build', permission: [{ permission: '*', pattern: '*', action: 'allow' }, ...(restricted ? [{ permission: 'bash', pattern: '*', action: 'deny' }] : [])] }] }) }, session: {
@@ -27,6 +27,8 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
       if (limit) for (let n = 0; n < 51; n++) models.headers(params)
       models.headers(params)
       models.event('message.updated', { info: { id: 'answer', sessionID, parentID: message.id, role: 'assistant' } })
+      if (incomplete) return { data: { info: { id: 'answer', sessionID, parentID: message.id, role: 'assistant', modelID: model.modelID, providerID: model.providerID }, parts: [{ type: 'text', text: 'No verdict' }] } }
+      if (apiError) { const headers: Record<string, string> = {}; models.requestHeaders(params, headers); await models.fetch(model.providerID, async () => { calls.push({ phase: 'provider' }); return new Response(JSON.stringify({ error: { message: 'PRIVATE_API_ERROR' } }), { status: 400 }) }, 'https://fixture.invalid/chat/completions', { method: 'POST', headers, body: '{}' }) }
       const call = { sessionID, callID: 'read-call', tool: 'read' }
       await models.beforeTool(call, { args: { filePath: join(directory, 'owned.txt') } })
       await models.afterTool({ ...call, args: { filePath: join(directory, 'owned.txt') } }, { title: 'Read', output: 'OWNED_RESULT', metadata: {} })
@@ -55,7 +57,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   const context = { host: 'v1' as const, dialect: 'claude-code' as const, event: 'UserPromptSubmit', sourceID: 'source', registrationID: 'registration', nativeInput: { session_id: 'native-parent', permission_mode: 'bypassPermissions' } }
   const request = (signal = sessions.get('parent').turnSignal, model?: string) => ({ prompt: 'OWNED_RULE', sessionID: 'parent', cwd: directory, maxTurns: 50, context, signal, ...(model ? { model } : {}) })
   t.after(async () => { failedDelete = false; await models.dispose(); sessions.dispose(); await rm(directory, { recursive: true, force: true }) })
-  return { restrict: () => { restricted = true }, omitPolicy: () => { missingPolicy = true }, models, calls, children, diagnostics, config, request, invalid: () => { invalid = true }, foreign: () => { foreign = true }, limit: () => { limit = true }, failDelete: (value: boolean) => { failedDelete = value }, hold: (fn: () => Promise<void>) => { hold = fn }, omitFence: () => { omitFence = true }, wrongError: () => { wrongError = true }, wrongErrorText: () => { wrongErrorText = true }, wrongMessage: () => { wrongMessage = true }, fencedAssistant: () => { fencedAssistant = true }, copied: (fn: () => void) => { copied = fn } }
+  return { incomplete: () => { incomplete = true }, apiError: () => { apiError = true }, restrict: () => { restricted = true }, omitPolicy: () => { missingPolicy = true }, models, calls, children, diagnostics, config, request, invalid: () => { invalid = true }, foreign: () => { foreign = true }, limit: () => { limit = true }, failDelete: (value: boolean) => { failedDelete = value }, hold: (fn: () => Promise<void>) => { hold = fn }, omitFence: () => { omitFence = true }, wrongError: () => { wrongError = true }, wrongErrorText: () => { wrongErrorText = true }, wrongMessage: () => { wrongMessage = true }, fencedAssistant: () => { fencedAssistant = true }, copied: (fn: () => void) => { copied = fn } }
 }
 
 test('agent evaluator permits owned multi-turn tools and captures a validated call-bound verdict', async t => {
@@ -218,4 +220,33 @@ test('an unverified host policy is diagnosed as unsupported rather than a native
   const { executeRegistration } = await import('../src/handlers.js')
   const result = await executeRegistration({ id: 'agent:fixture', sourceID: 'native', dialect: 'claude-code', event: 'UserPromptSubmit', groupIndex: 0, handlerIndex: 0, handler: { type: 'agent', prompt: 'OWNED_RULE' } }, { host: 'v1', event: 'UserPromptSubmit', sessionID: 'parent', cwd: f.request().cwd, data: { prompt: 'Original', transcript_path: '/owned/reserved.jsonl', permission_mode: 'default' } }, { environment: {}, projectRoot: f.request().cwd, runAgent: request => f.models.evaluate(request) })
   assert.equal(result.status, 'unsupported'); assert.equal(result.code, 'HOST_AGENT_PERMISSION_POLICY_MISMATCH')
+})
+
+
+test('malformed verdicts never reach nested tool policies', async t => {
+  const f = await fixture(t); f.invalid()
+  await assert.rejects(f.models.evaluate(f.request()), { code: 'MODEL_OUTPUT_INVALID' })
+  assert.equal(f.calls.some(row => row.phase === 'before' && row.tool === AGENT_VERDICT_TOOL), false)
+})
+
+test('a clean completion without a verdict gets one owned continuation before a classified incomplete outcome', async t => {
+  const f = await fixture(t); f.incomplete()
+  await assert.rejects(f.models.evaluate(f.request()), { code: 'AGENT_INCOMPLETE' })
+  assert.equal(f.calls.filter(row => row.phase === 'prompt').length, 2)
+  assert.equal(f.children.size, 0)
+})
+
+test('agent HTTP 400 failures retry within the owned signal before classified failure and cleanup', async t => {
+  const f = await fixture(t); f.apiError()
+  await assert.rejects(f.models.evaluate(f.request()), { code: 'MODEL_REQUEST_FAILED' })
+  assert.equal(f.calls.filter(row => row.phase === 'provider').length, 4)
+  assert.equal(f.children.size, 0)
+  assert.ok(!JSON.stringify(f.diagnostics).includes('PRIVATE_API_ERROR'))
+})
+
+
+test('the exhausted final inference cannot delegate another tool or nested policy', async t => {
+  const f = await fixture(t)
+  await assert.rejects(f.models.evaluate({ ...f.request(), maxTurns: 1 }), { code: 'AGENT_TURN_LIMIT' })
+  assert.equal(f.calls.some(row => row.phase === 'before'), false)
 })

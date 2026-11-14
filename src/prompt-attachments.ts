@@ -58,6 +58,7 @@ export class PromptAttachments {
         const accepted = model.status === AGENT_MODEL_STATUS.SUCCESS && result.status === 'success' && result.code === 'MODEL_EVALUATED'
           || model.status === AGENT_MODEL_STATUS.TIMEOUT && result.status === 'failed' && result.code === 'EXECUTION_TIMEOUT'
           || model.status === AGENT_MODEL_STATUS.TURN_LIMIT && result.status === 'failed' && result.code === 'AGENT_TURN_LIMIT'
+          || model.status === AGENT_MODEL_STATUS.INCOMPLETE && result.status === 'failed' && result.code === 'AGENT_INCOMPLETE'
           || model.status === AGENT_MODEL_STATUS.API_ERROR && result.status === 'failed' && result.code === 'MODEL_REQUEST_FAILED'
         if (!accepted) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
         continue

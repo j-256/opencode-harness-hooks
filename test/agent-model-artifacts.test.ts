@@ -10,8 +10,8 @@ import type { AgentHookRequest } from '../src/host-services.js'
 import type { Registration } from '../src/types.js'
 
 const PROMPT = 'OWNED_AGENT_CONDITION $ARGUMENTS'
-const codes = { allow: 'MODEL_EVALUATED', deny: 'MODEL_EVALUATED', timeout: 'EXECUTION_TIMEOUT', limit: 'AGENT_TURN_LIMIT', api: 'MODEL_REQUEST_FAILED' }
-for (const mode of ['allow', 'deny', 'timeout', 'limit', 'api'] as const) test(`native agent ${mode} preserves measured prompt admission without invented attachments`, async () => {
+const codes = { allow: 'MODEL_EVALUATED', deny: 'MODEL_EVALUATED', timeout: 'EXECUTION_TIMEOUT', limit: 'AGENT_TURN_LIMIT', api: 'MODEL_REQUEST_FAILED', incomplete: 'AGENT_INCOMPLETE' }
+for (const mode of ['allow', 'deny', 'timeout', 'limit', 'api', 'incomplete'] as const) test(`native agent ${mode} preserves measured prompt admission without invented attachments`, async () => {
   const sessions = new Sessions(), records = new PromptAttachments(), restored = new PromptAttachments(), next = new Sessions()
   sessions.prompt('host-parent', 'turn', 'fixture')
   const session = sessions.get('host-parent'), registration: Registration = { id: 'registration', sourceID: 'source', dialect: 'claude-code', event: 'UserPromptSubmit', groupIndex: 0, handlerIndex: 0, handler: { type: 'agent', prompt: PROMPT, timeout: mode === 'timeout' ? 0.01 : 1 } }
@@ -20,6 +20,7 @@ for (const mode of ['allow', 'deny', 'timeout', 'limit', 'api'] as const) test(`
   const effect = await executeRegistration(registration, event, { projectRoot: '/project', environment: {}, captureModelArtifacts: true, runAgent: async input => {
     request = input
     if (mode === 'timeout') return new Promise(() => {})
+    if (mode === 'incomplete') throw new HookServiceError('AGENT_INCOMPLETE')
     if (mode === 'limit') throw new HookServiceError('AGENT_TURN_LIMIT')
     if (mode === 'api') throw new ModelApiError('PRIVATE_PROVIDER_BODY')
     return mode === 'deny' ? { ok: false, reason: 'OWNED_AGENT_DENIAL' } : { ok: true }
