@@ -7,6 +7,7 @@ import { snapshotCopy, snapshotID } from './session-snapshot.js'
 export interface ClaudeWakeInput { readonly hookName: string; readonly text: string }
 export interface ClaudeWakeText { readonly prompt: string; readonly model: string; readonly modelInHumanTurn: string }
 export interface ClaudeQueuedWakeInput extends ClaudeWakeInput { readonly sourceUUID: string; readonly deliveryID: string; readonly created: number }
+export interface ClaudeQueuedPromptInput { readonly prompt: string; readonly sourceUUID: string; readonly deliveryID: string; readonly created: number }
 export interface ClaudeSystemWakeInput extends ClaudeWakeInput { readonly promptID: string; readonly promptIndex: number; readonly turnIndex: number }
 export interface ClaudeWakeArtifact extends BackgroundArtifact { readonly humanModel: readonly string[] }
 export interface ClaudeSystemFeedbackInput { readonly promptID: string; readonly text: string; readonly created: number }
@@ -16,6 +17,8 @@ const STOP_FEEDBACK = 'Operation stopped by hook'
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 const ORIGIN = Object.freeze({ kind: 'task-notification', producer: 'session-task' })
 const TASK = '<task-notification>\n<summary>Stop hook feedback</summary>\n</task-notification>'
+const QUEUED_PROMPT_PREFIX = '<system-reminder>\nThe user sent a new message while you were working:\n'
+const QUEUED_PROMPT_SUFFIX = '\n\nThis is how Claude Code surfaces messages the user sends mid-turn \u2014 within the running turn, often alongside the next tool result, rather than as a separate conversation turn. Address the message above as you continue this turn.\n</system-reminder>'
 const WARNING = [
   '[SYSTEM NOTIFICATION - NOT USER INPUT]',
   'This is an automated background-task event, NOT a message from the user.',
@@ -41,6 +44,13 @@ export function claudeQueuedWake(input: ClaudeQueuedWakeInput): ClaudeWakeArtifa
   const text = claudeWakeText(input)
   if (typeof input.sourceUUID !== 'string' || typeof input.deliveryID !== 'string' || !UUID.test(input.sourceUUID) || !UUID.test(input.deliveryID) || !Number.isSafeInteger(input.created) || input.created < 0 || input.created > DATE_LIMIT) fail('CLAUDE_WAKE_IDENTITY_INVALID')
   return snapshotCopy({ created: input.created, body: { type: 'attachment', attachment: { type: 'queued_command', prompt: text.prompt, source_uuid: input.sourceUUID, delivery_id: input.deliveryID, commandMode: 'task-notification', origin: ORIGIN, timestamp: new Date(input.created).toISOString() }, rendered: [{ content: text.model }], renderedInHumanTurn: [{ content: text.modelInHumanTurn }], renderedRole: 'system' }, model: [text.model], humanModel: [text.modelInHumanTurn] })
+}
+export function claudeQueuedPrompt(input: ClaudeQueuedPromptInput): BackgroundArtifact {
+  if (!input || typeof input.prompt !== 'string') fail('CLAUDE_WAKE_INPUT_INVALID')
+  if (typeof input.sourceUUID !== 'string' || typeof input.deliveryID !== 'string' || !UUID.test(input.sourceUUID) || !UUID.test(input.deliveryID) || !Number.isSafeInteger(input.created) || input.created < 0 || input.created > DATE_LIMIT) fail('CLAUDE_WAKE_IDENTITY_INVALID')
+  if (Buffer.byteLength(input.prompt) > EXECUTION_LIMITS.inputBytes) fail('CLAUDE_QUEUED_PROMPT_LIMIT')
+  const content = QUEUED_PROMPT_PREFIX + input.prompt + QUEUED_PROMPT_SUFFIX
+  return snapshotCopy({ created: input.created, body: { type: 'attachment', attachment: { type: 'queued_command', prompt: input.prompt, source_uuid: input.sourceUUID, delivery_id: input.deliveryID, commandMode: 'prompt', timestamp: new Date(input.created).toISOString() }, rendered: [{ content }], renderedRole: 'system' }, model: [content] })
 }
 export function claudeSystemWake(input: ClaudeSystemWakeInput): Readonly<Record<string, JsonValue>> {
   const text = claudeWakeText(input)
