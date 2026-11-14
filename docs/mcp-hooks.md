@@ -1,0 +1,19 @@
+# MCP hook execution boundaries
+
+The engine's MCP service interface preserves the requested raw server/tool identity, expanded input, connection policy, authentication restrictions, and timeout contract. Stock V1 can execute its configured MCP tools through an owned SDK session with a deterministic provider transport. That execution seam can avoid model accounts and provider network requests. The default MCP binding remains implementation work; recognizing a source registration or having a callable tool is not full native conformance.
+
+## Canonical tool identity
+
+V1 flattens a raw server and tool into one name, replacing characters outside ASCII letters, digits, underscores, and hyphens with underscores. Its public model catalog and tool callbacks expose the flattened name. See the pinned [MCP catalog implementation](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts).
+
+A controlled collision demonstrates the lost identity: the source requests `fixture` / `check_read`, and native Claude calls `check_read`; the same flat V1 name selects `check.read` when those definitions collide. The [captured observations](../test/fixtures/v1-mcp-boundaries.json) record both actual RPC tool names. Sending a guessed flat name can execute a different operation.
+
+The guarded helper permits server and tool names containing only ASCII letters, digits, and hyphens. Their host name has one unambiguous underscore separator. A complete raw server inventory can also verify wider server names when exactly one configured server can own the flattened target. Tool names outside the injective subset, and unresolved server aliases, report `HOST_MCP_TOOL_IDENTITY_UNAVAILABLE` before delegation. A wider safe subset requires authoritative raw identity information or a direct configured-client invocation boundary; absence of a collision in a sample is insufficient.
+
+## Raw MCP output
+
+Native Claude treats an MCP error result as nonblocking failure and ignores structured-only results as hook text. Multiple text blocks can supply a JSON policy. V1's [tool conversion](https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts) synthesizes a JSON text block when `content` is empty and non-null `structuredContent` exists. This happens before its public tool-after callback. The [captured public callback](../test/fixtures/v1-mcp-boundaries.json) records the synthesized policy text.
+
+The callback cannot distinguish synthesized text from genuinely supplied identical text plus the same structured data. Publishing that text as a native hook policy could deny an operation that native Claude permits. The guarded helper reports `HOST_MCP_RAW_OUTPUT_UNAVAILABLE` for that ambiguous shape, while preserving unambiguous text, empty text, and MCP error semantics. Source arguments and raw results are copied within byte limits; partial or malformed results cannot publish policies.
+
+The [protocol controls](../test/v1-mcp-protocol.test.ts) cover the identity and output guards. These observations establish specific host losses. They do not establish a complete default MCP service, connection readiness, authentication, elicitation accounting, rendering, lifecycle, V2, or full MCP conformance. Those remain separate implementation and proof obligations.

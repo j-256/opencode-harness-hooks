@@ -1,0 +1,36 @@
+{
+  "oracle": "Actual isolated stock-host and native CLI probes",
+  "versions": {
+    "claude-code": "2.1.318",
+    "opencode": "1.19.5"
+  },
+  "scope": "Canonical MCP tool identity loss and structured-only output conversion; not a full conformance comparison",
+  "identity": {
+    "server": "fixture",
+    "requestedTool": "check_read",
+    "flatHostTool": "fixture_check_read",
+    "nativeExecutedTool": "check_read",
+    "hostExecutedTool": "check.read"
+  },
+  "structuredOnly": {
+    "serverResult": {
+      "content": [],
+      "structuredContent": {
+        "continue": false
+      }
+    },
+    "nativeParentEffect": true,
+    "hostPublicAfter": {
+      "content": [
+        {
+          "type": "text",
+          "text": "{\"continue\":false}"
+        }
+      ],
+      "structuredContent": {
+        "continue": false
+      }
+    }
+  },
+  "reference": "https://github.com/anomalyco/opencode/blob/v1.19.5/packages/opencode/src/mcp/catalog.ts"
+}
