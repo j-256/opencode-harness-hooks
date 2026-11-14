@@ -2,6 +2,7 @@ import type { Dialect } from './contracts.js'
 import type { JsonValue } from './types.js'
 import type { ExecutionResult } from './runner.js'
 import type { ModelArtifact } from './model-artifact.js'
+import type { McpArtifact } from './mcp-artifact.js'
 
 export interface CommandArtifact extends ExecutionResult {
   readonly command: string
@@ -48,6 +49,7 @@ export interface InterpretedOutput {
 export interface HookEffect extends InterpretedOutput {
   readonly commandArtifact?: CommandArtifact
   readonly httpArtifact?: HttpArtifact
+  readonly mcpArtifact?: McpArtifact
   readonly modelArtifact?: ModelArtifact
   readonly nativeFailureArtifact?: NativeFailureArtifact
   readonly diagnostic: {

@@ -7,6 +7,7 @@ import type { JsonValue } from './types.js'
 import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
 import { nativeHookRecord } from './hook-record-snapshot.js'
 import { AGENT_MODEL_KIND, AGENT_MODEL_STATUS, PROMPT_MODEL_KIND, PROMPT_MODEL_STATUS } from './model-artifact.js'
+import { MCP_TOOL_ERROR_TEXT, MCP_ARTIFACT_KIND, MCP_ARTIFACT_STATUS, MCP_PROMPT_SUCCESS_TEXT } from './mcp-artifact.js'
 
 const SNAPSHOT_KIND = 'prompt-attachments'
 const MODEL_VALIDATION_ERROR = 'JSON validation failed'
@@ -22,7 +23,7 @@ const SIGNAL_EXIT = 1
 const VERIFIED_SIGNALS = new Set<NodeJS.Signals>(['SIGINT', 'SIGTERM', 'SIGKILL'])
 const NONBLOCKING_ERROR_PREFIX = 'Failed with non-blocking status code: '
 const EMPTY_STDERR = 'No stderr output'
-export interface PromptAttachment { readonly id: string; readonly created: number; readonly body: Readonly<Record<string, JsonValue>> }
+export interface PromptAttachment { readonly id: string; readonly created: number; readonly handler?: 'mcp_tool'; readonly body: Readonly<Record<string, JsonValue>> }
 interface Turn { readonly promptHash: string; readonly attachments: readonly PromptAttachment[]; readonly bytes: number }
 interface State { readonly signal: AbortSignal; readonly turns: Map<string, Turn>; readonly cleanup: () => void }
 function fail(code: string): never { throw new HostHookError(code, 'unsupported') }
@@ -42,9 +43,10 @@ export function claudePromptAttachments(event: Pick<HostPromptEvent, 'sessionID'
     if (result.status !== 'success' && result.status !== 'failed') fail('TRANSCRIPT_HOOK_RESULT_UNSUPPORTED')
     const command = 'commandArtifact' in result ? result.commandArtifact : undefined
     const http = result.httpArtifact
+    const mcp = result.mcpArtifact
     const model = result.modelArtifact
     if (model?.kind === AGENT_MODEL_KIND) {
-      if (command || http || result.actions.length || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      if (command || http || mcp || result.actions.length || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
       const accepted = model.status === AGENT_MODEL_STATUS.SUCCESS && result.status === 'success' && result.code === 'MODEL_EVALUATED'
         || model.status === AGENT_MODEL_STATUS.TIMEOUT && result.status === 'failed' && result.code === 'EXECUTION_TIMEOUT'
         || model.status === AGENT_MODEL_STATUS.TURN_LIMIT && result.status === 'failed' && result.code === 'AGENT_TURN_LIMIT'
@@ -54,7 +56,7 @@ export function claudePromptAttachments(event: Pick<HostPromptEvent, 'sessionID'
       continue
     }
     if (model) {
-      if (command || http || model.kind !== PROMPT_MODEL_KIND || typeof model.prompt !== 'string' || typeof model.stdout !== 'string' || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime()) || result.actions.length) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      if (command || http || mcp || model.kind !== PROMPT_MODEL_KIND || typeof model.prompt !== 'string' || typeof model.stdout !== 'string' || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime()) || result.actions.length) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
       if (model.status === PROMPT_MODEL_STATUS.SUCCESS && result.status === 'success' && result.code === 'MODEL_EVALUATED' && !model.stdout) continue
       if (model.status === PROMPT_MODEL_STATUS.TIMEOUT && result.status === 'failed' && result.code === 'EXECUTION_TIMEOUT' && !model.stdout) continue
       const apiError = model.status === PROMPT_MODEL_STATUS.API_ERROR && result.status === 'failed' && result.code === 'MODEL_REQUEST_FAILED' && !model.stdout && typeof model.stderr === 'string'
@@ -63,7 +65,15 @@ export function claudePromptAttachments(event: Pick<HostPromptEvent, 'sessionID'
       continue
     }
     let exitCode: number | null | undefined
-    if (http) {
+    if (mcp) {
+      if (command || http || mcp.kind !== MCP_ARTIFACT_KIND || !snapshotID(mcp.server) || !snapshotID(mcp.tool) || typeof mcp.stdout !== 'string' || !Number.isFinite(mcp.durationMs) || mcp.durationMs < 0 || !Number.isFinite(mcp.completedAt) || Number.isNaN(new Date(mcp.completedAt).getTime()) || mcp.sourceToolNamespace !== undefined && !snapshotID(mcp.sourceToolNamespace)) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      if (mcp.status === MCP_ARTIFACT_STATUS.TOOL_ERROR) {
+        if (result.status !== 'failed' || result.code !== 'MCP_TOOL_FAILED' || result.actions.length) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+        attachments.push({ id: randomUUID(), created: mcp.completedAt, handler: 'mcp_tool', body: { type: 'attachment', attachment: { type: 'hook_non_blocking_error', hookName: event.event, toolUseID, hookEvent: event.event, stdout: mcp.stdout, stderr: mcp.stdout || MCP_TOOL_ERROR_TEXT, exitCode: 1 } } })
+        continue
+      }
+      if (mcp.status !== MCP_ARTIFACT_STATUS.SUCCESS || result.status !== 'success') fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+    } else if (http) {
       if (command || result.status !== 'success' || http.kind !== 'http' || !Number.isFinite(http.durationMs) || http.durationMs < 0 || !Number.isFinite(http.completedAt) || Number.isNaN(new Date(http.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
     } else {
       if (!command || typeof command.command !== 'string' || typeof command.stdout !== 'string' || typeof command.stderr !== 'string' || !Number.isFinite(command.durationMs) || command.durationMs < 0 || !Number.isFinite(command.completedAt) || Number.isNaN(new Date(command.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
@@ -93,6 +103,7 @@ export function claudePromptAttachments(event: Pick<HostPromptEvent, 'sessionID'
       }
     }
     for (const action of result.actions) {
+      if (mcp && action.kind === 'native-extension' && action.name === 'mcpSourceNamespace' && action.value === mcp.sourceToolNamespace) continue
       let attachment: Record<string, JsonValue>
       let rendered: string | undefined
       if (action.kind === 'warning') {
@@ -101,11 +112,16 @@ export function claudePromptAttachments(event: Pick<HostPromptEvent, 'sessionID'
         attachment = { type: 'hook_additional_context', content: [action.text], hookName: event.event, toolUseID: 'hook-' + randomUUID(), hookEvent: event.event }
         rendered = `<system-reminder>\n${event.event} hook additional context: ${action.text}\n</system-reminder>`
       } else if (action.kind === 'context' && action.placement === 'model' && action.channel === 'stdout') {
-        if (!command || http || exitCode !== SUCCESS_EXIT) fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
-        attachment = { type: 'hook_success', hookName: event.event, toolUseID, hookEvent: event.event, content: action.text, stdout: command.stdout, stderr: command.stderr, exitCode: command.exitCode, command: command.command, durationMs: command.durationMs }
+        if (mcp) {
+          if (action.text !== MCP_PROMPT_SUCCESS_TEXT) fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
+          attachment = { type: 'hook_success', hookName: event.event, toolUseID, hookEvent: event.event, content: action.text, stdout: mcp.stdout, stderr: '', command: mcp.server + '/' + mcp.tool, durationMs: mcp.durationMs }
+        } else {
+          if (!command || http || exitCode !== SUCCESS_EXIT) fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
+          attachment = { type: 'hook_success', hookName: event.event, toolUseID, hookEvent: event.event, content: action.text, stdout: command.stdout, stderr: command.stderr, exitCode: command.exitCode, command: command.command, durationMs: command.durationMs }
+        }
         rendered = `<system-reminder>\n${event.event} hook success: ${action.text}\n</system-reminder>`
       } else fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
-      attachments.push({ id: randomUUID(), created: attachment.type === 'hook_additional_context' ? completedAt : http?.completedAt ?? command!.completedAt, body: { type: 'attachment', attachment, ...(rendered === undefined ? {} : { rendered: [{ content: rendered }], renderedRole: 'system' }) } })
+      attachments.push({ id: randomUUID(), created: attachment.type === 'hook_additional_context' ? completedAt : mcp?.completedAt ?? http?.completedAt ?? command!.completedAt, ...(mcp ? { handler: 'mcp_tool' as const } : {}), body: { type: 'attachment', attachment, ...(rendered === undefined ? {} : { rendered: [{ content: rendered }], renderedRole: 'system' }) } })
     }
   }
   return Object.freeze(attachments.map(value => nativeHookRecord(value, event.event)))

@@ -144,16 +144,18 @@ test('tool-only V1 metadata failures are not mislabeled as prompt hook failures'
 
 test('V1 concurrent sessions keep provider protocol selection tied to their own user message', async t => {
   const f = await fixture(t)
+  const histories = new Map<string, unknown[]>()
   let forwarded: Request | undefined
   const provider = { options: { fetch: async (input: RequestInfo | URL, init?: RequestInit) => { forwarded = new Request(input, init); return new Response('{}') } } }
-  const hooks = await createHarnessHooks({ directory: f.directory }, { ...f.options, sources: f.options.sources.filter(source => source.dialect === 'codex') }, { report: () => {}, dispatchDiagnostic: () => {}, promptDiagnostic: () => {} })
+  const hooks = await createHarnessHooks({ directory: f.directory, client: { session: { get: async request => ({ data: { id: request.path.id } }), messages: async request => ({ data: histories.get(request.path.id) ?? [] }) } } }, { ...f.options, sources: f.options.sources.filter(source => source.dialect === 'codex') }, { report: () => {}, dispatchDiagnostic: () => {}, promptDiagnostic: () => {} })
   t.after(() => hooks.dispose())
   await hooks.config({ provider: { fixture: provider } })
   const prompts = ['first', 'second'].map(sessionID => ({ sessionID, model: { modelID: 'model', providerID: 'fixture' }, message: { id: sessionID + '-turn', model: { modelID: 'model', providerID: 'fixture' } } }))
   for (const prompt of prompts) {
     const parts = [{ type: 'text', text: 'Original' }]
     await hooks['chat.message'](prompt, { message: prompt.message, parts })
-    await hooks['experimental.chat.messages.transform']({}, { messages: [{ info: { ...prompt.message, sessionID: prompt.sessionID, role: 'user' }, parts }] })
+    histories.set(prompt.sessionID, [{ info: { ...prompt.message, sessionID: prompt.sessionID, role: 'user', time: { created: Date.now() } }, parts }])
+    await hooks['experimental.chat.messages.transform']({}, { messages: histories.get(prompt.sessionID)! })
     await hooks['chat.params']({ ...prompt, model: { ...prompt.model, api: { npm: prompt.sessionID === 'first' ? '@ai-sdk/openai' : '@ai-sdk/anthropic' } }, provider: { id: 'fixture', options: provider.options } })
   }
   const headers: Record<string, string> = {}

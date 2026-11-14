@@ -287,7 +287,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
         try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
       }
       await services.nativeState?.checkpoint(session, signal)
-      const dispatched = await dispatchEvent(sources, nativeEvent, { ...services.host, ...(notificationEvent || services.transcripts?.admitPrompt ? { captureCommandArtifacts: true, captureHttpArtifacts: true, captureModelArtifacts: true } : {}), environment, projectRoot: directory, signal, sessionSignal: session.signal })
+      const dispatched = await dispatchEvent(sources, nativeEvent, { ...services.host, ...(notificationEvent || services.transcripts?.admitPrompt ? { captureCommandArtifacts: true, captureHttpArtifacts: true, captureMcpArtifacts: true, captureModelArtifacts: true } : {}), environment, projectRoot: directory, signal, sessionSignal: session.signal })
       if (notificationEvent) {
         await runService(null, session.signal, current => services.notifications!.capture(notificationEvent, session, dispatched, current))
         if (signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')

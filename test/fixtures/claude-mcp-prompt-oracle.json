@@ -1,0 +1,157 @@
+{
+  "version": "2.1.318",
+  "cases": [
+    {
+      "mode": "plain",
+      "stdout": "{\"systemMessage\":\"MCP_PROMPT_UI\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"OWNED_MCP_NATIVE_DENIAL\"}}",
+      "isError": false,
+      "bodies": [
+        {
+          "type": "attachment",
+          "attachment": {
+            "type": "hook_system_message",
+            "content": "MCP_PROMPT_UI",
+            "hookName": "UserPromptSubmit",
+            "toolUseID": "<uuid>",
+            "hookEvent": "UserPromptSubmit"
+          }
+        },
+        {
+          "type": "attachment",
+          "attachment": {
+            "type": "hook_additional_context",
+            "content": [
+              "OWNED_MCP_NATIVE_DENIAL"
+            ],
+            "hookName": "UserPromptSubmit",
+            "toolUseID": "hook-<uuid>",
+            "hookEvent": "UserPromptSubmit"
+          },
+          "rendered": [
+            {
+              "content": "<system-reminder>\nUserPromptSubmit hook additional context: OWNED_MCP_NATIVE_DENIAL\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        }
+      ]
+    },
+    {
+      "mode": "stdout",
+      "stdout": "OWNED_MCP_NATIVE_DENIAL",
+      "isError": false,
+      "bodies": [
+        {
+          "type": "attachment",
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "UserPromptSubmit",
+            "toolUseID": "<uuid>",
+            "hookEvent": "UserPromptSubmit",
+            "content": "UserPromptSubmit completed",
+            "stdout": "OWNED_MCP_NATIVE_DENIAL",
+            "stderr": "",
+            "command": "fixture/check",
+            "durationMs": 0
+          },
+          "rendered": [
+            {
+              "content": "<system-reminder>\nUserPromptSubmit hook success: UserPromptSubmit completed\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        }
+      ]
+    },
+    {
+      "mode": "empty",
+      "stdout": "",
+      "isError": false,
+      "bodies": [
+        {
+          "type": "attachment",
+          "attachment": {
+            "type": "hook_success",
+            "hookName": "UserPromptSubmit",
+            "toolUseID": "<uuid>",
+            "hookEvent": "UserPromptSubmit",
+            "content": "UserPromptSubmit completed",
+            "stdout": "",
+            "stderr": "",
+            "command": "fixture/check",
+            "durationMs": 0
+          },
+          "rendered": [
+            {
+              "content": "<system-reminder>\nUserPromptSubmit hook success: UserPromptSubmit completed\n</system-reminder>"
+            }
+          ],
+          "renderedRole": "system"
+        }
+      ]
+    },
+    {
+      "mode": "object",
+      "stdout": "{}",
+      "isError": false,
+      "bodies": []
+    },
+    {
+      "mode": "error",
+      "stdout": "{\"systemMessage\":\"MCP_PROMPT_UI\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"OWNED_MCP_NATIVE_DENIAL\"}}",
+      "isError": true,
+      "bodies": [
+        {
+          "type": "attachment",
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "UserPromptSubmit",
+            "toolUseID": "<uuid>",
+            "hookEvent": "UserPromptSubmit",
+            "stderr": "{\"systemMessage\":\"MCP_PROMPT_UI\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"OWNED_MCP_NATIVE_DENIAL\"}}",
+            "stdout": "{\"systemMessage\":\"MCP_PROMPT_UI\",\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"OWNED_MCP_NATIVE_DENIAL\"}}",
+            "exitCode": 1
+          }
+        }
+      ]
+    },
+    {
+      "mode": "error-empty",
+      "stdout": "",
+      "isError": true,
+      "bodies": [
+        {
+          "type": "attachment",
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "UserPromptSubmit",
+            "toolUseID": "<uuid>",
+            "hookEvent": "UserPromptSubmit",
+            "stderr": "MCP tool returned an error",
+            "stdout": "",
+            "exitCode": 1
+          }
+        }
+      ]
+    },
+    {
+      "mode": "error-whitespace",
+      "stdout": " \n ",
+      "isError": true,
+      "bodies": [
+        {
+          "type": "attachment",
+          "attachment": {
+            "type": "hook_non_blocking_error",
+            "hookName": "UserPromptSubmit",
+            "toolUseID": "<uuid>",
+            "hookEvent": "UserPromptSubmit",
+            "stderr": " \n ",
+            "stdout": " \n ",
+            "exitCode": 1
+          }
+        }
+      ]
+    }
+  ]
+}

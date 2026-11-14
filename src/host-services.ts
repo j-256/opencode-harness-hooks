@@ -85,6 +85,7 @@ export interface HostServices {
   readonly maxOutputBytes?: number
   readonly captureCommandArtifacts?: boolean
   readonly captureHttpArtifacts?: boolean
+  readonly captureMcpArtifacts?: boolean
   readonly captureModelArtifacts?: boolean
   readonly insideHookAgent?: true
   readonly mcp?: McpHookService

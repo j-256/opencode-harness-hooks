@@ -4,7 +4,7 @@ import { prepareCommand, CommandContextError } from './command-context.js'
 import type { HookAction, HookEffect, NativeFailureArtifact } from './effect-types.js'
 import { runHttp } from './http-handler.js'
 import { runModel } from './model-handler.js'
-import { runMcp } from './mcp-handler.js'
+import { McpToolError, runMcp } from './mcp-handler.js'
 import { HookServiceError, runService, UnsupportedServiceError } from './service-execution.js'
 import type { HostServices } from './host-services.js'
 import { snapshotCommandContexts } from './host-services.js'
@@ -13,6 +13,8 @@ import { interpretOutput } from './protocol.js'
 import { claudeBlock, claudeFailureBlocks } from './protocols/claude.js'
 import { AGENT_MODEL_KIND, AGENT_MODEL_STATUS, ModelApiError, ModelOutputError, PROMPT_MODEL_KIND, PROMPT_MODEL_STATUS } from './model-artifact.js'
 import { EXECUTION_LIMITS, runCommand } from './runner.js'
+import { MCP_ARTIFACT_KIND, MCP_ARTIFACT_STATUS, MCP_PROMPT_SUCCESS_TEXT } from './mcp-artifact.js'
+import type { McpArtifact } from './mcp-artifact.js'
 import type { NativeEvent, Registration } from './types.js'
 
 const TOOL_EVENTS = new Set(['PreToolUse', 'PermissionRequest', 'PostToolUse', 'PostToolUseFailure', 'PermissionDenied'])
@@ -92,8 +94,17 @@ export async function executeRegistration(registration: Registration, inputEvent
     }
     if (registration.handler.type === 'mcp_tool') {
       const execution = await runMcp(registration, event, payload, host)
-      const effect = interpretOutput(registration, event, { ...execution, durationMs: Math.round(performance.now() - started) })
-      return execution.sourceToolNamespace === undefined ? effect : { ...effect, actions: [...effect.actions, { kind: 'native-extension', name: 'mcpSourceNamespace', value: execution.sourceToolNamespace }] }
+      const durationMs = Math.round(performance.now() - started)
+      let effect = interpretOutput(registration, event, { ...execution, durationMs })
+      if (registration.dialect === 'claude-code' && event.event === 'UserPromptSubmit' && effect.status === 'success') {
+        const summary = MCP_PROMPT_SUCCESS_TEXT
+        const actions = effect.actions.map(action => action.kind === 'context' && action.channel === 'stdout' ? { ...action, text: summary } : action)
+        if (!actions.length && !execution.stdout.trim()) actions.push({ kind: 'context', placement: 'model', channel: 'stdout', text: summary })
+        effect = { ...effect, actions }
+      }
+      const actions: readonly HookAction[] = execution.sourceToolNamespace === undefined ? effect.actions : [...effect.actions, { kind: 'native-extension', name: 'mcpSourceNamespace', value: execution.sourceToolNamespace }]
+      const mcpArtifact: McpArtifact | undefined = host.captureMcpArtifacts ? { kind: MCP_ARTIFACT_KIND, status: MCP_ARTIFACT_STATUS.SUCCESS, server: String(registration.handler.server), tool: String(registration.handler.tool), stdout: execution.stdout, completedAt: Date.now(), durationMs, ...(execution.sourceToolNamespace === undefined ? {} : { sourceToolNamespace: execution.sourceToolNamespace }) } : undefined
+      return { ...effect, actions, ...(mcpArtifact ? { mcpArtifact } : {}) }
     }
     if (registration.handler.type === 'prompt' || registration.handler.type === 'agent') {
       const output = await runModel(registration, event, payload, host)
@@ -128,6 +139,7 @@ export async function executeRegistration(registration: Registration, inputEvent
     if (error instanceof ModelApiError && Buffer.byteLength(error.stderr) > (host.maxOutputBytes ?? EXECUTION_LIMITS.outputBytes)) return fail('EXECUTION_OUTPUT_LIMIT')
     const code = error instanceof CommandContextError || error instanceof HookServiceError ? error.code : error instanceof PayloadError ? 'HANDLER_PAYLOAD_INVALID' : 'HANDLER_FAILED'
     const effect = fail(code)
+    if (host.captureMcpArtifacts && registration.handler.type === 'mcp_tool' && error instanceof McpToolError && effect.status === 'failed') return { ...effect, mcpArtifact: { kind: MCP_ARTIFACT_KIND, status: MCP_ARTIFACT_STATUS.TOOL_ERROR, server: String(registration.handler.server), tool: String(registration.handler.tool), stdout: error.stdout, completedAt: Date.now(), durationMs: effect.diagnostic.durationMs } }
     const agentStatus = code === 'EXECUTION_TIMEOUT' ? AGENT_MODEL_STATUS.TIMEOUT : code === 'AGENT_TURN_LIMIT' ? AGENT_MODEL_STATUS.TURN_LIMIT : code === 'AGENT_INCOMPLETE' ? AGENT_MODEL_STATUS.INCOMPLETE : error instanceof ModelApiError ? AGENT_MODEL_STATUS.API_ERROR : undefined
     if (host.captureModelArtifacts && registration.handler.type === 'agent' && effect.status === 'failed' && agentStatus) return { ...effect, modelArtifact: { kind: AGENT_MODEL_KIND, status: agentStatus, completedAt: Date.now(), durationMs: effect.diagnostic.durationMs } }
     return host.captureModelArtifacts && registration.handler.type === 'prompt' && effect.status === 'failed' && (error instanceof ModelOutputError || error instanceof ModelApiError || code === 'EXECUTION_TIMEOUT') ? { ...effect, modelArtifact: { kind: PROMPT_MODEL_KIND, status: error instanceof ModelOutputError ? PROMPT_MODEL_STATUS.INVALID : error instanceof ModelApiError ? PROMPT_MODEL_STATUS.API_ERROR : PROMPT_MODEL_STATUS.TIMEOUT, prompt: String(registration.handler.prompt), stdout: error instanceof ModelOutputError ? error.stdout : '', ...(error instanceof ModelApiError ? { stderr: error.stderr } : {}), completedAt: Date.now(), durationMs: effect.diagnostic.durationMs } } : effect

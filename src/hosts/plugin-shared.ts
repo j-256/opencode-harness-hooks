@@ -43,9 +43,10 @@ async function submit(runtime: Awaited<ReturnType<typeof createRuntime>>, contex
   if (effects.block) throw new HostHookError('HOOK_PROMPT_BLOCKED', 'denied', effects.block.action.reason)
   if (effects.stop) throw new HostHookError('HOOK_PROMPT_STOPPED', 'stopped', effects.stop.action.reason)
   if (effects.permission || effects.input || effects.continuations.length || effects.resultReplacements.length || effects.unresolved.length) unavailable('HOST_PROMPT_EFFECT_UNAVAILABLE')
-  if (effects.feedback.length || effects.warnings.length || effects.extensions.length) {
+  const extensions = effects.extensions.filter(row => row.action.name !== 'mcpSourceNamespace')
+  if (effects.feedback.length || effects.warnings.length || extensions.length) {
     if (!services.promptEffects) unavailable('HOST_PROMPT_EFFECT_UNAVAILABLE')
-    await runService(null, event.signal, () => services.promptEffects!(event, effects))
+    await runService(null, event.signal, () => services.promptEffects!(event, { ...effects, extensions }))
   }
   if (event.signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')
   runtime.admitPrompt(event, dispatch)

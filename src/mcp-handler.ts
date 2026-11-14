@@ -12,6 +12,7 @@ const CLAUDE_OBSERVATIONAL_EVENTS = new Set(['InstructionsLoaded', 'Notification
 export interface McpExecutionResult extends ExecutionResult {
   readonly sourceToolNamespace?: string
 }
+export class McpToolError extends HookServiceError { constructor(readonly stdout: string) { super('MCP_TOOL_FAILED') } }
 
 function resolvePath(payload: Readonly<Record<string, JsonValue>>, path: string): JsonValue {
   let value: JsonValue = payload
@@ -91,7 +92,7 @@ export async function runMcp(registration: Registration, event: NativeEvent, pay
     }
   })
   if (!output || typeof output.text !== 'string' || (output.isError !== undefined && typeof output.isError !== 'boolean') || (output.sourceToolNamespace !== undefined && typeof output.sourceToolNamespace !== 'string')) throw new HookServiceError('MCP_OUTPUT_INVALID')
-  if (output.isError) throw new HookServiceError('MCP_TOOL_FAILED')
   if (Buffer.byteLength(output.text) > outputLimit) throw new HookServiceError('EXECUTION_OUTPUT_LIMIT')
+  if (output.isError) throw new McpToolError(output.text)
   return { status: 'exited', exitCode: 0, signal: null, stdout: output.text, stderr: '', durationMs: 0, ...(output.sourceToolNamespace === undefined ? {} : { sourceToolNamespace: output.sourceToolNamespace }) }
 }
