@@ -55,6 +55,10 @@ function snapshotRow(row: Row) { return { delivery: row.delivery, anchor: row.an
 function rowBytes(row: Row): number { return Buffer.byteLength(JSON.stringify(snapshotRow(row))) }
 function receiptBytes(id: string, hash: string): number { return Buffer.byteLength(JSON.stringify({ id, hash })) }
 function headerBytes(sessionID: string): number { return Buffer.byteLength(JSON.stringify({ value: { kind: KIND, version: SESSION_SNAPSHOT_VERSION, sessionID, rows: [], receipts: [] } })) }
+export function backgroundAnchor(value: unknown): BackgroundAnchor {
+  const parsed = ANCHOR.safeParse(value); if (!parsed.success) fail('BACKGROUND_ANCHOR_INVALID')
+  return freeze(parsed.data)
+}
 function reservation(commit: () => void, release: () => void, persist: BackgroundBinding['persist'] = operation => operation()): BackgroundBinding {
   let status: typeof BINDING[keyof typeof BINDING] = BINDING.OPEN
   return Object.freeze({ commit: () => { if (status === BINDING.COMMITTED) return; if (status === BINDING.RELEASED) fail('BACKGROUND_BINDING_STALE'); commit(); status = BINDING.COMMITTED }, release: () => { if (status !== BINDING.OPEN) return; release(); status = BINDING.RELEASED }, persist: <T>(operation: () => Promise<T>) => { if (status !== BINDING.OPEN) fail('BACKGROUND_BINDING_STALE'); return persist(operation) } })
@@ -104,8 +108,7 @@ export class BackgroundRecords {
   }
   reserveBind(session: SessionSnapshot, input: BackgroundAnchor): BackgroundBinding {
     this.turn(session)
-    const parsed = ANCHOR.safeParse(this.copy(input)); if (!parsed.success) fail('BACKGROUND_ANCHOR_INVALID')
-    const anchor = freeze(parsed.data)
+    const anchor = backgroundAnchor(this.copy(input))
     if (anchor.sessionID !== session.sessionID || anchor.turnID !== session.turnID || anchor.kind === 'prompt' && anchor.messageID !== anchor.turnID || anchor.kind === 'tool' && anchor.messageID === anchor.turnID) fail('BACKGROUND_ANCHOR_INVALID')
     const state = this.state(session)
     if (!state) return reservation(() => { this.turn(session) }, () => {})

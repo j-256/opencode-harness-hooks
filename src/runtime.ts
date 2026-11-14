@@ -29,6 +29,9 @@ import type { TranscriptService } from './transcript.js'
 import type { CodexTranscriptService } from './codex-transcript.js'
 import type { JsonValue, LoadedSource, NativeEvent, Registration } from './types.js'
 import { isBackground } from './background-types.js'
+import type { HostNotificationEvent, NotificationServices } from './notification.js'
+import { backgroundAnchor } from './background-records.js'
+import { snapshotID } from './session-snapshot.js'
 
 export type { RuntimeOptions, RuntimeReport } from './inspection.js'
 
@@ -37,6 +40,7 @@ const STOP_HOST_CAPABILITY = 'awaited-completion-decision'
 type NativeData = NonNullable<NativeEvent['dialectData']>
 
 export interface RuntimeServices {
+  readonly notifications?: NotificationServices
   readonly nativeState?: {
     readonly remove?: (sessionID: string) => Promise<void>
     readonly captureOriginals?: boolean
@@ -194,7 +198,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
           nativeData = { ...nativeData, codex: { ...nativeData?.codex, transcript_path: view.transcriptPath, turn_id: view.turnID } }
           nativeSessionIDs = { codex: view.sessionID }
         }
-        const data = { ...(selected.length ? resultData(event, failure) : {}), transcript_path: null, tool_use_id: event.callID, ...(session.turnID ? { turn_id: session.turnID } : {}), ...(session.model ? { model: session.model } : {}), ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}) }
+        const data = { ...(selected.length ? resultData(event, failure) : {}), transcript_path: null, tool_use_id: event.callID, ...(session.turnID ? { turn_id: session.turnID, prompt_id: session.turnID } : {}), ...(session.model ? { model: session.model } : {}), ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}) }
         const nativeEvent: NativeEvent = { ...base, data, ...(nativeData ? { dialectData: nativeData } : {}), ...(nativeSessionIDs ? { nativeSessionIDs } : {}) }
         for (const registration of selected) {
           try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
@@ -249,11 +253,12 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     active.add(pending)
     try { return await pending } finally { active.delete(pending) }
   }
-  const prompt = async (inputEvent: HostPromptEvent): Promise<DispatchResult> => {
+  const dispatchPrompt = async (inputEvent: HostPromptEvent, notificationEvent?: HostNotificationEvent): Promise<DispatchResult> => {
     const event = { ...inputEvent }
     if (event.host !== host || event.event !== 'UserPromptSubmit') return Promise.reject(new HostHookError('HOST_VERSION_MISMATCH', 'unsupported'))
     const session = sessions.get(event.sessionID)
     if (session.turnID !== event.messageID) return Promise.reject(new HostHookError('SESSION_STALE_TURN', 'cancelled'))
+    if (notificationEvent && !services.notifications) return Promise.reject(new HostHookError('HOST_NOTIFICATION_UNAVAILABLE', 'unsupported'))
     if (typeof event.prompt !== 'string') return Promise.reject(new HostHookError('HOST_PROMPT_INPUT_UNAVAILABLE', 'unsupported'))
     if (Buffer.byteLength(event.prompt) > MAX_PROMPT_BYTES) return Promise.reject(new HostHookError('HOST_PROMPT_INPUT_LIMIT', 'unsupported'))
     const signal = AbortSignal.any([event.signal, session.signal, session.turnSignal])
@@ -263,18 +268,25 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
       if (starts) await runService(null, signal, () => starts.wait(event.sessionID))
       const base: NativeEvent = { host, event: 'UserPromptSubmit', sessionID: event.sessionID, cwd: directory }
       const selected = matched(sources, base).filter(registration => !nativeSkip(registration, base))
-      let nativeData = selected.length && services.promptData ? await runService(null, signal, current => services.promptData!(event, session, current)) : undefined
-      if (selected.some(registration => registration.dialect === 'claude-code') && nativeData?.['claude-code']?.transcript_path === undefined && services.transcripts) {
+      const context = notificationEvent ? await runService(null, signal, current => services.notifications!.prepare(notificationEvent, session, current)) : undefined
+      if (notificationEvent && (!record(context) || !record(context.dialectData) || selected.some(registration => typeof context.dialectData[registration.dialect]?.transcript_path !== 'string' || !context.dialectData[registration.dialect]!.transcript_path))) throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported')
+      let nativeData = context?.dialectData ?? (selected.length && services.promptData ? await runService(null, signal, current => services.promptData!(event, session, current)) : undefined)
+      if (!notificationEvent && selected.some(registration => registration.dialect === 'claude-code') && nativeData?.['claude-code']?.transcript_path === undefined && services.transcripts) {
         const path = await services.transcripts.prepare(event, session, signal)
         nativeData = { ...nativeData, 'claude-code': { ...nativeData?.['claude-code'], transcript_path: path } }
       }
-      const data = { prompt: event.prompt, transcript_path: null, turn_id: event.messageID, ...(session.model ? { model: session.model } : {}), ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}) }
-      const nativeEvent: NativeEvent = { ...base, data, ...(nativeData ? { dialectData: nativeData } : {}) }
+      const data = { prompt: event.prompt, transcript_path: null, turn_id: event.messageID, prompt_id: event.messageID, ...(session.model ? { model: session.model } : {}), ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}) }
+      const nativeEvent: NativeEvent = { ...base, data, ...(nativeData ? { dialectData: nativeData } : {}), ...(context?.nativeSessionIDs ? { nativeSessionIDs: context.nativeSessionIDs } : {}) }
       for (const registration of selected) {
         try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
       }
       await services.nativeState?.checkpoint(session, signal)
-      return observe(await dispatchEvent(sources, nativeEvent, { ...services.host, ...(services.transcripts?.admitPrompt ? { captureCommandArtifacts: true, captureHttpArtifacts: true, captureModelArtifacts: true } : {}), environment, projectRoot: directory, signal, sessionSignal: session.signal }))
+      const dispatched = await dispatchEvent(sources, nativeEvent, { ...services.host, ...(notificationEvent || services.transcripts?.admitPrompt ? { captureCommandArtifacts: true, captureHttpArtifacts: true, captureModelArtifacts: true } : {}), environment, projectRoot: directory, signal, sessionSignal: session.signal })
+      if (notificationEvent) {
+        await runService(null, session.signal, current => services.notifications!.capture(notificationEvent, session, dispatched, current))
+        if (signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')
+      }
+      return observe(dispatched)
     })().catch((error: unknown) => {
       if (signal.aborted) throw new HostHookError('HOST_PROMPT_CANCELLED', 'cancelled')
       throw error
@@ -283,12 +295,20 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     void pending.finally(() => { active.delete(pending) }).catch(() => {})
     return pending
   }
+  const prompt = (event: HostPromptEvent): Promise<DispatchResult> => dispatchPrompt(event)
   const admitPrompt = (event: HostPromptEvent, dispatch: DispatchResult) => {
     const session = sessions.get(event.sessionID)
     if (session.turnID !== event.messageID) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
     services.transcripts?.admitPrompt?.(event, session, dispatch)
   }
-  return { report, sessions, tools, agentTool, prompt, admitPrompt, promptOperation, observeModel, needsModelArtifacts,
+  const notification = async (input: HostNotificationEvent): Promise<DispatchResult> => {
+    let anchor
+    try { anchor = backgroundAnchor(input.anchor) } catch { throw new HostHookError('HOST_NOTIFICATION_OWNER_MISMATCH', 'unsupported') }
+    if (!snapshotID(input.notificationID) || anchor.sessionID !== input.sessionID || anchor.turnID !== input.messageID || (anchor.kind === 'prompt' ? anchor.messageID !== input.messageID : anchor.messageID === input.messageID)) throw new HostHookError('HOST_NOTIFICATION_OWNER_MISMATCH', 'unsupported')
+    const event = Object.freeze({ ...input, anchor })
+    return dispatchPrompt(event, event)
+  }
+  return { report, sessions, tools, agentTool, prompt, notification, admitPrompt, promptOperation, observeModel, needsModelArtifacts,
     backgroundRegistrations: Object.freeze(sources.flatMap(source => source.enabled ? source.registrations.filter(registration => isBackground(registration) && registration.handler.asyncRewake !== true && !nativeSkip(registration, { event: registration.event, sessionID: 'activation', cwd: directory, data: { source: 'startup' } })).map(registration => Object.freeze({ ...structuredClone(registration), sourceDigest: source.digest })) : [])),
     hasMcpHooks: sources.some(source => source.enabled && source.registrations.some(registration => registration.handler.type === 'mcp_tool')),
     hasAgentModelHooks: sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.some(registration => registration.handler.type === 'agent')),
