@@ -63,7 +63,19 @@ export class V1Background implements BackgroundExecutor {
         if (current.turnID !== session.turnID || current.turnSignal !== session.turnSignal || session.turnSignal.aborted) fail('HOST_BACKGROUND_OWNER_MISMATCH')
         await this.drain(session)
         const reservation = this.options.records.reserveBind(session, anchor)
-        try { await reservation.persist(() => this.options.state.checkpoint(session, signal)); if (signal.aborted) fail('HOST_BACKGROUND_CANCELLED'); reservation.commit() } catch (error) { reservation.release(); throw error }
+        let persisted = false
+        try {
+          // Drain the owned write before releasing or compensating a cancelled binding
+          await reservation.persist(() => this.options.state.checkpoint(session, session.signal)); persisted = true
+          if (signal.aborted || session.turnSignal.aborted) fail('HOST_BACKGROUND_CANCELLED')
+          reservation.commit()
+        } catch (error) {
+          reservation.release()
+          if (persisted && !session.signal.aborted) {
+            try { await this.options.state.checkpoint(session, session.signal) } catch { fail('HOST_BACKGROUND_BINDING_ROLLBACK_FAILED') }
+          }
+          throw error
+        }
       })
       this.launchUI(session.sessionID)
     } catch (error) { this.report(session.sessionID, 'binding', code(error, 'HOST_BACKGROUND_BINDING_FAILED'), 'failed', started); throw error }

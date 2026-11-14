@@ -8,6 +8,8 @@ import { V1Background } from '../src/hosts/background-v1.js'
 import { Sessions } from '../src/sessions.js'
 import type { Registration } from '../src/types.js'
 import type { BackgroundWork } from '../src/background-types.js'
+import { V1SessionState } from '../src/hosts/session-state-v1.js'
+import { SessionStore } from '../src/session-store.js'
 
 const digest = 'a'.repeat(64)
 const registration = (dialect: 'claude-code' | 'codex'): Registration => ({ id: dialect, sourceID: dialect, sourceDigest: digest, dialect, event: 'UserPromptSubmit', groupIndex: 0, handlerIndex: 0, handler: { type: 'command', command: 'fixture', async: true } })
@@ -108,4 +110,59 @@ test('a caller cannot bind completed output using a substituted current-turn lif
   const f = await fixture(t); f.background.enqueue(f.work('claude-code', context)); await f.background.completed('session')
   await assert.rejects(f.background.prepare({ ...f.owner(), turnSignal: new AbortController().signal }, anchor, f.owner().turnSignal), { code: 'HOST_BACKGROUND_OWNER_MISMATCH' })
   assert.equal(f.records.read(f.owner())[0]!.anchor, undefined)
+})
+
+test('cancelled model admission fences an in-flight real checkpoint and durably releases its anchor before retry', async t => {
+  for (const cancellation of ['request', 'turn']) {
+    const root = await mkdtemp(join(tmpdir(), 'background-binding-cancel-')), sessions = new Sessions(), records = new BackgroundRecords()
+    sessions.prompt('session', 'turn')
+    const store = new SessionStore({ directory: join(root, 'state'), project: root, host: 'v1', diagnostic: () => {} })
+    const state = new V1SessionState(store, { background: records }), background = new V1Background({ records, state, diagnostic: () => {} })
+    background.attach(sessions, [registration('claude-code')])
+    let release!: () => void, entered!: () => void, finished!: () => void
+    const held = new Promise<void>(resolve => { release = resolve }), ready = new Promise<void>(resolve => { entered = resolve }), written = new Promise<void>(resolve => { finished = resolve })
+    t.after(async () => { release(); await background.dispose(); await state.dispose(); records.dispose(); sessions.dispose(); await rm(root, { recursive: true, force: true }) })
+    const session = sessions.get('session'); await state.ensure(session)
+    records.admit(session, { id: 'completed', sourceID: 'claude-code', sourceDigest: digest, registrationID: 'claude-code', dialect: 'claude-code', event: 'UserPromptSubmit', mode: 'safe-point', actions: [], completion: { completedAt: 1, execution: { status: 'exited', exitCode: 0, signal: null, stdout: '{"systemMessage":"RETAINED"}', stderr: '', durationMs: 1, processID: 123 } } })
+    await state.checkpoint(session)
+    const save = store.save.bind(store)
+    let blocked = false
+    store.save = async (receipt, payload, signal) => {
+      const hold = !blocked && JSON.stringify(payload).includes('"messageID":"turn"')
+      if (hold) { blocked = true; entered(); await held }
+      try { return await save(receipt, payload, signal) } finally { if (hold) finished() }
+    }
+    const request = new AbortController(); let settled = false
+    const admission = background.prepare(session, anchor, request.signal).then(() => { settled = true; return 'accepted' }, error => { settled = true; return error.code })
+    await ready
+    if (cancellation === 'turn') sessions.prompt('session', 'next'); else request.abort()
+    await new Promise(resolve => setImmediate(resolve))
+    const releasedBeforeWriteFinished = settled
+    release(); assert.match(await admission, /^(?:HOST_BACKGROUND_CANCELLED|EXECUTION_CANCELLED)$/); await written
+    const cold = new BackgroundRecords(), readback = await store.load('session')
+    cold.restoreV1(sessions.get('session'), readback.payload!.background)
+    const coldAnchor = cold.read(sessions.get('session'))[0]!.anchor; cold.dispose()
+    assert.equal(records.read(sessions.get('session'))[0]!.anchor, undefined); assert.equal(coldAnchor, undefined)
+    assert.equal(releasedBeforeWriteFinished, false)
+    const next = sessions.get('session'), nextAnchor = { ...anchor, turnID: next.turnID!, messageID: next.turnID! }
+    await background.prepare(next, nextAnchor, next.turnSignal)
+    assert.equal(records.read(next)[0]!.anchor!.messageID, next.turnID)
+  }
+})
+
+test('failed durable cancellation rollback rejects model admission with an actionable diagnostic and retains pending context', async t => {
+  let entered!: () => void, release!: () => void, refuseRollback = false
+  const ready = new Promise<void>(resolve => { entered = resolve }), held = new Promise<void>(resolve => { release = resolve })
+  const f = await fixture(t, { checkpoint: async () => {
+    if (refuseRollback) throw new Error('Store unavailable')
+    if (f.records.inspect().pendingBindings) { entered(); await held; refuseRollback = true }
+  } })
+  f.background.enqueue(f.work('claude-code', context)); await f.background.settled('session')
+  const request = new AbortController(), admission = f.background.prepare(f.owner(), anchor, request.signal)
+  await ready; request.abort(); release()
+  await assert.rejects(admission, { code: 'HOST_BACKGROUND_BINDING_ROLLBACK_FAILED' })
+  assert.equal(f.records.read(f.owner())[0]!.anchor, undefined)
+  assert.deepEqual(f.records.read(f.owner())[0]!.model, ['<system-reminder>\nMODEL_ONLY\n</system-reminder>'])
+  assert.ok(JSON.stringify(f.diagnostics).includes('HOST_BACKGROUND_BINDING_ROLLBACK_FAILED'))
+  await assert.rejects(f.background.prepare(f.owner(), anchor, f.owner().turnSignal))
 })
