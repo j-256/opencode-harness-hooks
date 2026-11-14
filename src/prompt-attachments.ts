@@ -28,6 +28,89 @@ interface State { readonly signal: AbortSignal; readonly turns: Map<string, Turn
 function fail(code: string): never { throw new HostHookError(code, 'unsupported') }
 const fingerprint = (text: string) => createHash('sha256').update(text).digest('hex')
 
+export function claudePromptAttachments(event: Pick<HostPromptEvent, 'sessionID' | 'event'>, dispatch: DispatchResult): readonly PromptAttachment[] {
+  if (dispatch.cancelled) fail('TRANSCRIPT_PROMPT_CANCELLED')
+  if (dispatch.diagnostic.sessionID !== event.sessionID || dispatch.diagnostic.event !== event.event) fail('TRANSCRIPT_DISPATCH_MISMATCH')
+  if (dispatch.actions.some(row => row.action.kind === 'block-event' || row.action.kind === 'stop-session')) fail('TRANSCRIPT_PROMPT_NOT_ADMITTED')
+  const completedAt = Date.now()
+  const toolUseID = randomUUID()
+  const attachments: PromptAttachment[] = []
+  for (const entry of [...dispatch.entries].filter(entry => entry.dialect === 'claude-code').sort((a, b) => a.completionOrder - b.completionOrder)) {
+    const result = entry.result
+    if (result.status === 'skipped') continue
+    if (result.status === 'background') { if (result.code !== 'BACKGROUND_QUEUED' || !snapshotID(result.jobID) || result.actions.length) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE'); continue }
+    if (result.status !== 'success' && result.status !== 'failed') fail('TRANSCRIPT_HOOK_RESULT_UNSUPPORTED')
+    const command = 'commandArtifact' in result ? result.commandArtifact : undefined
+    const http = result.httpArtifact
+    const model = result.modelArtifact
+    if (model?.kind === AGENT_MODEL_KIND) {
+      if (command || http || result.actions.length || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      const accepted = model.status === AGENT_MODEL_STATUS.SUCCESS && result.status === 'success' && result.code === 'MODEL_EVALUATED'
+        || model.status === AGENT_MODEL_STATUS.TIMEOUT && result.status === 'failed' && result.code === 'EXECUTION_TIMEOUT'
+        || model.status === AGENT_MODEL_STATUS.TURN_LIMIT && result.status === 'failed' && result.code === 'AGENT_TURN_LIMIT'
+        || model.status === AGENT_MODEL_STATUS.INCOMPLETE && result.status === 'failed' && result.code === 'AGENT_INCOMPLETE'
+        || model.status === AGENT_MODEL_STATUS.API_ERROR && result.status === 'failed' && result.code === 'MODEL_REQUEST_FAILED'
+      if (!accepted) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      continue
+    }
+    if (model) {
+      if (command || http || model.kind !== PROMPT_MODEL_KIND || typeof model.prompt !== 'string' || typeof model.stdout !== 'string' || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime()) || result.actions.length) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      if (model.status === PROMPT_MODEL_STATUS.SUCCESS && result.status === 'success' && result.code === 'MODEL_EVALUATED' && !model.stdout) continue
+      if (model.status === PROMPT_MODEL_STATUS.TIMEOUT && result.status === 'failed' && result.code === 'EXECUTION_TIMEOUT' && !model.stdout) continue
+      const apiError = model.status === PROMPT_MODEL_STATUS.API_ERROR && result.status === 'failed' && result.code === 'MODEL_REQUEST_FAILED' && !model.stdout && typeof model.stderr === 'string'
+      if (!apiError && (model.status !== PROMPT_MODEL_STATUS.INVALID || result.status !== 'failed' || result.code !== 'MODEL_OUTPUT_INVALID' || model.stderr !== undefined)) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      attachments.push({ id: randomUUID(), created: model.completedAt, body: { type: 'attachment', attachment: { type: 'hook_non_blocking_error', hookName: event.event, toolUseID, hookEvent: event.event, stderr: apiError ? model.stderr! : MODEL_VALIDATION_ERROR, stdout: model.stdout, exitCode: 1, command: model.prompt, durationMs: model.durationMs } } })
+      continue
+    }
+    let exitCode: number | null | undefined
+    if (http) {
+      if (command || result.status !== 'success' || http.kind !== 'http' || !Number.isFinite(http.durationMs) || http.durationMs < 0 || !Number.isFinite(http.completedAt) || Number.isNaN(new Date(http.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+    } else {
+      if (!command || typeof command.command !== 'string' || typeof command.stdout !== 'string' || typeof command.stderr !== 'string' || !Number.isFinite(command.durationMs) || command.durationMs < 0 || !Number.isFinite(command.completedAt) || Number.isNaN(new Date(command.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      if (command.status === 'timeout') {
+        if (result.status !== 'failed' || result.code !== 'EXECUTION_TIMEOUT' || result.actions.length || typeof command.timeoutMs !== 'number' || !Number.isFinite(command.timeoutMs) || command.timeoutMs <= 0) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+        attachments.push({ id: randomUUID(), created: command.completedAt, body: { type: 'attachment', attachment: {
+          type: 'hook_cancelled', hookName: event.event, toolUseID, hookEvent: event.event,
+          command: command.command, durationMs: command.durationMs, timedOut: true, timeoutMs: command.timeoutMs,
+        } } })
+        continue
+      }
+      if (command.status !== 'exited') fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      exitCode = command.exitCode
+      if (command.signal !== null) {
+        if (exitCode !== null || !VERIFIED_SIGNALS.has(command.signal)) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+        exitCode = SIGNAL_EXIT
+      }
+      if (typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode) || exitCode < SUCCESS_EXIT || exitCode > MAX_EXIT || exitCode === BLOCKING_EXIT) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
+      if (result.status === 'failed') {
+        if (result.code !== 'COMMAND_FAILED' || exitCode === SUCCESS_EXIT || result.actions.length) fail('TRANSCRIPT_HOOK_RESULT_UNSUPPORTED')
+        attachments.push({ id: randomUUID(), created: command.completedAt, body: { type: 'attachment', attachment: {
+          type: 'hook_non_blocking_error', hookName: event.event, toolUseID, hookEvent: event.event,
+          stderr: NONBLOCKING_ERROR_PREFIX + (command.stderr.trim() || EMPTY_STDERR), stdout: command.stdout,
+          exitCode, command: command.command, durationMs: command.durationMs,
+        } } })
+        continue
+      }
+    }
+    for (const action of result.actions) {
+      let attachment: Record<string, JsonValue>
+      let rendered: string | undefined
+      if (action.kind === 'warning') {
+        attachment = { type: 'hook_system_message', content: action.text, hookName: event.event, toolUseID, hookEvent: event.event }
+      } else if (action.kind === 'context' && action.placement === 'model' && action.channel === 'additionalContext') {
+        attachment = { type: 'hook_additional_context', content: [action.text], hookName: event.event, toolUseID: 'hook-' + randomUUID(), hookEvent: event.event }
+        rendered = `<system-reminder>\n${event.event} hook additional context: ${action.text}\n</system-reminder>`
+      } else if (action.kind === 'context' && action.placement === 'model' && action.channel === 'stdout') {
+        if (!command || http || exitCode !== SUCCESS_EXIT) fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
+        attachment = { type: 'hook_success', hookName: event.event, toolUseID, hookEvent: event.event, content: action.text, stdout: command.stdout, stderr: command.stderr, exitCode: command.exitCode, command: command.command, durationMs: command.durationMs }
+        rendered = `<system-reminder>\n${event.event} hook success: ${action.text}\n</system-reminder>`
+      } else fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
+      attachments.push({ id: randomUUID(), created: attachment.type === 'hook_additional_context' ? completedAt : http?.completedAt ?? command!.completedAt, body: { type: 'attachment', attachment, ...(rendered === undefined ? {} : { rendered: [{ content: rendered }], renderedRole: 'system' }) } })
+    }
+  }
+  return Object.freeze(attachments.map(value => nativeHookRecord(value, event.event)))
+}
+
 export class PromptAttachments {
   private readonly states = new Map<string, State>()
   private turns = 0
@@ -39,86 +122,9 @@ export class PromptAttachments {
 
   admit(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void {
     if (event.sessionID !== session.sessionID || event.messageID !== session.turnID || event.signal.aborted || session.turnSignal.aborted || dispatch.cancelled) fail('TRANSCRIPT_PROMPT_CANCELLED')
-    if (dispatch.diagnostic.sessionID !== event.sessionID || dispatch.diagnostic.event !== event.event) fail('TRANSCRIPT_DISPATCH_MISMATCH')
-    if (dispatch.actions.some(row => row.action.kind === 'block-event' || row.action.kind === 'stop-session')) fail('TRANSCRIPT_PROMPT_NOT_ADMITTED')
     const state = this.state(session)
     if (state.turns.has(event.messageID)) fail('TRANSCRIPT_PROMPT_ID_REUSED')
-    const completedAt = Date.now()
-    const toolUseID = randomUUID()
-    const attachments: PromptAttachment[] = []
-    for (const entry of [...dispatch.entries].filter(entry => entry.dialect === 'claude-code').sort((a, b) => a.completionOrder - b.completionOrder)) {
-      const result = entry.result
-      if (result.status === 'skipped') continue
-      if (result.status === 'background') { if (result.code !== 'BACKGROUND_QUEUED' || !snapshotID(result.jobID) || result.actions.length) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE'); continue }
-      if (result.status !== 'success' && result.status !== 'failed') fail('TRANSCRIPT_HOOK_RESULT_UNSUPPORTED')
-      const command = 'commandArtifact' in result ? result.commandArtifact : undefined
-      const http = result.httpArtifact
-      const model = result.modelArtifact
-      if (model?.kind === AGENT_MODEL_KIND) {
-        if (command || http || result.actions.length || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-        const accepted = model.status === AGENT_MODEL_STATUS.SUCCESS && result.status === 'success' && result.code === 'MODEL_EVALUATED'
-          || model.status === AGENT_MODEL_STATUS.TIMEOUT && result.status === 'failed' && result.code === 'EXECUTION_TIMEOUT'
-          || model.status === AGENT_MODEL_STATUS.TURN_LIMIT && result.status === 'failed' && result.code === 'AGENT_TURN_LIMIT'
-          || model.status === AGENT_MODEL_STATUS.INCOMPLETE && result.status === 'failed' && result.code === 'AGENT_INCOMPLETE'
-          || model.status === AGENT_MODEL_STATUS.API_ERROR && result.status === 'failed' && result.code === 'MODEL_REQUEST_FAILED'
-        if (!accepted) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-        continue
-      }
-      if (model) {
-        if (command || http || model.kind !== PROMPT_MODEL_KIND || typeof model.prompt !== 'string' || typeof model.stdout !== 'string' || !Number.isFinite(model.durationMs) || model.durationMs < 0 || !Number.isFinite(model.completedAt) || Number.isNaN(new Date(model.completedAt).getTime()) || result.actions.length) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-        if (model.status === PROMPT_MODEL_STATUS.SUCCESS && result.status === 'success' && result.code === 'MODEL_EVALUATED' && !model.stdout) continue
-        if (model.status === PROMPT_MODEL_STATUS.TIMEOUT && result.status === 'failed' && result.code === 'EXECUTION_TIMEOUT' && !model.stdout) continue
-        const apiError = model.status === PROMPT_MODEL_STATUS.API_ERROR && result.status === 'failed' && result.code === 'MODEL_REQUEST_FAILED' && !model.stdout && typeof model.stderr === 'string'
-        if (!apiError && (model.status !== PROMPT_MODEL_STATUS.INVALID || result.status !== 'failed' || result.code !== 'MODEL_OUTPUT_INVALID' || model.stderr !== undefined)) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-        attachments.push({ id: randomUUID(), created: model.completedAt, body: { type: 'attachment', attachment: { type: 'hook_non_blocking_error', hookName: event.event, toolUseID, hookEvent: event.event, stderr: apiError ? model.stderr! : MODEL_VALIDATION_ERROR, stdout: model.stdout, exitCode: 1, command: model.prompt, durationMs: model.durationMs } } })
-        continue
-      }
-      let exitCode: number | null | undefined
-      if (http) {
-        if (command || result.status !== 'success' || http.kind !== 'http' || !Number.isFinite(http.durationMs) || http.durationMs < 0 || !Number.isFinite(http.completedAt) || Number.isNaN(new Date(http.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-      } else {
-        if (!command || typeof command.command !== 'string' || typeof command.stdout !== 'string' || typeof command.stderr !== 'string' || !Number.isFinite(command.durationMs) || command.durationMs < 0 || !Number.isFinite(command.completedAt) || Number.isNaN(new Date(command.completedAt).getTime())) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-        if (command.status === 'timeout') {
-          if (result.status !== 'failed' || result.code !== 'EXECUTION_TIMEOUT' || result.actions.length || typeof command.timeoutMs !== 'number' || !Number.isFinite(command.timeoutMs) || command.timeoutMs <= 0) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-          attachments.push({ id: randomUUID(), created: command.completedAt, body: { type: 'attachment', attachment: {
-            type: 'hook_cancelled', hookName: event.event, toolUseID, hookEvent: event.event,
-            command: command.command, durationMs: command.durationMs, timedOut: true, timeoutMs: command.timeoutMs,
-          } } })
-          continue
-        }
-        if (command.status !== 'exited') fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-        exitCode = command.exitCode
-        if (command.signal !== null) {
-          if (exitCode !== null || !VERIFIED_SIGNALS.has(command.signal)) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-          exitCode = SIGNAL_EXIT
-        }
-        if (typeof exitCode !== 'number' || !Number.isSafeInteger(exitCode) || exitCode < SUCCESS_EXIT || exitCode > MAX_EXIT || exitCode === BLOCKING_EXIT) fail('TRANSCRIPT_HOOK_EXECUTION_UNAVAILABLE')
-        if (result.status === 'failed') {
-          if (result.code !== 'COMMAND_FAILED' || exitCode === SUCCESS_EXIT || result.actions.length) fail('TRANSCRIPT_HOOK_RESULT_UNSUPPORTED')
-          attachments.push({ id: randomUUID(), created: command.completedAt, body: { type: 'attachment', attachment: {
-            type: 'hook_non_blocking_error', hookName: event.event, toolUseID, hookEvent: event.event,
-            stderr: NONBLOCKING_ERROR_PREFIX + (command.stderr.trim() || EMPTY_STDERR), stdout: command.stdout,
-            exitCode, command: command.command, durationMs: command.durationMs,
-          } } })
-          continue
-        }
-      }
-      for (const action of result.actions) {
-        let attachment: Record<string, JsonValue>
-        let rendered: string | undefined
-        if (action.kind === 'warning') {
-          attachment = { type: 'hook_system_message', content: action.text, hookName: event.event, toolUseID, hookEvent: event.event }
-        } else if (action.kind === 'context' && action.placement === 'model' && action.channel === 'additionalContext') {
-          attachment = { type: 'hook_additional_context', content: [action.text], hookName: event.event, toolUseID: 'hook-' + randomUUID(), hookEvent: event.event }
-          rendered = `<system-reminder>\n${event.event} hook additional context: ${action.text}\n</system-reminder>`
-        } else if (action.kind === 'context' && action.placement === 'model' && action.channel === 'stdout') {
-          if (!command || http || exitCode !== SUCCESS_EXIT) fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
-          attachment = { type: 'hook_success', hookName: event.event, toolUseID, hookEvent: event.event, content: action.text, stdout: command.stdout, stderr: command.stderr, exitCode: command.exitCode, command: command.command, durationMs: command.durationMs }
-          rendered = `<system-reminder>\n${event.event} hook success: ${action.text}\n</system-reminder>`
-        } else fail('TRANSCRIPT_HOOK_EFFECT_UNSUPPORTED')
-        attachments.push({ id: randomUUID(), created: attachment.type === 'hook_additional_context' ? completedAt : http?.completedAt ?? command!.completedAt, body: { type: 'attachment', attachment, ...(rendered === undefined ? {} : { rendered: [{ content: rendered }], renderedRole: 'system' }) } })
-      }
-    }
+    const attachments = claudePromptAttachments(event, dispatch)
     const bytes = Buffer.byteLength(JSON.stringify([event.sessionID, event.messageID, attachments]))
     if (this.turns >= MAX_TURNS || this.attachments + attachments.length > MAX_ATTACHMENTS || this.bytes + bytes > MAX_BYTES) fail('TRANSCRIPT_PROMPT_LIMIT')
     state.turns.set(event.messageID, { promptHash: fingerprint(event.prompt), attachments, bytes })
