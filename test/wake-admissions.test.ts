@@ -159,3 +159,19 @@ test('an idle system binding preserves the raw native user form and a separate n
   const cold = new WakeRecords(); t.after(() => cold.dispose()); cold.restoreV1(f.session, f.records.snapshotV1('session'))
   assert.deepEqual(cold.read(f.session), f.records.read(f.session))
 })
+
+for (const reason of ['STOPPED', '']) test(`a terminal idle stop retains protected historical context without another source attempt, reason ${reason || 'absent'}`, async t => {
+  const f = fixture(t), prompt = f.records.read(f.session)[0]!.text.prompt
+  const anchor: BackgroundAnchor = { kind: 'prompt', sessionID: 'session', turnID: 'turn', messageID: 'turn', signature: hash(JSON.stringify([prompt])) }, attempt = f.records.begin(f.session, 'job', anchor), event = f.input(attempt)
+  f.records.capture(f.session, event, await dispatch(event, JSON.stringify({ continue: false, ...(reason ? { stopReason: reason } : {}) })))
+  f.records.reserveBind(f.session, 'job', attempt.id, anchor, { kind: 'system', promptIndex: 0, turnIndex: 2 }).commit()
+  const row = f.records.read(f.session)[0]!, binding = row.binding!, body = JSON.parse(JSON.stringify(binding.feedback!.body))
+  assert.deepEqual(body, { type: 'user', promptId: 'turn', message: { role: 'user', content: 'Operation stopped by hook' + (reason ? ': ' + reason : '') }, isMeta: true, origin: { kind: 'task-notification', producer: 'session-task' }, queueSkipAttachments: true })
+  assert.equal(binding.feedback!.created, row.attempts[0]!.result!.completedAt)
+  assert.equal(binding.model[0], row.text.model + '\n'); assert.equal(binding.model[1], binding.feedback!.model[0] + '\n')
+  assert.ok(binding.model.every(text => text.includes('NOT USER INPUT')))
+  assert.deepEqual(f.records.pending(f.session), [])
+  assert.throws(() => f.records.begin(f.session, 'job', anchor), { code: 'WAKE_ATTEMPT_UNRESOLVED' })
+  const cold = new WakeRecords(); t.after(() => cold.dispose()); cold.restoreV1(f.session, f.records.snapshotV1('session'))
+  assert.deepEqual(cold.read(f.session), f.records.read(f.session))
+})

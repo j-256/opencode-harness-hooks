@@ -9,6 +9,7 @@ export interface ClaudeWakeText { readonly prompt: string; readonly model: strin
 export interface ClaudeQueuedWakeInput extends ClaudeWakeInput { readonly sourceUUID: string; readonly deliveryID: string; readonly created: number }
 export interface ClaudeSystemWakeInput extends ClaudeWakeInput { readonly promptID: string; readonly promptIndex: number; readonly turnIndex: number }
 export interface ClaudeWakeArtifact extends BackgroundArtifact { readonly humanModel: readonly string[] }
+export interface ClaudeSystemFeedbackInput { readonly promptID: string; readonly text: string; readonly created: number }
 
 const DATE_LIMIT = 8640000000000000
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -44,4 +45,9 @@ export function claudeSystemWake(input: ClaudeSystemWakeInput): Readonly<Record<
   const text = claudeWakeText(input)
   if (!snapshotID(input.promptID) || !Number.isSafeInteger(input.promptIndex) || input.promptIndex < 0 || !Number.isSafeInteger(input.turnIndex) || input.turnIndex <= input.promptIndex) fail('CLAUDE_WAKE_IDENTITY_INVALID')
   return snapshotCopy({ type: 'user', promptId: input.promptID, message: { role: 'user', content: text.prompt }, origin: ORIGIN, promptSource: 'system', turnOrigin: 'task_notification', turnPosition: { promptIndex: input.promptIndex, turnIndex: input.turnIndex }, queueSkipAttachments: true })
+}
+export function claudeSystemFeedback(input: ClaudeSystemFeedbackInput): BackgroundArtifact {
+  if (!input || !snapshotID(input.promptID) || typeof input.text !== 'string' || !Number.isSafeInteger(input.created) || input.created < 0 || input.created > DATE_LIMIT) fail('CLAUDE_WAKE_IDENTITY_INVALID')
+  if (Buffer.byteLength(input.text) > EXECUTION_LIMITS.outputBytes) fail('CLAUDE_WAKE_LIMIT')
+  return snapshotCopy({ created: input.created, body: { type: 'user', promptId: input.promptID, message: { role: 'user', content: input.text }, isMeta: true, origin: ORIGIN, queueSkipAttachments: true }, model: [model(input.text, WARNING)] })
 }

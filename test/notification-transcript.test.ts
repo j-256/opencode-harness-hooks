@@ -11,11 +11,17 @@ import { executeRegistration } from '../src/handlers.js'
 import { WakeRecords } from '../src/wake-records.js'
 import type { Registration } from '../src/types.js'
 import type { BackgroundDelivery } from '../src/background-types.js'
+import { V1WakeInputs, wakeInputPart } from '../src/hosts/wake-inputs-v1.js'
 
 const CREATED = Date.parse('2026-01-01T00:00:00Z')
 const OUTPUT = 'ORIGINAL_TOOL_RESULT'
 const digest = (text: string) => createHash('sha256').update(text).digest('hex')
 const empty: DispatchResult = { entries: [], actions: [], cancelled: false, diagnostic: { dispatchID: 'dispatch', sessionID: 'session', event: 'UserPromptSubmit', durationMs: 0, cancelled: false, failed: 0, unsupported: 0, skipped: 0, background: 0, handlers: [] } }
+function wakeQueue(t: { after(callback: () => unknown): void }) {
+  const source: Registration = { id: 'wake', sourceID: 'source', sourceDigest: 'a'.repeat(64), dialect: 'claude-code', event: 'UserPromptSubmit', groupIndex: 0, handlerIndex: 0, handler: { type: 'command', command: 'owned', asyncRewake: true } }, wakes = new WakeRecords({ registrations: [source] })
+  const delivery: BackgroundDelivery = { id: 'job', sourceID: 'source', sourceDigest: source.sourceDigest!, registrationID: 'wake', dialect: 'claude-code', event: 'UserPromptSubmit', mode: 'wake', actions: [{ kind: 'native-extension', name: 'asyncRewake', value: 'OWNED_WAKE' }], completion: { completedAt: CREATED + 3, execution: { status: 'exited', exitCode: 2, signal: null, stdout: '', stderr: 'OWNED_WAKE', durationMs: 1, processID: 123 } } }
+  t.after(() => wakes.dispose()); return { source, wakes, delivery }
+}
 function fixture(t: { after(callback: () => unknown): void }, wakes?: WakeRecords) {
   const sessions = new Sessions(); sessions.prompt('session', 'turn', 'model'); const session = sessions.get('session')
   let status = 'completed', output = OUTPUT
@@ -86,9 +92,7 @@ test('an active notification preserves one copy of the startup attachments bound
 })
 
 test('accepted wake and source callback artifacts follow their completed tool once and survive cold transcript projection', async t => {
-  const source: Registration = { id: 'wake', sourceID: 'source', sourceDigest: 'a'.repeat(64), dialect: 'claude-code', event: 'UserPromptSubmit', groupIndex: 0, handlerIndex: 0, handler: { type: 'command', command: 'owned', asyncRewake: true } }, wakes = new WakeRecords({ registrations: [source] })
-  t.after(() => wakes.dispose())
-  const f = fixture(t, wakes), delivery: BackgroundDelivery = { id: 'job', sourceID: 'source', sourceDigest: source.sourceDigest!, registrationID: 'wake', dialect: 'claude-code', event: 'UserPromptSubmit', mode: 'wake', actions: [{ kind: 'native-extension', name: 'asyncRewake', value: 'OWNED_WAKE' }], completion: { completedAt: CREATED + 3, execution: { status: 'exited', exitCode: 2, signal: null, stdout: '', stderr: 'OWNED_WAKE', durationMs: 1, processID: 123 } } }
+  const { source, wakes, delivery } = wakeQueue(t), f = fixture(t, wakes)
   wakes.admit(f.session, delivery)
   const attempt = wakes.begin(f.session, 'job', f.event.anchor), event = { ...f.event, notificationID: attempt.id, prompt: wakes.read(f.session)[0]!.text.prompt }
   const path = await f.transcripts.prepareNotification(event, f.session, f.session.turnSignal), before = await readFile(path, 'utf8')
@@ -117,4 +121,35 @@ test('accepted wake and source callback artifacts follow their completed tool on
   f.change('completed', 'changed')
   await assert.rejects(f.transcripts.prepare(next, f.session, f.session.turnSignal), { code: 'WAKE_HISTORY_OWNER_MISMATCH' })
   assert.deepEqual((await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line)), actual)
+})
+
+test('a saved terminal notification replays its native system and meta-user rows before a later genuine turn', async t => {
+  const { source, wakes, delivery } = wakeQueue(t), f = fixture(t, wakes), inputs = new V1WakeInputs(); t.after(() => inputs.dispose())
+  wakes.admit(f.session, delivery); const prompt = wakes.read(f.session)[0]!.text.prompt
+  const ticket = inputs.prepare(f.session, { jobID: 'job', prompt, model: { providerID: 'provider', modelID: 'model' }, agent: 'build', promptIndex: 0, turnIndex: 2 })
+  const message = { role: 'user', id: 'system', sessionID: 'session', model: { providerID: 'provider', modelID: 'model' }, agent: 'build', time: { created: CREATED + 3 } }, parts = [{ ...wakeInputPart(ticket, prompt, 'save'), id: 'part' }]
+  inputs.claim(f.session, message, parts); f.sessions.prompt('session', 'system', 'model'); const system = f.sessions.get('session')
+  const anchor = { kind: 'prompt' as const, sessionID: 'session', turnID: 'system', messageID: 'system', signature: digest(JSON.stringify([prompt])) }, attempt = wakes.begin(system, 'job', anchor)
+  const event: HostNotificationEvent = { host: 'v1', event: 'UserPromptSubmit', sessionID: 'session', messageID: 'system', prompt, notificationID: attempt.id, anchor, signal: system.turnSignal }
+  const path = await f.transcripts.prepareNotification(event, system, system.turnSignal)
+  const result = await executeRegistration({ ...source, id: 'callback', handler: { type: 'command', command: "printf '%s' '{\"continue\":false,\"stopReason\":\"STOPPED\"}'" } }, { host: 'v1', event: 'UserPromptSubmit', sessionID: 'session', cwd: process.cwd(), data: { prompt, transcript_path: path, permission_mode: 'default' } }, { projectRoot: process.cwd(), environment: {}, captureCommandArtifacts: true })
+  const origin = { sourceID: 'source', sourceDigest: source.sourceDigest!, registrationID: 'callback', dialect: 'claude-code' as const, configuredOrder: 0, completionOrder: 0 }
+  wakes.capture(system, event, { ...empty, entries: [{ ...origin, result }], actions: result.actions.map(action => ({ ...origin, action })) })
+  wakes.reserveBind(system, 'job', attempt.id, anchor, { kind: 'system', promptIndex: 0, turnIndex: 2 }).commit()
+  inputs.saved(system, ticket.saveNonce, { info: message, parts }); inputs.finish(system, ticket.saveNonce, { info: message, parts })
+  f.sessions.prompt('session', 'future', 'model'); const future = f.sessions.get('session')
+  const later = { host: 'v1' as const, event: 'PreToolUse' as const, sessionID: 'session', callID: 'later', tool: 'bash', toolInput: { command: 'later' }, effectiveInput: { command: 'later' }, signal: future.turnSignal }
+  const raw = [...f.history(), { info: message, parts }, { info: { role: 'user', id: 'future', sessionID: 'session', time: { created: CREATED + 4 } }, parts: [{ type: 'text', text: 'FUTURE_GENUINE' }] }, { info: { role: 'assistant', id: 'future-answer', parentID: 'future', sessionID: 'session', modelID: 'model', time: { created: CREATED + 5 } }, parts: [{ type: 'tool', tool: 'bash', callID: 'later', state: { status: 'running' } }] }]
+  const replay = new ClaudeTranscript({ host: 'v1', directory: process.cwd(), wakes, history: async () => ({ id: 'session', messages: inputs.normalize('session', raw) }) }); t.after(() => replay.dispose())
+  replay.restoreV1(future, f.transcripts.snapshotV1('session'))
+  replay.admitPrompt({ host: 'v1', event: 'UserPromptSubmit', sessionID: 'session', messageID: 'future', prompt: 'FUTURE_GENUINE', signal: future.turnSignal }, future, empty)
+  replay.observeModel({ host: 'v1', sessionID: 'session', messageID: 'future', signal: future.turnSignal }, future); replay.observe(later, future)
+  const output = (await readFile(await replay.prepare(later, future, future.turnSignal), 'utf8')).trim().split('\n').map(line => JSON.parse(line)), index = output.findIndex(row => row.promptId === 'system' && row.isMeta !== true)
+  assert.ok(index > 0); assert.equal(output[index].message.content, prompt); assert.equal(output[index].promptSource, 'system')
+  assert.equal(output[index + 1].isMeta, true); assert.equal(output[index + 1].message.content, 'Operation stopped by hook: STOPPED')
+  assert.deepEqual(output[index + 1].origin, { kind: 'task-notification', producer: 'session-task' })
+  assert.equal(output[index + 2].message.content, 'FUTURE_GENUINE')
+  assert.equal(new Set(output.map(row => row.uuid)).size, output.length)
+  for (let i = 1; i < output.length; i++) assert.equal(output[i].parentUuid, output[i - 1].uuid)
+  assert.equal(parts[0]!.synthetic, true)
 })

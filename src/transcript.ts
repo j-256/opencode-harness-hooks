@@ -446,6 +446,7 @@ export class ClaudeTranscript implements TranscriptService {
     const wake = (row: WakeEntry) => {
       const binding = row.binding!, attempt = row.attempts.find(attempt => attempt.id === binding.attemptID)!
       append('wake/' + row.deliveryID, binding.artifact.created, { ...binding.artifact.body })
+      if (binding.feedback) append('wake-feedback/' + row.deliveryID, binding.feedback.created, { ...binding.feedback.body })
       for (const record of attempt.result!.attachments) append('wake-callback/' + record.id, record.created, { ...record.body })
     }
     for (const entry of history) {

@@ -14,7 +14,7 @@ import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotID } from './session
 import { backgroundAnchor } from './background-records.js'
 import type { BackgroundAnchor, BackgroundBinding } from './background-records.js'
 import type { BackgroundArtifact } from './background-artifacts.js'
-import { claudeQueuedWake, claudeSystemWake } from './claude-wake.js'
+import { claudeQueuedWake, claudeSystemWake, claudeSystemFeedback } from './claude-wake.js'
 import { wakeAttempt, wakeAttemptResult } from './wake-attempts.js'
 import type { WakeAttempt } from './wake-attempts.js'
 import type { HostNotificationEvent } from './notification.js'
@@ -23,7 +23,7 @@ import { runService } from './service-execution.js'
 
 export type WakePlacement = { readonly kind: 'queued'; readonly human: boolean } | { readonly kind: 'system'; readonly promptIndex: number; readonly turnIndex: number }
 interface BindingInput { readonly attemptID: string; readonly anchor: BackgroundAnchor; readonly placement: WakePlacement }
-export interface WakeAdmission extends BindingInput { readonly artifact: BackgroundArtifact; readonly model: readonly string[]; readonly developer: readonly string[] }
+export interface WakeAdmission extends BindingInput { readonly artifact: BackgroundArtifact; readonly feedback?: BackgroundArtifact; readonly model: readonly string[]; readonly developer: readonly string[] }
 export interface WakeEntry { readonly delivery: BackgroundDelivery; readonly sourceUUID: string; readonly deliveryID: string; readonly text: ClaudeWakeText; readonly attempts: readonly WakeAttempt[]; readonly binding?: WakeAdmission }
 interface Options { readonly registrations?: readonly Registration[]; readonly maxRecords?: number; readonly maxBytes?: number; readonly maxSessions?: number }
 interface State { readonly owner: AbortSignal; readonly rows: Map<string, WakeEntry>; readonly receipts: Map<string, string>; bytes: number; revision: number; binding?: symbol; bindingDone?: { readonly promise: Promise<void>; readonly resolve: () => void } }
@@ -34,6 +34,7 @@ const MAX_BYTES = 32 * 1024 * 1024
 const MAX_SESSIONS = 1024
 const DATE_LIMIT = 8640000000000000
 const MAX_ATTEMPTS = 2
+const STOP_FEEDBACK = 'Operation stopped by hook'
 const RESERVATION = Object.freeze({ OPEN: 'open', COMMITTED: 'committed', RELEASED: 'released' } as const)
 const DIGEST = /^[a-f0-9]{64}$/
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -137,7 +138,7 @@ export class WakeRecords {
     if (!state || !previous) fail('WAKE_DELIVERY_UNAVAILABLE')
     if (state.binding) fail('WAKE_BINDING_PENDING')
     const anchor = this.anchor(session, input), attempt = previous.attempts.find(attempt => attempt.id === attemptID)
-    if (!attempt?.result || attempt.result.outcome !== 'allow') fail('WAKE_NOTIFICATION_NOT_ADMITTED')
+    if (!attempt?.result || attempt.result.outcome !== 'allow' && !(attempt.result.outcome === 'stop' && placement.kind === 'system')) fail('WAKE_NOTIFICATION_NOT_ADMITTED')
     if (previous.binding || hash(attempt.anchor) !== hash(anchor)) fail('WAKE_BINDING_OWNER_MISMATCH')
     const row = this.entry(this.delivery(previous.delivery), previous.sourceUUID, previous.deliveryID, session.sessionID, previous.attempts, { attemptID, anchor, placement })
     this.replace(session.sessionID, state, previous, row)
@@ -207,8 +208,9 @@ export class WakeRecords {
     if (bindingInput !== undefined) {
       const parsed = BINDING.safeParse(bindingInput); if (!parsed.success) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
       const value = parsed.data, anchor = backgroundAnchor(value.anchor), attempt = attempts.find(attempt => attempt.id === value.attemptID)
-      if (!attempt?.result || attempt.result.outcome !== 'allow' || hash(attempt.anchor) !== hash(anchor)) fail('WAKE_BINDING_OWNER_MISMATCH')
-      const placement = value.placement, input = { hookName: delivery.hookName ?? delivery.event, text: delivery.actions[0].value }
+      const placement = value.placement
+      if (!attempt?.result || attempt.result.outcome !== 'allow' && !(attempt.result.outcome === 'stop' && placement.kind === 'system') || hash(attempt.anchor) !== hash(anchor)) fail('WAKE_BINDING_OWNER_MISMATCH')
+      const input = { hookName: delivery.hookName ?? delivery.event, text: delivery.actions[0].value }
       let artifact: BackgroundArtifact
       if (placement.kind === 'queued') {
         if (placement.human !== (anchor.kind === 'prompt')) fail('WAKE_BINDING_OWNER_MISMATCH')
@@ -219,8 +221,9 @@ export class WakeRecords {
         artifact = { created: attempt.created, body: claudeSystemWake({ ...input, promptID: attempt.promptID, promptIndex: placement.promptIndex, turnIndex: placement.turnIndex }), model: [text.model] }
       }
       const callbacks = attempt.result.attachments.flatMap(row => { const rendered = row.body.rendered; return Array.isArray(rendered) ? rendered.map(value => (value as { readonly content: string }).content) : [] })
-      const model = placement.kind === 'system' ? [...callbacks.map((text, index) => text + (index === callbacks.length - 1 ? '\n' : '')), ...artifact.model] : [...artifact.model, ...callbacks]
-      binding = { attemptID: attempt.id, anchor, placement, artifact, model, developer: attempt.result.developer }
+      const feedback = attempt.result.outcome === 'stop' ? claudeSystemFeedback({ promptID: attempt.promptID, text: STOP_FEEDBACK + (attempt.result.reason ? ': ' + attempt.result.reason : ''), created: attempt.result.completedAt }) : undefined
+      const model = feedback ? [...artifact.model, ...feedback.model].map(text => text + '\n') : placement.kind === 'system' ? [...callbacks.map((text, index) => text + (index === callbacks.length - 1 ? '\n' : '')), ...artifact.model] : [...artifact.model, ...callbacks]
+      binding = { attemptID: attempt.id, anchor, placement, artifact, ...(feedback ? { feedback } : {}), model, developer: attempt.result.developer }
     }
     return freeze({ delivery, sourceUUID, deliveryID, text, attempts, ...(binding ? { binding } : {}) })
   }
