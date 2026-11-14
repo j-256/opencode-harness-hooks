@@ -595,6 +595,18 @@
       "dialect": "claude-code",
       "area": "execution",
       "summary": "Ordinary background completion while idle remains unwoken during the observation window, then reaches the next genuine prompt as separate native prefix parts with retained attachment placement"
+    },
+    {
+      "id": "claude-code.execution.rewake-active-context",
+      "dialect": "claude-code",
+      "area": "execution",
+      "summary": "Owned asyncRewake exit-2 notification context, native identities, literal model carrier and retained artifact during active delivery"
+    },
+    {
+      "id": "claude-code.execution.rewake-idle-context",
+      "dialect": "claude-code",
+      "area": "execution",
+      "summary": "Owned asyncRewake exit-2 notification context, native identities, literal model carrier and retained artifact during idle delivery"
     }
   ],
   "evidence": [
@@ -1178,6 +1190,32 @@
         "state"
       ],
       "scope": "Bounded completion evidence, owned records and model carriers, native artifact replay, cancellation and cold-state controls; actual pinned comparison is separate"
+    },
+    {
+      "id": "rewake-delivery-controls",
+      "level": "unit-test",
+      "artifacts": [
+        "test/wake-records.test.ts",
+        "test/wake-v1.test.ts",
+        "test/wake-idle-v1.test.ts",
+        "test/wake-inputs-v1.test.ts",
+        "test/plugin-rewake.test.ts",
+        "test/conformance-rewake.test.mjs",
+        "test/fixtures/claude-wake-oracle.json"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [
+        "UserPromptSubmit"
+      ],
+      "areas": [
+        "execution",
+        "artifacts",
+        "state"
+      ],
+      "scope": "Owned active/idle notification admission, native literal forms, mixed callback routing, cancellation and durable replay; actual registered comparisons are separate"
     }
   ],
   "cases": [
@@ -1657,6 +1695,42 @@
         "A later genuine turn retains context at the same historical prompt",
         "The hook-readable native attachment retains actual process identity, response fields and the verified prompt parent chain",
         "Session, source, helper and adapter identities remain unchanged without a synthetic prompt"
+      ]
+    },
+    {
+      "id": "claude.rewake.active",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.execution.rewake-active-context"
+      ],
+      "description": "Independent native Claude and stock V1 active asyncRewake context comparison with unchanged source/helper bytes and a synthetic provider",
+      "observables": [
+        "Source callbacks receive the exact raw notification and the owned existing or new prompt identity",
+        "Literal non-human notification text and callback context reach only the owned model carrier and remain in later history",
+        "Native queued-command or system-origin user artifacts preserve their verified selected fields",
+        "Genuine prompts and original tool effects/results remain intact without an extra active input",
+        "Source invocation counts, source/helper bytes and adapter fingerprint remain owned"
+      ]
+    },
+    {
+      "id": "claude.rewake.idle",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.execution.rewake-idle-context"
+      ],
+      "description": "Independent native Claude and stock V1 idle asyncRewake context comparison with unchanged source/helper bytes and a synthetic provider",
+      "observables": [
+        "Source callbacks receive the exact raw notification and the owned existing or new prompt identity",
+        "Literal non-human notification text and callback context reach only the owned model carrier and remain in later history",
+        "Native queued-command or system-origin user artifacts preserve their verified selected fields",
+        "Genuine prompts and original tool effects/results remain intact without an extra active input",
+        "Source invocation counts, source/helper bytes and adapter fingerprint remain owned"
       ]
     }
   ],

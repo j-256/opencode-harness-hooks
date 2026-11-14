@@ -42,6 +42,25 @@ test('a received wake persists before acknowledgement and active admission binds
   assert.equal(f.events.length, 1)
 })
 
+test('distinct queued wake completions retain ordered independent callbacks at the same owned tool', async t => {
+  const f = fixture(t, { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: 'CALLBACK' } })
+  const firstCompletion = delivery.completion!
+  const second: BackgroundDelivery = { ...delivery, id: 'second-job', actions: [{ kind: 'native-extension', name: 'asyncRewake', value: 'SECOND_WAKE' }], completion: { completedAt: firstCompletion.completedAt + 1, execution: { ...firstCompletion.execution, stderr: 'SECOND_WAKE', processID: 124 } } }
+  await f.wake.receive({ sessionID: 'session', delivery, signal: f.session.signal })
+  await f.wake.receive({ sessionID: 'session', delivery: second, signal: f.session.signal })
+  await f.wake.prepare(f.session, f.anchor, f.session.turnSignal)
+  const rows = f.records.read(f.session)
+  assert.deepEqual(rows.map(row => row.delivery.id), ['job', 'second-job'])
+  assert.equal(f.events.length, 2)
+  assert.ok(f.events[0]!.prompt.endsWith('WAKE\n</system-reminder>'))
+  assert.ok(f.events[1]!.prompt.endsWith('SECOND_WAKE\n</system-reminder>'))
+  assert.equal(new Set(f.events.map(event => event.notificationID)).size, 2)
+  assert.ok(rows.every(row => row.binding?.anchor.signature === f.anchor.signature && row.binding.model.join().includes('CALLBACK')))
+  await f.wake.prepare(f.session, f.anchor, f.session.turnSignal)
+  assert.equal(f.events.length, 2)
+  assert.equal(f.sessions.get('session').turnID, 'turn')
+})
+
 for (const output of [{ decision: 'block', reason: 'DENIED' }, { continue: false, stopReason: 'STOPPED' }]) test(`active ${JSON.stringify(output)} consumes only the notification and leaves the genuine turn running`, async t => {
   const f = fixture(t, output); await f.wake.receive({ sessionID: 'session', delivery, signal: f.session.signal }); await f.wake.prepare(f.session, f.anchor, f.session.turnSignal)
   assert.equal(f.records.read(f.session)[0]!.binding, undefined)
