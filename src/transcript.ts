@@ -23,9 +23,11 @@ import type { StopDelivery, StopEvent } from './stop.js'
 import { StopRecords } from './stop-records.js'
 import type { StopModelBlocks, StopContinuationOptions, StopInterruptionReceipt, StopInterruptedModel, StopAbortedAssistant } from './stop-records.js'
 import { OriginalInputs } from './original-inputs.js'
-import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy } from './session-snapshot.js'
+import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID } from './session-snapshot.js'
 import type { BackgroundRecords } from './background-records.js'
 import { BackgroundHistory } from './background-history.js'
+import { backgroundAnchor } from './background-records.js'
+import type { HostNotificationEvent } from './notification.js'
 
 const HISTORY_MS = 5000
 const MAX_MESSAGES = 10000
@@ -63,6 +65,7 @@ export interface TranscriptService {
   reserveContinuation?(delivery: StopDelivery, input: unknown, options?: StopContinuationOptions): TranscriptContinuationReservation
   observe(event: HostToolEvent, session: SessionSnapshot): void
   prepare(event: TranscriptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<string>
+  prepareNotification?(event: HostNotificationEvent, session: SessionSnapshot, signal: AbortSignal): Promise<string>
   dispose(): Promise<void>
 }
 export interface TranscriptContinuationReservation { readonly admit: (readback: unknown) => void; readonly suppress?: (readback: unknown, previousID: string) => void; readonly release: () => void }
@@ -288,6 +291,18 @@ export class ClaudeTranscript implements TranscriptService {
   }
 
   prepare(event: TranscriptEvent, session: SessionSnapshot, parent: AbortSignal): Promise<string> {
+    return this.prepareEvent(event, session, parent)
+  }
+
+  prepareNotification(input: HostNotificationEvent, session: SessionSnapshot, parent: AbortSignal): Promise<string> {
+    try {
+      const event = Object.freeze({ ...input, anchor: backgroundAnchor(input.anchor) })
+      if (event.event !== 'UserPromptSubmit' || !snapshotID(event.notificationID) || typeof event.prompt !== 'string' || event.sessionID !== session.sessionID || event.messageID !== session.turnID || event.anchor.sessionID !== event.sessionID || event.anchor.turnID !== event.messageID) fail('TRANSCRIPT_NOTIFICATION_ANCHOR_UNAVAILABLE')
+      return this.prepareEvent(event, Object.freeze({ ...session }), parent, event)
+    } catch (error) { return Promise.reject(error instanceof HostHookError && error.code === 'BACKGROUND_ANCHOR_INVALID' ? new HostHookError('TRANSCRIPT_NOTIFICATION_ANCHOR_UNAVAILABLE', 'unsupported') : error) }
+  }
+
+  private prepareEvent(event: TranscriptEvent, session: SessionSnapshot, parent: AbortSignal, notification?: HostNotificationEvent): Promise<string> {
     if (event.host !== this.options.host) return Promise.reject(new HostHookError('TRANSCRIPT_HOST_MISMATCH', 'unsupported'))
     if (event.sessionID !== session.sessionID) return Promise.reject(new HostHookError('TRANSCRIPT_SESSION_MISMATCH', 'unsupported'))
     if (this.deleted.has(event.sessionID)) return Promise.reject(new HostHookError('TRANSCRIPT_SESSION_DELETED', 'cancelled'))
@@ -299,7 +314,7 @@ export class ClaudeTranscript implements TranscriptService {
     }
     if (this.pendingCount >= MAX_PENDING) return Promise.reject(new HostHookError('TRANSCRIPT_PENDING_LIMIT', 'unsupported'))
     this.pendingCount++
-    const signal = AbortSignal.any([parent, session.signal, ...(event.event === 'Stop' ? [session.turnSignal] : []), this.lifetime.signal])
+    const signal = AbortSignal.any([parent, session.signal, ...(event.event === 'Stop' || notification ? [session.turnSignal] : []), this.lifetime.signal])
     const previous = this.serial.get(event.sessionID) ?? Promise.resolve()
     const pending = previous.catch(() => {}).then(async () => {
       if (signal.aborted) fail('TRANSCRIPT_CANCELLED')
@@ -308,10 +323,10 @@ export class ClaudeTranscript implements TranscriptService {
       if (history.id !== event.sessionID) fail('TRANSCRIPT_SESSION_MISMATCH')
       if (history.parentID !== undefined && (typeof history.parentID !== 'string' || !history.parentID)) fail('TRANSCRIPT_SCHEMA_INVALID')
       if (!session.turnID && event.event !== 'SessionStart') fail('TRANSCRIPT_TURN_UNAVAILABLE')
-      if (event.event === 'UserPromptSubmit') this.prompts.begin(session)
+      if (event.event === 'UserPromptSubmit' && !notification) this.prompts.begin(session)
       const entries = messages(this.options.host, event.sessionID, array(history.messages), this.stops)
       const rawContinuations = new Set(history.messages.flatMap(row => record(row) && ['user', 'assistant', 'synthetic'].includes(String(row.type)) && typeof row.id === 'string' ? [row.id] : []))
-      const rows = this.project(event, session, entries, history.parentID !== undefined, rawContinuations)
+      const rows = this.project(event, session, entries, history.parentID !== undefined, rawContinuations, notification)
       const text = rows.map(row => JSON.stringify(row)).join('\n') + '\n'
       if (Buffer.byteLength(text) > MAX_BYTES) fail('TRANSCRIPT_SIZE_LIMIT')
       if (signal.aborted) fail('TRANSCRIPT_CANCELLED')
@@ -401,7 +416,7 @@ export class ClaudeTranscript implements TranscriptService {
 
   inspect() { return Object.freeze({ created: this.directoryPath !== undefined, disposed: this.lifetime.signal.aborted, originals: this.originals.inspect().calls, originalBytes: this.originals.inspect().bytes, pending: this.pendingCount, ...this.prompts.inspect(), ...this.stops.inspect(), ...this.models.inspect() }) }
 
-  private project(event: TranscriptEvent, session: SessionSnapshot, history: readonly Message[], sidechain: boolean, rawContinuations: ReadonlySet<string>): readonly Record<string, JsonValue>[] {
+  private project(event: TranscriptEvent, session: SessionSnapshot, history: readonly Message[], sidechain: boolean, rawContinuations: ReadonlySet<string>, notification?: HostNotificationEvent): readonly Record<string, JsonValue>[] {
     const rows: Record<string, JsonValue>[] = []
     const background = new BackgroundHistory(this.options.background, session, 'claude-code')
     let parent: string | null = null
@@ -413,7 +428,8 @@ export class ClaudeTranscript implements TranscriptService {
     }
     const modeled = new Set(history.filter(message => message.role === 'assistant').map(message => message.turnID))
     this.stops.validateHistory(event.sessionID, new Set(history.filter(message => message.role === 'assistant').map(message => message.id)), rawContinuations)
-    if (event.event === 'UserPromptSubmit' && history.some(message => message.id === event.messageID)) fail('TRANSCRIPT_PROMPT_ALREADY_ADMITTED')
+    if (notification) this.validateNotification(notification, history, currentTurnID)
+    else if (event.event === 'UserPromptSubmit' && history.some(message => message.id === event.messageID)) fail('TRANSCRIPT_PROMPT_ALREADY_ADMITTED')
     const append = (identity: string, created: number, body: Record<string, JsonValue>) => {
       const id = uuid(JSON.stringify([event.sessionID, identity]))
       rows.push({ parentUuid: parent, isSidechain: sidechain, ...body, uuid: id, timestamp: new Date(created).toISOString(), cwd: this.options.directory, sessionId: event.sessionID, version: CONTRACT_VERSIONS['claude-code'] })
@@ -460,12 +476,26 @@ export class ClaudeTranscript implements TranscriptService {
       }
       for (const record of this.stops.read(event.sessionID, entry.id, entry.turnID, completionSignature(entry))) append('stop/' + record.id, record.created, { ...record.body })
     }
-    if (event.event === 'UserPromptSubmit' || event.event === 'SessionStart') {
+    if (event.event === 'UserPromptSubmit' && (!notification || notification.anchor.kind === 'prompt') || event.event === 'SessionStart') {
       if (event.event === 'UserPromptSubmit') startup(event.messageID)
       for (const record of this.starts.unbound(event.sessionID)) append('startup/' + record.id, record.created, { ...record.body })
     }
     if (!current && event.event !== 'UserPromptSubmit' && event.event !== 'Stop' && event.event !== 'SessionStart') fail('TRANSCRIPT_CURRENT_CALL_MISSING')
     background.complete()
     return rows
+  }
+
+  private validateNotification(event: HostNotificationEvent, history: readonly Message[], currentTurnID: string | undefined): void {
+    const anchor = event.anchor, hash = (text: string) => createHash('sha256').update(text).digest('hex')
+    if (anchor.kind === 'prompt') {
+      if (anchor.messageID !== event.messageID || anchor.signature !== hash(JSON.stringify([event.prompt])) || history.some(message => message.id === event.messageID)) fail('TRANSCRIPT_NOTIFICATION_ANCHOR_UNAVAILABLE')
+      return
+    }
+    if (currentTurnID !== event.messageID || anchor.messageID === event.messageID) fail('TRANSCRIPT_NOTIFICATION_ANCHOR_UNAVAILABLE')
+    const message = history.find(message => message.id === anchor.messageID && message.turnID === event.messageID && message.role === 'assistant')
+    const tool = message?.content.find((part): part is Tool => typeof part !== 'string' && part.id === anchor.callID)
+    if (!tool || tool.state.status !== 'completed' && tool.state.status !== 'error') fail('TRANSCRIPT_NOTIFICATION_ANCHOR_UNAVAILABLE')
+    const output = tool.state.status === 'error' ? typeof tool.state.error === 'string' ? tool.state.error : record(tool.state.error) ? tool.state.error.message : undefined : tool.state.output
+    if (typeof output !== 'string' || hash(output) !== anchor.signature) fail('TRANSCRIPT_NOTIFICATION_ANCHOR_UNAVAILABLE')
   }
 }
