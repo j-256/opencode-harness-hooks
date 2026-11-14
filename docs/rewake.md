@@ -12,7 +12,7 @@ An active callback block consumes the notification without cancelling the genuin
 
 ## Persistence and failure behavior
 
-Source attempts are checkpointed before execution. An unresolved attempt cannot execute again after restart. Saved notification history survives source deselection without authorizing new commands. Binding writes drain before cancellation rollback, and session deletion cancels owned work. A known-unsent SDK claim can be released; a submitted request without a conclusive acknowledgement remains explicitly unresolved and is never blindly retried. Diagnostics identify the session, operation, phase, outcome and timing without printing notification text.
+Source attempts are checkpointed before execution. An unresolved attempt cannot execute again after restart. Saved notification history survives source deselection without authorizing new commands. Binding writes drain before cancellation rollback, and session deletion cancels owned work. A conclusively rejected, unsaved input restores its proven previous owner only while that rejected generation still owns the session; newer genuine input and ambiguous saved inputs remain untouched. A known-unsent SDK claim can be released; a submitted request without a conclusive acknowledgement remains explicitly unresolved and is never blindly retried. Diagnostics identify the session, operation, phase, outcome and timing without printing notification text.
 
 UI messages use a separate bounded worker. A slow or failed UI transport does not block model admission. Retained acknowledgement permits retry; ambiguous delivery can repeat a warning, so exactly-once UI presentation is not claimed. See [durable session storage](session-state.md).
 

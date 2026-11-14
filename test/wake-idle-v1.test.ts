@@ -33,12 +33,13 @@ async function fixture(t: { after(callback: () => unknown): void }, output: obje
     const dispatched: DispatchResult = { entries: [{ ...origin, result }], actions: result.actions.map(action => ({ ...origin, action })), cancelled: false, diagnostic: { dispatchID: 'dispatch', sessionID: 'session', event: 'UserPromptSubmit', durationMs: 0, cancelled: false, failed: 0, unsupported: 0, skipped: 0, background: 0, handlers: [] } }
     await wake.capture(event, sessions.get('session'), dispatched, sessions.get('session').signal); return dispatched
   } })
-  let beforeResume: (() => void) | undefined, beforeRequest: (() => Promise<void>) | undefined
+  let beforeResume: (() => void) | undefined, beforeRequest: (() => Promise<void>) | undefined, afterRejection: ((raw: unknown) => void) | undefined
   const idle = new V1WakeIdle({ records, inputs, sessions, wake, state, diagnostic: value => diagnostics.push(value), history: async () => history, prompt: async (_session, body) => {
     requests.push(body)
     if (beforeRequest) { const run = beforeRequest; beforeRequest = undefined; await run() }
-    const info = { ...structuredClone(original.info), id: 'system', time: { created: 1700000000002 } }, parts = body.parts.map(part => ({ ...part, id: 'notification' }))
-    try { await idle.message('session', info, parts) } catch (error) { return { error } }
+    const suffix = requests.length === 1 ? '' : '-' + requests.length
+    const info = { ...structuredClone(original.info), id: body.messageID ?? 'system' + suffix, time: { created: 1700000000002 } }, parts = body.parts.map(part => ({ ...part, id: part.id ?? 'notification' + suffix }))
+    try { await idle.message('session', info, parts) } catch (error) { afterRejection?.({ info, parts }); return { error } }
     const raw = { info, parts }, index = history.findIndex(value => (value as typeof raw).info.id === info.id)
     if (index < 0) history.push(raw); else history[index] = raw
     if (body.noReply) beforeResume?.()
@@ -46,7 +47,7 @@ async function fixture(t: { after(callback: () => unknown): void }, output: obje
   } })
   t.after(async () => { await idle.dispose(); await wake.dispose(); records.dispose(); inputs.dispose(); sessions.dispose() })
   await wake.receive({ sessionID: 'session', delivery, signal: sessions.get('session').signal })
-  return { sessions, records, inputs, idle, wake, requests, events, history, writes, diagnostics, beforeResume: (run: () => void) => { beforeResume = run }, beforeIssue: (run: () => Promise<void> | void) => { beforeIssue = run }, beforeResuming: (run: () => Promise<void> | void) => { beforeResuming = run }, beforeRequest: (run: () => Promise<void>) => { beforeRequest = run } }
+  return { sessions, records, inputs, idle, wake, requests, events, history, writes, diagnostics, beforeResume: (run: () => void) => { beforeResume = run }, beforeIssue: (run: () => Promise<void> | void) => { beforeIssue = run }, beforeResuming: (run: () => Promise<void> | void) => { beforeResuming = run }, beforeRequest: (run: () => Promise<void>) => { beforeRequest = run }, afterRejection: (run: (raw: unknown) => void) => { afterRejection = run } }
 }
 
 test('idle delivery saves actual SDK identities before resuming one non-human model turn with the same part and variant', async t => {
@@ -72,6 +73,37 @@ test('an idle callback block consumes its receipt before persistence and does no
   assert.equal(f.requests.length, 1); assert.equal(f.history.length, 1); assert.equal(f.records.read(f.sessions.get('session'))[0]!.attempts[0]!.result!.outcome, 'block')
   assert.equal(f.inputs.read(f.sessions.get('session'))[0]!.phase, 'failed')
   f.idle.event('session.idle', { sessionID: 'session' }); await f.idle.settled('session'); assert.equal(f.requests.length, 1)
+})
+
+test('an unsaved blocked notification restores the proven host owner so a later independent wake can run', async t => {
+  const f = await fixture(t, { decision: 'block', reason: 'DENIED' })
+  f.idle.event('session.idle', { sessionID: 'session' }); await f.idle.settled('session')
+  await f.wake.receive({ sessionID: 'session', delivery: { ...delivery, id: 'next-job' }, signal: f.sessions.get('session').signal })
+  f.idle.resume('session'); await f.idle.settled('session')
+  assert.equal(f.requests.length, 2)
+  assert.equal(f.events.length, 2)
+  assert.equal(f.sessions.get('session').turnID, 'turn')
+  assert.equal(f.history.length, 1)
+  assert.ok(f.inputs.read(f.sessions.get('session')).every(input => input.phase === 'failed'))
+})
+
+test('a genuine input racing an idle block keeps its own turn and prevents idle recovery from replacing it', async t => {
+  const f = await fixture(t, { decision: 'block', reason: 'DENIED' })
+  f.afterRejection(() => { f.sessions.prompt('session', 'genuine', 'model'); f.idle.busy('session') })
+  f.idle.event('session.idle', { sessionID: 'session' }); await f.idle.settled('session')
+  assert.equal(f.sessions.get('session').turnID, 'genuine')
+  assert.equal(f.requests.length, 1)
+  assert.equal(f.idle.inspect().idle, 0)
+})
+
+test('a rejected SDK call with a persisted generated input stays ambiguous without restoring the previous owner', async t => {
+  const f = await fixture(t, { decision: 'block', reason: 'DENIED' })
+  f.afterRejection(raw => { f.history.push(raw) })
+  f.idle.event('session.idle', { sessionID: 'session' }); await f.idle.settled('session')
+  assert.equal(f.sessions.get('session').turnID, 'system')
+  assert.equal(f.requests.length, 1)
+  assert.equal(f.idle.inspect().idle, 0)
+  assert.ok(f.diagnostics.some(value => (value as { code: string }).code === 'HOST_WAKE_SAVE_FAILED'))
 })
 
 test('a genuine input after the SDK save prevents wake model resumption while preserving the saved non-human context', async t => {

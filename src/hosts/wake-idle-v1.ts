@@ -113,7 +113,16 @@ export class V1WakeIdle {
       if (saved.error) {
         const result = this.options.records.read(session).find(value => value.delivery.id === row.delivery.id)!.attempts.at(-1)?.result
         const history = await this.history(sessionID, signal), current = this.options.inputs.read(session).find(value => value.saveNonce === input.saveNonce)!
-        if ((result?.outcome === 'block' || result?.outcome === 'cancelled') && current.phase === 'failed' && !history.some(raw => record(raw) && record(raw.info) && raw.info.id === current.messageID)) { this.report(sessionID, 'HOST_WAKE_CONSUMED', 'success', started, row.delivery.id); return }
+        if ((result?.outcome === 'block' || result?.outcome === 'cancelled') && current.phase === 'failed' && !history.some(raw => record(raw) && record(raw.info) && raw.info.id === current.messageID)) {
+          const owner = this.owner(sessionID)
+          if (owner.turnID === current.messageID && !owner.turnSignal.aborted) {
+            const previous = history.filter(raw => record(raw) && record(raw.info) && raw.info.role === 'user').at(-1)
+            if (!current.previousTurnID || !record(previous) || !record(previous.info) || previous.info.id !== current.previousTurnID || !record(previous.info.model) || typeof previous.info.model.modelID !== 'string') fail('HOST_WAKE_INPUT_OWNER_MISMATCH')
+            this.options.sessions.prompt(sessionID, current.previousTurnID, previous.info.model.modelID)
+            this.idle.set(sessionID, Symbol())
+          }
+          this.report(sessionID, 'HOST_WAKE_CONSUMED', 'success', started, row.delivery.id); return
+        }
         fail('HOST_WAKE_SAVE_FAILED')
       }
       const ownedInput = this.options.inputs.saved(session, input.saveNonce, saved.data)
