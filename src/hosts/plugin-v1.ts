@@ -92,7 +92,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     const snapshot = await readHistory(event, signal)
     return history(snapshot.info, snapshot.messages)
   } })
-  const codexTranscripts = services.codexTranscripts ?? new CodexTranscript({ host: 'v1', directory: input.directory, background: backgroundRecords, history: async (event, signal) => {
+  const codexTranscripts = services.codexTranscripts ?? new CodexTranscript({ host: 'v1', directory: input.directory, background: backgroundRecords, wakes: wakeRecords, history: async (event, signal) => {
     const snapshot = await readHistory(event, signal)
     return codexHistoryV1(snapshot.info, snapshot.messages)
   } })

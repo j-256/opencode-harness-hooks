@@ -1,0 +1,29 @@
+{
+  "version": "0.167.0",
+  "payload": {
+    "type": "message",
+    "id": "<message-id>",
+    "role": "developer",
+    "content": [
+      {
+        "type": "input_text",
+        "text": "PROMPT_JOURNAL_CONTEXT"
+      }
+    ],
+    "internal_chat_message_metadata_passthrough": {
+      "turn_id": "<turn-id>",
+      "create_time": 0,
+      "content_item_kinds": [
+        "hooks.additional_context"
+      ],
+      "content_item_metadata": [
+        {
+          "provenance": {
+            "type": "harness",
+            "hook": true
+          }
+        }
+      ]
+    }
+  }
+}

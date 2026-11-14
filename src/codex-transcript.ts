@@ -18,6 +18,10 @@ import { BackgroundHistory } from './background-history.js'
 import type { HostPromptEvent } from './prompt-types.js'
 import type { HostNotificationEvent } from './notification.js'
 import { backgroundAnchor } from './background-records.js'
+import { CodexPromptContexts } from './codex-prompt-contexts.js'
+import type { DispatchResult } from './engine.js'
+import type { WakeRecords } from './wake-records.js'
+import { WakeHistory } from './wake-history.js'
 
 const MAX_BYTES = 32 * 1024 * 1024
 const MAX_CALLS = 20000
@@ -43,10 +47,11 @@ export interface CodexTranscriptService {
   observe(event: HostToolEvent, session: SessionSnapshot): void
   prepare(event: HostToolEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView>
   preparePrompt?(event: HostPromptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView>
+  admitPrompt?(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void
   prepareNotification?(event: HostNotificationEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView>
   dispose(): Promise<void>
 }
-interface Options { readonly host: HostVersion; readonly directory: string; readonly temporaryParent?: string; readonly background?: BackgroundRecords; readonly history: (event: HostToolEvent | HostPromptEvent | SessionStartEvent, signal: AbortSignal) => Promise<CodexTranscriptHistory> }
+interface Options { readonly host: HostVersion; readonly directory: string; readonly temporaryParent?: string; readonly background?: BackgroundRecords; readonly wakes?: WakeRecords; readonly history: (event: HostToolEvent | HostPromptEvent | SessionStartEvent, signal: AbortSignal) => Promise<CodexTranscriptHistory> }
 interface Published { readonly path?: string; readonly created: string; readonly fingerprints: ReadonlyMap<string, string>; readonly layout: readonly string[] }
 interface Startup { readonly contexts: readonly string[]; readonly created: number; messageID?: string }
 interface Startups { readonly signal: AbortSignal; readonly batches: Map<string, Startup>; readonly cleanup: () => void; bytes: number }
@@ -81,6 +86,7 @@ export class CodexTranscript implements CodexTranscriptService {
   private readonly published = new Map<string, Published>()
   private readonly deleted = new Set<string>()
   private readonly starts = new Map<string, Startups>()
+  private readonly prompts = new CodexPromptContexts()
   private readonly serial = new Map<string, Promise<unknown>>()
   private readonly lifetime = new AbortController()
   private startupBytes = 0
@@ -105,6 +111,7 @@ export class CodexTranscript implements CodexTranscriptService {
     return this.prepareEvent(inputEvent, inputSession, parent)
   }
   preparePrompt(event: HostPromptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView> { return this.prepareEvent(event, session, signal) }
+  admitPrompt(event: HostPromptEvent, session: SessionSnapshot, dispatch: DispatchResult): void { this.owner(event, session); this.prompts.admit(event, session, dispatch) }
   prepareNotification(input: HostNotificationEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView> {
     try { const event = Object.freeze({ ...input, anchor: backgroundAnchor(input.anchor) }); if (event.event !== 'UserPromptSubmit' || !snapshotID(event.notificationID)) fail('CODEX_TRANSCRIPT_NOTIFICATION_UNAVAILABLE'); return this.prepareEvent(event, session, signal, event) }
     catch (error) { return Promise.reject(error instanceof HostHookError && error.code === 'BACKGROUND_ANCHOR_INVALID' ? new HostHookError('CODEX_TRANSCRIPT_NOTIFICATION_UNAVAILABLE', 'unsupported') : error) }
@@ -173,6 +180,7 @@ export class CodexTranscript implements CodexTranscriptService {
 
   discardPendingPrompt(session: SessionSnapshot, messageID: string): void {
     if (this.originals.hasTurn(session.sessionID, messageID) || this.published.get(session.sessionID)?.layout.some(raw => { const row: unknown = JSON.parse(raw); return Array.isArray(row) && row[0] === 'message' && row[2] === messageID })) fail('SESSION_SNAPSHOT_PROMPT_RECONCILIATION_UNAVAILABLE')
+    this.prompts.discard(session, messageID)
     const state = this.starts.get(session.sessionID)
     if (!state) return
     if (state.signal !== session.signal) fail('SESSION_SNAPSHOT_OWNER_MISMATCH')
@@ -182,13 +190,14 @@ export class CodexTranscript implements CodexTranscriptService {
   snapshotV1(sessionID: string) {
     if (this.options.host !== 'v1') fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
     const published = this.published.get(sessionID)
-    return snapshotCopy({ kind: 'codex-transcript-v1', version: SESSION_SNAPSHOT_VERSION, sessionID, directory: this.options.directory, originals: this.originals.snapshot(sessionID), starts: [...(this.starts.get(sessionID)?.batches ?? [])].map(([activationID, batch]) => ({ activationID, contexts: batch.contexts, created: batch.created, messageID: batch.messageID ?? null })), published: published ? { created: published.created, fingerprints: [...published.fingerprints].map(([id, digest]) => ({ id, digest })), layout: published.layout } : null })
+    return snapshotCopy({ kind: 'codex-transcript-v1', version: SESSION_SNAPSHOT_VERSION, sessionID, directory: this.options.directory, originals: this.originals.snapshot(sessionID), starts: [...(this.starts.get(sessionID)?.batches ?? [])].map(([activationID, batch]) => ({ activationID, contexts: batch.contexts, created: batch.created, messageID: batch.messageID ?? null })), prompts: this.prompts.snapshot(sessionID), published: published ? { created: published.created, fingerprints: [...published.fingerprints].map(([id, digest]) => ({ id, digest })), layout: published.layout } : null })
   }
 
   restoreV1(session: SessionSnapshot, value: unknown): () => void {
     if (this.options.host !== 'v1') fail('SESSION_SNAPSHOT_HOST_UNSUPPORTED')
     if (this.lifetime.signal.aborted) fail('CODEX_TRANSCRIPT_CANCELLED')
-    const input = sessionSnapshot('codex-transcript-v1', value, session, ['directory', 'originals', 'starts', 'published'])
+    const hasPrompts = value !== null && typeof value === 'object' && Object.hasOwn(value, 'prompts')
+    const input = sessionSnapshot('codex-transcript-v1', value, session, ['directory', 'originals', 'starts', 'published', ...(hasPrompts ? ['prompts'] : [])])
     if (input.directory !== this.options.directory) fail('SESSION_SNAPSHOT_OWNER_MISMATCH')
     if (this.starts.has(session.sessionID) || this.published.has(session.sessionID) || this.serial.has(session.sessionID)) fail('SESSION_SNAPSHOT_STATE_CONFLICT')
     if (!Array.isArray(input.starts)) fail('SESSION_SNAPSHOT_SCHEMA_INVALID')
@@ -211,7 +220,9 @@ export class CodexTranscript implements CodexTranscriptService {
       }
       published = { created: row.created, fingerprints, layout: row.layout as string[] }
     }
-    const undo = this.originals.restore(session, input.originals)
+    const undoPrompts = this.prompts.restore(session, hasPrompts ? input.prompts : [])
+    let undo: () => void
+    try { undo = this.originals.restore(session, input.originals) } catch (error) { undoPrompts(); throw error }
     let state: Startups | undefined
     if (starts.size) {
       state = this.createStartups(session)
@@ -219,7 +230,7 @@ export class CodexTranscript implements CodexTranscriptService {
       state.bytes = bytes; this.startupBytes += bytes; this.startupBatches += starts.size
     }
     if (published) this.published.set(session.sessionID, published)
-    return () => { undo(); if (state && this.starts.get(session.sessionID) === state) state.cleanup(); if (this.published.get(session.sessionID) === published) this.published.delete(session.sessionID) }
+    return () => { undo(); undoPrompts(); if (state && this.starts.get(session.sessionID) === state) state.cleanup(); if (this.published.get(session.sessionID) === published) this.published.delete(session.sessionID) }
   }
 
   private createStartups(session: SessionSnapshot): Startups {
@@ -262,10 +273,12 @@ export class CodexTranscript implements CodexTranscriptService {
     await this.serial.get(sessionID)?.catch(() => {})
     await this.rollout.removeSession(identity(this.options.directory, sessionID))
     this.published.delete(sessionID)
+    this.prompts.remove(sessionID)
   }
 
   dispose(): Promise<void> {
     this.lifetime.abort()
+    this.prompts.dispose()
     for (const state of this.starts.values()) state.signal.removeEventListener('abort', state.cleanup)
     this.starts.clear(); this.startupBytes = 0; this.startupBatches = 0
     this.disposing ??= (async () => {
@@ -275,7 +288,7 @@ export class CodexTranscript implements CodexTranscriptService {
     return this.disposing
   }
 
-  inspect() { return Object.freeze({ ...this.rollout.inspect(), pendingTranscripts: this.pending, originalCalls: this.originals.inspect().calls, originalBytes: this.originals.inspect().bytes, startupBatches: this.startupBatches, startupBytes: this.startupBytes, startupBindings: [...this.starts.values()].reduce((count, state) => count + [...state.batches.values()].filter(batch => batch.messageID !== undefined).length, 0) }) }
+  inspect() { return Object.freeze({ ...this.rollout.inspect(), ...this.prompts.inspect(), pendingTranscripts: this.pending, originalCalls: this.originals.inspect().calls, originalBytes: this.originals.inspect().bytes, startupBatches: this.startupBatches, startupBytes: this.startupBytes, startupBindings: [...this.starts.values()].reduce((count, state) => count + [...state.batches.values()].filter(batch => batch.messageID !== undefined).length, 0) }) }
 
   private async publish(hostSessionID: string, history: CodexTranscriptHistory, frames: readonly CodexRolloutHistoryRecord[], signal: AbortSignal): Promise<Omit<CodexTranscriptView, 'turnID'>> {
     const keys = frameKeys(frames), structure = layout(history)
@@ -310,11 +323,19 @@ export class CodexTranscript implements CodexTranscriptService {
   private project(event: HostToolEvent | HostPromptEvent | SessionStartEvent, session: SessionSnapshot, history: CodexTranscriptHistory, requireCurrent = true): CodexRolloutHistoryRecord[] {
     const rows: CodexRolloutHistoryRecord[] = [], seen = new Set<string>()
     const background = new BackgroundHistory(this.options.background, session, 'codex')
+    const wakes = new WakeHistory(this.options.wakes, session)
     let turn: string | undefined, found = false, lastText = ''
+    const appendContexts = (origin: readonly string[], contexts: readonly string[], created: number) => {
+      for (const [index, text] of contexts.entries()) rows.push({ timestamp: iso(created), type: 'response_item', payload: { type: 'message', id: 'msg_' + identity(event.sessionID, ...origin, String(index)), role: 'developer', content: [{ type: 'input_text', text }], internal_chat_message_metadata_passthrough: { turn_id: turn!, create_time: created / MILLISECONDS_PER_SECOND, content_item_kinds: ['hooks.additional_context'], content_item_metadata: [{ provenance: { type: 'harness', hook: true } }] } } })
+    }
     const appendBackground = (entries: ReturnType<BackgroundHistory['prompt']>) => {
-      for (const row of entries) for (const [index, text] of row.model.entries()) {
-        const completedAt = row.completedAt
-        rows.push({ timestamp: iso(completedAt), type: 'response_item', payload: { type: 'message', id: 'msg_' + identity(event.sessionID, 'background', row.id, String(index)), role: 'developer', content: [{ type: 'input_text', text }], internal_chat_message_metadata_passthrough: { turn_id: turn!, create_time: completedAt / MILLISECONDS_PER_SECOND, content_item_kinds: ['hooks.additional_context'], content_item_metadata: [{ provenance: { type: 'harness', hook: true } }] } } })
+      for (const row of entries) appendContexts(['background', row.id], row.model, row.completedAt)
+    }
+    const appendWakes = (entries: ReturnType<WakeHistory['prompt']>) => {
+      for (const row of entries) {
+        const binding = row.binding!, attempt = row.attempts.find(attempt => attempt.id === binding.attemptID)
+        if (!attempt?.result) fail('WAKE_HISTORY_OWNER_MISMATCH')
+        appendContexts(['wake', row.deliveryID], binding.developer, attempt.result.completedAt)
       }
     }
     for (const message of history.messages) {
@@ -338,7 +359,14 @@ export class CodexTranscript implements CodexTranscriptService {
         rows.push({ timestamp, type: 'event_msg', payload: message.role === 'user' ? { type: 'user_message', message: text, images: [], local_images: [], text_elements: [] } : { type: 'agent_message', message: text } })
         if (message.role === 'assistant') lastText = text
       }
-      if (message.role === 'user') { appendText(message.content.join('\n'), 0); appendBackground(background.prompt(message.id, message.content as readonly string[])); continue }
+      if (message.role === 'user') {
+        const text = message.content.join('\n'), prompt = this.prompts.read(session, message.id, text)
+        appendText(text, 0)
+        if (prompt) appendContexts([message.id, 'prompt-context'], prompt.contexts, prompt.created)
+        appendBackground(background.prompt(message.id, message.content as readonly string[]))
+        appendWakes(wakes.prompt(message.id, message.content as readonly string[]))
+        continue
+      }
       for (const [index, part] of message.content.entries()) {
         if (typeof part === 'string') { if (part) appendText(part, index); continue }
         if (!part.id || !part.name || !['pending', 'running', 'completed', 'error'].includes(part.status)) fail('CODEX_TRANSCRIPT_HISTORY_INVALID')
@@ -355,11 +383,13 @@ export class CodexTranscript implements CodexTranscriptService {
           if (typeof part.output !== 'string' || part.completed === undefined) fail('CODEX_TRANSCRIPT_HISTORY_INVALID')
           rows.push({ timestamp: iso(part.completed), type: 'response_item', payload: { type: 'function_call_output', call_id: part.id, output: part.output, internal_chat_message_metadata_passthrough: attribution } })
           appendBackground(background.tool(message.id, message.turnID, part.id, part.output))
+          appendWakes(wakes.tool(message.id, message.turnID, part.id, part.output))
         }
       }
     }
     if (requireCurrent && (!found || history.messages.findLast(message => message.role === 'user')?.id !== session.turnID)) fail('CODEX_TRANSCRIPT_CURRENT_CALL_MISSING')
     background.complete()
+    wakes.complete()
     return rows
   }
 }

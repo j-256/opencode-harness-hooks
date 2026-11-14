@@ -306,6 +306,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     const session = sessions.get(event.sessionID)
     if (session.turnID !== event.messageID) throw new HostHookError('SESSION_STALE_TURN', 'cancelled')
     services.transcripts?.admitPrompt?.(event, session, dispatch)
+    services.codexTranscripts?.admitPrompt?.(event, session, dispatch)
   }
   const notification = async (input: HostNotificationEvent): Promise<DispatchResult> => {
     let anchor

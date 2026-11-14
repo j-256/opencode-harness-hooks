@@ -55,6 +55,13 @@ for (const { mixed, useMcp } of [{ mixed: false, useMcp: false }, { mixed: true,
   const body = await forwarded[1]!.json(), last = body.messages.findLast((row: { role: string }) => row.role === 'user')
   assert.equal(JSON.stringify(body).includes('CALLBACK_UI'), false)
   if (useMcp) { assert.equal(mcpCalls.length, 2); assert.equal(mcpCalls[0], 'GENUINE'); assert.ok(mcpCalls[1]!.startsWith('<task-notification>')); assert.ok(JSON.stringify(last).includes('MCP_CALLBACK_CONTEXT')) }
+  if (mixed) {
+    const callbacks = (await readFile(capture, 'utf8')).trim().split('\n').map(line => JSON.parse(line))
+    const notification = callbacks.find(row => row.dialect === 'codex' && row.prompt !== 'GENUINE')
+    assert.ok(notification)
+    const journal = notification.transcript.trim().split('\n').map((line: string) => JSON.parse(line))
+    assert.ok(journal.some((row: any) => row.payload.role === 'developer' && row.payload.content[0].text === 'GENUINE_CONTEXT'))
+  }
   assert.equal(last.role, 'user'); assert.ok(last.content.some((part: { text: string }) => part.text.includes('NOT USER INPUT')))
   assert.ok(last.content.some((part: { text: string }) => part.text.includes('CALLBACK_CONTEXT')))
   assert.equal(body.messages[0].content[0].text.includes('GENUINE_CONTEXT'), true)
