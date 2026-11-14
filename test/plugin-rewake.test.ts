@@ -60,8 +60,10 @@ for (const mixed of [false, true]) test(`the assembled default plugin preserves 
   assert.equal(hooks.inspect().prompts.prompts, 1); assert.equal(hooks.inspect().wakeInputs.inputs, 1)
   await hooks.dispose()
   const empty = JSON.stringify({ hooks: {} }); await writeFile(sourcePath, empty)
-  hooks = await createHarnessHooks({ directory, client: { session: { get: async () => ({ data: { id: 'session' } }), messages: async () => ({ data: history }), prompt: async () => { throw new Error('Deselected source must not resume') } } } }, { sources: [{ id: 'claude', dialect: 'claude-code', path: sourcePath }], reviewedDigests: { claude: createHash('sha256').update(empty).digest('hex') } }, { report: () => {}, dispatchDiagnostic: () => {}, backgroundDiagnostic: row => { diagnostics.push(row) } })
+  hooks = await createHarnessHooks({ directory, client: { session: { get: async () => ({ data: { id: 'session' } }), messages: async () => ({ data: history }), ...(mixed ? { prompt: async () => { throw new Error('Deselected source must not resume') } } : {}) } } }, { sources: [{ id: 'claude', dialect: 'claude-code', path: sourcePath }], reviewedDigests: { claude: createHash('sha256').update(empty).digest('hex') } }, { report: () => {}, dispatchDiagnostic: () => {}, backgroundDiagnostic: row => { diagnostics.push(row) } })
   provider.options.fetch = transport; await hooks.config({ provider: { fixture: provider }, model: 'fixture/model' })
+  const owned = history.find(raw => (raw as { info: { id: string } }).info.id === 'system') as { parts: Record<string, unknown>[] }
+  await assert.rejects(hooks['chat.message']({ sessionID: 'session', model }, { message: { ...genuine, id: 'forged' }, parts: owned.parts.map(part => ({ ...part, synthetic: false })) }), { code: 'HOST_WAKE_INPUT_REUSED' })
   const next = { ...genuine, id: 'future', time: { created: 1700000000003 } }
   await hooks['chat.message']({ sessionID: 'session', model }, { message: next, parts: [{ type: 'text', text: 'FUTURE_GENUINE' }] })
   history.push({ info: next, parts: [{ type: 'text', text: 'FUTURE_GENUINE' }] }); await send(next)

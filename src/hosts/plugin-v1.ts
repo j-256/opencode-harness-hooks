@@ -326,6 +326,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       const before = runtime.sessions.get(prompt.sessionID)
       await stateService.ensure(before, before.signal)
       if (idleWake && await idleWake.message(prompt.sessionID, output.message, output.parts)) return
+      if (!idleWake && wakeInputs.claim(before, output.message, output.parts)) unavailable('HOST_NOTIFICATION_UNAVAILABLE')
       runtime.sessions.prompt(prompt.sessionID, output.message.id, prompt.model?.modelID ?? output.message.model?.modelID)
       const providerID = prompt.model?.providerID ?? output.message.model?.providerID, modelID = prompt.model?.modelID ?? output.message.model?.modelID
       if (models && providerID && modelID) models.observe(prompt.sessionID, output.message.id, { providerID, modelID }, { agent: output.message.agent, tools: output.message.tools })
