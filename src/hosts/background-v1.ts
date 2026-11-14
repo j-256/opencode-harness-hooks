@@ -127,6 +127,11 @@ export class V1Background implements BackgroundExecutor {
           for (const row of batch) { this.jobs.delete(row.id); this.report(session.sessionID, 'retention', 'HOST_BACKGROUND_RETAINED', 'success', started, row.id) }
         } catch (error) { failure = error; throw error }
       })
+      if (this.options.wakes) await this.manager.deliver(session.sessionID, 'wake', async (batch, signal) => {
+        try {
+          for (const delivery of batch) { this.owner(session); await this.options.wakes!.receive({ sessionID: session.sessionID, delivery, signal }); this.owner(session); this.jobs.delete(delivery.id) }
+        } catch (error) { failure = error; throw error }
+      })
     } catch (error) { throw failure ?? error }
   }
   private schedule(sessionID: string): Promise<void> {

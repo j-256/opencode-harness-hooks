@@ -180,3 +180,17 @@ test('an owned wake receiver acknowledges durable completion without waiting for
   assert.equal(received.length, 1); assert.equal(wakes.read(sessions.get('session')).length, 1); assert.equal(records.read(sessions.get('session')).length, 0)
   assert.equal(background.inspect().jobs, 0)
 })
+
+test('a failed wake ownership transfer retries its completed receipt without spawning another command', async t => {
+  const sessions = new Sessions(), records = new BackgroundRecords(), wakes = new (await import('../src/wake-records.js')).WakeRecords(), receipts: { id: string; processID?: number }[] = []
+  sessions.prompt('session', 'turn')
+  const source = { ...registration('claude-code'), handler: { type: 'command' as const, command: 'wake', asyncRewake: true } }
+  const background = new V1Background({ records, state: { ensure: async () => {}, checkpoint: async () => {} }, diagnostic: () => {}, wakes: { records: wakes, receive: async notice => {
+    wakes.admit(sessions.get(notice.sessionID), notice.delivery); receipts.push({ id: notice.delivery.id, processID: notice.delivery.completion!.execution.processID! })
+    if (receipts.length === 1) throw new Error('Ownership checkpoint failed')
+  } } })
+  background.attach(sessions, [source]); t.after(async () => { await background.dispose(); records.dispose(); wakes.dispose(); sessions.dispose() })
+  const work: BackgroundWork = { registration: source, event: { host: 'v1', event: 'UserPromptSubmit', sessionID: 'session', cwd: process.cwd() }, sessionSignal: sessions.get('session').signal, invocation: { command: process.execPath, args: ['-e', "process.stderr.write('WAKE');process.exitCode=2"], cwd: process.cwd(), env: {}, stdin: '{}', timeoutMs: 5000 } }
+  assert.equal(background.enqueue(work).status, 'accepted'); await background.completed('session')
+  assert.equal(receipts.length, 2); assert.deepEqual(receipts[0], receipts[1]); assert.equal(wakes.read(sessions.get('session')).length, 1); assert.equal(background.inspect().jobs, 0)
+})
