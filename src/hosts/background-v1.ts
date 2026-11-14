@@ -7,18 +7,20 @@ import { runService } from '../service-execution.js'
 import type { RuntimeServices } from '../runtime.js'
 import type { SessionSnapshot, Sessions } from '../sessions.js'
 import type { Registration } from '../types.js'
+import type { WakeRecords } from '../wake-records.js'
+import type { V1Wake } from './wake-v1.js'
 
 const MAX_JOBS = 64
 const MAX_PENDING = 128
 const MAX_SESSIONS = 1024
 const UI_MS = 5000
 export interface V1BackgroundDiagnostic { readonly component: 'opencode-harness-hooks'; readonly operationID: string; readonly sessionID: string; readonly phase: 'completion' | 'retention' | 'binding' | 'ui'; readonly code: string; readonly outcome: 'success' | 'failed'; readonly durationMs: number; readonly jobID?: string }
-interface Options { readonly records: BackgroundRecords; readonly state: Pick<NonNullable<RuntimeServices['nativeState']>, 'ensure' | 'checkpoint'>; readonly toast?: (text: string, session: SessionSnapshot, signal: AbortSignal) => Promise<void>; readonly diagnostic?: (value: V1BackgroundDiagnostic) => void; readonly maxJobs?: number }
+interface Options { readonly records: BackgroundRecords; readonly state: Pick<NonNullable<RuntimeServices['nativeState']>, 'ensure' | 'checkpoint'>; readonly toast?: (text: string, session: SessionSnapshot, signal: AbortSignal) => Promise<void>; readonly diagnostic?: (value: V1BackgroundDiagnostic) => void; readonly maxJobs?: number; readonly wakes?: { readonly records: WakeRecords; readonly receive: V1Wake['receive'] } }
 function fail(code: string): never { throw new HostHookError(code, code === 'HOST_BACKGROUND_CANCELLED' ? 'cancelled' : 'unsupported') }
 function code(error: unknown, fallback: string): string { return error instanceof HostHookError ? error.code : fallback }
 
 export class V1Background implements BackgroundExecutor {
-  readonly supportsRewake = false
+  readonly supportsRewake: boolean
   private readonly manager: BackgroundManager
   private readonly options: Options
   private readonly lifetime = new AbortController()
@@ -37,14 +39,16 @@ export class V1Background implements BackgroundExecutor {
   constructor(options: Options) {
     this.options = { ...options }; this.maxJobs = options.maxJobs ?? MAX_JOBS
     if (!Number.isSafeInteger(this.maxJobs) || this.maxJobs < 1 || this.maxJobs > MAX_JOBS) fail('HOST_BACKGROUND_LIMIT')
-    this.manager = new BackgroundManager({ onEvent: row => this.event(row) })
+    this.supportsRewake = !!options.wakes
+    this.manager = new BackgroundManager({ onEvent: row => this.event(row), ...(options.wakes ? { wake: async notice => { await options.wakes!.receive(notice); this.jobs.delete(notice.delivery.id) } } : {}) })
   }
-  attach(sessions: Sessions, registrations: readonly Registration[]): void { if (this.sessions || this.lifetime.signal.aborted) fail('HOST_BACKGROUND_OWNER_MISMATCH'); this.options.records.configure(registrations.filter(row => row.handler.asyncRewake !== true)); this.sessions = sessions }
+  attach(sessions: Sessions, registrations: readonly Registration[]): void { if (this.sessions || this.lifetime.signal.aborted) fail('HOST_BACKGROUND_OWNER_MISMATCH'); this.options.records.configure(registrations.filter(row => row.handler.asyncRewake !== true)); this.options.wakes?.records.configure(registrations.filter(row => row.handler.asyncRewake === true)); this.sessions = sessions }
   enqueue(work: BackgroundWork): BackgroundSubmission {
     try {
       const session = this.session(work.event.sessionID)
       if (!work.sessionSignal || work.sessionSignal !== session.signal) fail('HOST_BACKGROUND_OWNER_MISMATCH')
-      this.options.records.assertRegistration(work.registration)
+      if (work.registration.handler.asyncRewake === true) { if (!this.options.wakes) fail('HOST_ASYNC_REWAKE_UNAVAILABLE'); this.options.wakes.records.assertRegistration(work.registration) }
+      else this.options.records.assertRegistration(work.registration)
       if (this.jobs.size >= this.maxJobs) fail('HOST_BACKGROUND_LIMIT')
       const submitted = this.manager.enqueue(work)
       if (submitted.status === 'accepted') this.jobs.set(submitted.id, session.sessionID)

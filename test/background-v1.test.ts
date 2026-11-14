@@ -166,3 +166,17 @@ test('failed durable cancellation rollback rejects model admission with an actio
   assert.ok(JSON.stringify(f.diagnostics).includes('HOST_BACKGROUND_BINDING_ROLLBACK_FAILED'))
   await assert.rejects(f.background.prepare(f.owner(), anchor, f.owner().turnSignal))
 })
+
+test('an owned wake receiver acknowledges durable completion without waiting for a model and shares registration bounds', async t => {
+  const sessions = new Sessions(), records = new BackgroundRecords(), wakes = new (await import('../src/wake-records.js')).WakeRecords(), received: unknown[] = []
+  sessions.prompt('session', 'turn')
+  const source = { ...registration('claude-code'), handler: { type: 'command' as const, command: 'wake', asyncRewake: true } }
+  const background = new V1Background({ records, state: { ensure: async () => {}, checkpoint: async () => {} }, diagnostic: () => {}, wakes: { records: wakes, receive: async notice => { wakes.admit(sessions.get(notice.sessionID), notice.delivery); received.push(notice.delivery) } } })
+  background.attach(sessions, [source]); t.after(async () => { await background.dispose(); records.dispose(); wakes.dispose(); sessions.dispose() })
+  assert.equal(background.supportsRewake, true)
+  const work: BackgroundWork = { registration: source, event: { host: 'v1', event: 'UserPromptSubmit', sessionID: 'session', cwd: process.cwd() }, sessionSignal: sessions.get('session').signal, invocation: { command: process.execPath, args: ['-e', "process.stderr.write('WAKE');process.exitCode=2"], cwd: process.cwd(), env: {}, stdin: '{}', timeoutMs: 5000 } }
+  assert.equal(background.enqueue({ ...work, registration: { ...source, handler: { ...source.handler, command: 'changed' } } }).status, 'unsupported')
+  assert.equal(background.enqueue(work).status, 'accepted'); await background.completed('session')
+  assert.equal(received.length, 1); assert.equal(wakes.read(sessions.get('session')).length, 1); assert.equal(records.read(sessions.get('session')).length, 0)
+  assert.equal(background.inspect().jobs, 0)
+})
