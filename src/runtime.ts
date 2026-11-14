@@ -288,6 +288,7 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
     services.transcripts?.admitPrompt?.(event, session, dispatch)
   }
   return { report, sessions, tools, agentTool, prompt, admitPrompt, promptOperation, observeModel, needsModelArtifacts,
+    hasMcpHooks: sources.some(source => source.enabled && source.registrations.some(registration => registration.handler.type === 'mcp_tool')),
     hasAgentModelHooks: sources.some(source => source.enabled && source.dialect === 'claude-code' && source.registrations.some(registration => registration.handler.type === 'agent')),
     hasPromptModelHooks: sources.some(source => source.dialect === 'claude-code' && source.registrations.some(registration => registration.handler.type === 'prompt')),
     modelOptions: Object.freeze({ ...(options.agentModel ? { agentModel: options.agentModel } : {}), ...(options.promptModel ? { promptModel: options.promptModel } : {}), ...(options.modelAliases ? { modelAliases: options.modelAliases } : {}) }),

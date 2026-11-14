@@ -13,12 +13,14 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   sessions.prompt('parent', 'turn', 'parent-model')
   let service!: V1McpTools, status = 'connected', network = 0, failDelete = false, missingPolicy = false, wrongTool = false, wrongArgs = false, foreignResult = false, wrongFence = false, failedConnect = false, permission = false
   let statusHold: (() => Promise<void>) | undefined
+  let connectHold: ((signal: AbortSignal) => Promise<void>) | undefined
+  let servers = ['fixture']
   let creating: (() => void) | undefined, completed: (() => void) | undefined
   let rawOutput: unknown = { content: [{ type: 'text', text: '{"continue":false}' }] }
   const children = new Set<string>(), calls: { phase: string; value?: unknown }[] = [], diagnostics: unknown[] = []
   const client: V1McpClient = { mcp: {
-    status: async () => { calls.push({ phase: 'status' }); if (statusHold) await statusHold(); return { data: { fixture: { status } } } },
-    connect: async () => { calls.push({ phase: 'connect' }); if (failedConnect) throw new Error('PRIVATE_CONNECTION_ERROR'); status = 'connected'; return { data: true } },
+    status: async () => { calls.push({ phase: 'status' }); if (statusHold) await statusHold(); return { data: Object.fromEntries(servers.map(name => [name, { status }])) } },
+    connect: async request => { calls.push({ phase: 'connect' }); if (connectHold) await connectHold(request.signal); if (failedConnect) throw new Error('PRIVATE_CONNECTION_ERROR'); status = 'connected'; return { data: true } },
   }, session: {
     get: async () => ({ data: { id: 'parent', directory } }),
     create: async request => { calls.push({ phase: 'create', value: request.body }); const info = { id: 'child', directory, title: request.body.title, parentID: request.body.parentID, ...(missingPolicy ? {} : { permission: request.body.permission }) }; children.add(info.id); service.event('session.created', { info }); creating?.(); return { data: info } },
@@ -53,7 +55,7 @@ async function fixture(t: { after: (fn: () => Promise<void>) => void }) {
   service.configure(config)
   const request = (signal = sessions.get('parent').turnSignal): McpHookRequest => ({ dialect: 'claude-code', event: 'PreToolUse', sourceID: 'source', sessionID: 'parent', cwd: directory, server: 'fixture', tool: 'check', input: { value: 'Owned input' }, signal, timeoutMs: 1000, allowAuthentication: false, connectionPolicy: 'wait-or-connect-cached' })
   t.after(async () => { failDelete = false; await service.dispose(); sessions.dispose(); await rm(directory, { recursive: true, force: true }) })
-  return { holdStatus: (fn: () => Promise<void>) => { statusHold = fn }, permission: () => { permission = true }, failConnect: () => { failedConnect = true }, service, sessions, calls, diagnostics, children, config, request, network: () => network, status: (value: string) => { status = value }, raw: (value: unknown) => { rawOutput = value }, missingPolicy: () => { missingPolicy = true }, wrongTool: () => { wrongTool = true }, wrongArgs: () => { wrongArgs = true }, foreignResult: () => { foreignResult = true }, wrongFence: () => { wrongFence = true }, creating: (fn: () => void) => { creating = fn }, completed: (fn: () => void) => { completed = fn }, failDelete: (value: boolean) => { failDelete = value } }
+  return { holdConnect: (fn: (signal: AbortSignal) => Promise<void>) => { connectHold = fn }, servers: (values: string[]) => { servers = values }, holdStatus: (fn: () => Promise<void>) => { statusHold = fn }, permission: () => { permission = true }, failConnect: () => { failedConnect = true }, service, sessions, calls, diagnostics, children, config, request, network: () => network, status: (value: string) => { status = value }, raw: (value: unknown) => { rawOutput = value }, missingPolicy: () => { missingPolicy = true }, wrongTool: () => { wrongTool = true }, wrongArgs: () => { wrongArgs = true }, foreignResult: () => { foreignResult = true }, wrongFence: () => { wrongFence = true }, creating: (fn: () => void) => { creating = fn }, completed: (fn: () => void) => { completed = fn }, failDelete: (value: boolean) => { failDelete = value } }
 }
 
 test('owned MCP execution emits only the exact deterministic tool request and returns its raw policy without network calls', async t => {
@@ -168,4 +170,42 @@ test('late status responses cannot start cached reconnection after the handler w
     release(); await new Promise(resolve => setImmediate(resolve))
     assert.equal(f.calls.some(row => row.phase === 'connect' || row.phase === 'create'), false)
   }
+})
+
+test('private provider admission preserves the caller allowlist and respects explicit provider disablement', async t => {
+  const f = await fixture(t), allowed = ['fixture'], config = Object.assign(f.config, { enabled_providers: allowed })
+  f.service.configure(config)
+  assert.deepEqual(config.enabled_providers, ['fixture', MCP_PROVIDER_ID]); assert.deepEqual(allowed, ['fixture'])
+  f.service.configure(config); assert.deepEqual(config.enabled_providers, ['fixture', MCP_PROVIDER_ID])
+  await f.service.dispose(); assert.equal(config.enabled_providers, allowed)
+  const g = await fixture(t)
+  assert.throws(() => g.service.configure(Object.assign(g.config, { disabled_providers: [MCP_PROVIDER_ID] })), { code: 'HOST_MCP_PROVIDER_DISABLED' })
+})
+
+
+test('repeated observational hooks coalesce one held reconnect and disposal cancels it', async t => {
+  const f = await fixture(t); f.status('failed')
+  let cancelled = 0
+  f.holdConnect(signal => new Promise(resolve => signal.addEventListener('abort', () => { cancelled++; resolve() }, { once: true })))
+  for (let index = 0; index < 40; index++) await assert.rejects(f.service.execute({ ...f.request(), connectionPolicy: 'connect-cached-without-waiting' }), { code: 'MCP_SERVER_NOT_READY' })
+  assert.equal(f.calls.filter(row => row.phase === 'connect').length, 1)
+  assert.equal(f.service.inspect().connections, 1)
+  await f.service.dispose(); assert.equal(cancelled, 1); assert.equal(f.service.inspect().connections, 0)
+})
+
+test('distinct observational servers cannot create an unbounded set of held reconnects', async t => {
+  const f = await fixture(t), names = Array.from({ length: 80 }, (_, index) => 'server' + index); f.status('failed'); f.servers(names)
+  let cancelled = 0
+  f.holdConnect(signal => new Promise(resolve => signal.addEventListener('abort', () => { cancelled++; resolve() }, { once: true })))
+  const outcomes: string[] = []
+  for (const server of names) {
+    await assert.rejects(f.service.execute({ ...f.request(), server, connectionPolicy: 'connect-cached-without-waiting' }), (error: unknown) => {
+      assert.ok(error && typeof error === 'object' && 'code' in error)
+      const code = String(error.code); assert.ok(['MCP_SERVER_NOT_READY', 'MCP_CONNECTION_LIMIT'].includes(code)); outcomes.push(code); return true
+    })
+  }
+  assert.ok(outcomes.includes('MCP_CONNECTION_LIMIT'))
+  const started = f.calls.filter(row => row.phase === 'connect').length
+  assert.ok(started > 0 && started <= 32); assert.equal(f.service.inspect().connections, started)
+  await f.service.dispose(); assert.equal(cancelled, started); assert.equal(f.service.inspect().connections, 0)
 })

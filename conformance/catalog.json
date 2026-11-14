@@ -570,6 +570,13 @@
       "event": "UserPromptSubmit",
       "area": "handlers",
       "summary": "Owned agent verdicts, nested tool policies, permissions, incomplete and failure admission, bounded inference and child cleanup"
+    },
+    {
+      "id": "claude-code.handlers.mcp-pretool-controls",
+      "dialect": "claude-code",
+      "event": "PreToolUse",
+      "area": "handlers",
+      "summary": "Configured MCP exact arguments, text decisions, nonblocking failure, recursion suppression and owned child cleanup"
     }
   ],
   "evidence": [
@@ -1106,6 +1113,29 @@
         "handlers"
       ],
       "scope": "Owned V1 agent evaluation, nested native projections, caller policies, permission replies, cancellation and classified evidence; actual comparison is separate"
+    },
+    {
+      "id": "mcp-service-controls",
+      "level": "unit-test",
+      "artifacts": [
+        "test/v1-mcp-protocol.test.ts",
+        "test/v1-mcp-service.test.ts",
+        "test/v1-mcp-transport.test.ts",
+        "test/plugin-mcp.test.ts",
+        "test/conformance-mcp.test.mjs",
+        "test/fixtures/v1-mcp-boundaries.json"
+      ],
+      "dialects": [
+        "claude-code",
+        "codex"
+      ],
+      "events": [
+        "PreToolUse"
+      ],
+      "areas": [
+        "handlers"
+      ],
+      "scope": "Guarded V1 identity, raw output and native metadata boundaries, deterministic owned dispatch, connection policy and callback isolation; actual comparison is separate"
     }
   ],
   "cases": [
@@ -1506,6 +1536,25 @@
         "Command hooks run while prompt and agent model hooks do not recurse",
         "Malformed verdicts do not reach tool hooks; incomplete, timeout, API 400 and turn-limit outcomes admit no submission attachments",
         "Parent transcript excludes evaluator call identities and parent instructions stay outside evaluator requests",
+        "Owned child removal and unchanged source, hook and adapter bytes"
+      ]
+    },
+    {
+      "id": "claude.pretooluse.mcp",
+      "dialect": "claude-code",
+      "hosts": [
+        "v1"
+      ],
+      "requirements": [
+        "claude-code.handlers.mcp-pretool-controls"
+      ],
+      "description": "Independent native and stock V1 local MCP text controls with unchanged source and server bytes and synthetic providers",
+      "observables": [
+        "One configured raw MCP invocation with exact substituted arguments",
+        "Allow and denial controls retain or prevent the parent shell effect",
+        "Tool errors, empty or malformed text and timeout remain nonblocking",
+        "Multiple text blocks retain their JSON decision",
+        "No native hook recursion or evaluator identity in the parent transcript",
         "Owned child removal and unchanged source, hook and adapter bytes"
       ]
     }

@@ -22,6 +22,8 @@ import { MODEL_REQUEST_HEADER, V1PromptModels } from './model-v1.js'
 import { V1AgentPermissions } from './agent-permissions-v1.js'
 import { V1AgentModels, AGENT_VERDICT_TOOL } from './agent-v1.js'
 import type { V1ModelClient } from './model-v1.js'
+import { V1McpTools } from './mcp-v1.js'
+import type { V1McpClient } from './mcp-v1.js'
 
 const MAX_SESSION_CLEANUPS = 1024
 const NATIVE_VERDICT_TOOL = 'StructuredOutput'
@@ -31,6 +33,7 @@ export interface V1Input {
   readonly directory: string
   readonly client?: {
     readonly app?: NonNullable<V1ModelClient['app']>
+    readonly mcp?: NonNullable<V1McpClient['mcp']>
     readonly config?: { readonly get: (options: { readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }> }
     readonly session: Omit<V1ModelClient['session'], 'get'> & {
       readonly get: (options: { readonly path: { readonly id: string }; readonly signal: AbortSignal }) => Promise<{ readonly data?: unknown; readonly error?: unknown }>
@@ -92,17 +95,20 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   } })
   const stateService = services.nativeState ?? nativeState!
   const startup = new V1Startups(input, transcripts, codexTranscripts, services, stateService)
-  let models: V1PromptModels | undefined, agents: V1AgentModels | undefined
+  let models: V1PromptModels | undefined, agents: V1AgentModels | undefined, mcp: V1McpTools | undefined
   let agentPermissions: V1AgentPermissions | undefined
   let agentTools: ReturnType<typeof createV1Hooks> | undefined
-  const internal = (sessionID: string) => agents?.owns(sessionID) ? agents : models?.owns(sessionID) ? models : undefined
+  const internal = (sessionID: string) => mcp?.owns(sessionID) ? mcp : agents?.owns(sessionID) ? agents : models?.owns(sessionID) ? models : undefined
   const runtime = await createRuntime('v1', input.directory, options, { ...services, host: { ...services.host, environment, ...(!services.host?.evaluatePrompt ? { evaluatePrompt: request => {
     if (!models) unavailable('HOST_PROMPT_MODEL_UNAVAILABLE')
     return models.evaluate(request)
   } } : {}), ...(!services.host?.runAgent ? { runAgent: request => {
     if (!agents) unavailable('HOST_AGENT_MODEL_UNAVAILABLE')
     return agents.evaluate(request)
-  } } : {}) }, transcripts, codexTranscripts, nativeState: stateService, sessionStart: startup.service })
+  } } : {}), ...(!services.host?.mcp ? { mcp: { timeoutAccounting: 'wall' as const, execute: request => {
+    if (!mcp) unavailable('HOST_MCP_TOOL_UNAVAILABLE')
+    return mcp.execute(request)
+  } } } : {}) }, transcripts, codexTranscripts, nativeState: stateService, sessionStart: startup.service })
   startup.attach(runtime)
   if (!services.host?.evaluatePrompt && runtime.hasPromptModelHooks) {
     models = await V1PromptModels.create({ directory: input.directory, ...(input.client ? { client: input.client } : {}) })
@@ -130,6 +136,10 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     })
     agents.attach(runtime.sessions, runtime.modelOptions)
   }
+  if (!services.host?.mcp && runtime.hasMcpHooks) {
+    mcp = await V1McpTools.create({ directory: input.directory, ...(input.client ? { client: input.client } : {}) })
+    mcp.attach(runtime.sessions)
+  }
   const hasContextHooks = runtime.hasPromptHooks || runtime.hasStartHooks
   const approvals = new CallApprovals({ diagnostic: runtime.tools.diagnostic })
   const needsProjection = (sessionID: string) => hasContextHooks || contexts.requiresProjection(sessionID)
@@ -155,7 +165,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     const wrapped: typeof fetch = async (input, init) => {
       const headers = new Headers(init?.headers ?? (input instanceof Request ? input.headers : undefined))
       if (headers.has(MODEL_REQUEST_HEADER)) {
-        const evaluator = [models, agents].find(service => service?.ownsRequest(headers.get(MODEL_REQUEST_HEADER)!))
+        const evaluator = [models, agents, mcp].find(service => service?.ownsRequest(headers.get(MODEL_REQUEST_HEADER)!))
         if (!evaluator || headers.has(PROMPT_REQUEST_HEADER)) unavailable('HOST_MODEL_REQUEST_OWNER_MISMATCH')
         return evaluator.fetch(id, original, input, init)
       }
@@ -174,7 +184,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   let retainedProjection = false
   try { retainedProjection = !hasContextHooks && nativeState ? await nativeState.requiresProjection() : false }
   catch (error) { await Promise.allSettled([startup.dispose(), runtime.dispose(), nativeState?.dispose()]); contexts.dispose(); throw error }
-  if ((hasContextHooks || retainedProjection || models || agents) && managed) managed.attach(original => wrap(managed.providerID, original))
+  if ((hasContextHooks || retainedProjection || models || agents || mcp) && managed) managed.attach(original => wrap(managed.providerID, original))
   const protocols = new Map<string, { readonly turnID: string; readonly providerID: string; readonly protocol: PromptProtocol }>()
   const reply = input.client?.postSessionIdPermissionsPermissionId?.bind(input.client)
   const tools = createV1Hooks({ ...runtime.tools, ...(!runtime.tools.preapprove && reply ? { preapprove: async (event: HostToolEvent) => approvals.remember(event, runtime.sessions.get(event.sessionID)) } : {}) })
@@ -182,7 +192,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     agentPermissions = new V1AgentPermissions({ directory: input.directory, environment, ...(input.serverUrl ? { serverUrl: input.serverUrl } : {}), owner: request => agents!.permissionOwner(request) })
     agentTools = createV1Hooks({ ...runtime.tools, dispatch: event => runtime.agentTool(agents!.execution(event.sessionID), event), ...(!runtime.tools.preapprove ? { preapprove: async (event: HostToolEvent) => { agentPermissions!.approve(agents!.execution(event.sessionID), { ...event, tool: event.tool === NATIVE_VERDICT_TOOL ? AGENT_VERDICT_TOOL : event.tool }) } } : {}) })
   }
-  const disposeSession = async (sessionID: string) => { runtime.sessions.close(sessionID); agentPermissions?.removeSession(sessionID); protocols.delete(sessionID); await Promise.all([tools.disposeSession(sessionID), models?.removeSession(sessionID), agents?.removeSession(sessionID), agentTools?.disposeSession(sessionID)]) }
+  const disposeSession = async (sessionID: string) => { runtime.sessions.close(sessionID); agentPermissions?.removeSession(sessionID); protocols.delete(sessionID); await Promise.all([tools.disposeSession(sessionID), models?.removeSession(sessionID), agents?.removeSession(sessionID), mcp?.removeSession(sessionID), agentTools?.disposeSession(sessionID)]) }
   const cleanups = new Map<string, Promise<void>>()
   const cleanupFailures = new Map<string, readonly { readonly phase: string; readonly code: string }[]>()
   let cleanupObserverFailures = 0
@@ -222,7 +232,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   }
   const hooks = {
     ...tools,
-    config: async (config: { provider?: Record<string, { options?: Record<string, unknown> }>; model?: string; small_model?: string; shell?: string; agent?: Record<string, unknown>; permission?: Record<string, unknown> }) => {
+    config: async (config: { provider?: Record<string, { options?: Record<string, unknown> }>; enabled_providers?: string[]; disabled_providers?: string[]; model?: string; small_model?: string; shell?: string; agent?: Record<string, unknown>; permission?: Record<string, unknown> }) => {
       await startup.configure(config)
       models?.configure(config)
       if (agents) {
@@ -232,6 +242,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
         agents.configure(config)
         config.permission ??= {}; config.permission[AGENT_VERDICT_TOOL] = 'deny'
       }
+      mcp?.configure(config)
       config.provider ??= {}
       if (config.model?.includes('/')) config.provider[config.model.split('/')[0]!] ??= {}
       if (models || agents) for (const ref of [config.small_model, runtime.modelOptions.promptModel, runtime.modelOptions.agentModel, ...runtime.nativeAgentModels, ...Object.values(runtime.modelOptions.modelAliases ?? {}), ...runtime.nativePromptModels]) if (ref?.includes('/')) config.provider[ref.split('/')[0]!] ??= {}
@@ -240,7 +251,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
         if (id === managed?.providerID) {
           if (provider.options.fetch !== undefined) {
             rejectedTransports.add(id)
-            if (hasContextHooks || models || agents) unavailable('HOST_PROMPT_TRANSPORT_UNAVAILABLE')
+            if (hasContextHooks || models || agents || mcp) unavailable('HOST_PROMPT_TRANSPORT_UNAVAILABLE')
             continue
           }
           rejectedTransports.delete(id)
@@ -320,7 +331,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
         try { await agentPermissions!.reply(event.properties) } catch (error) { agents.failPermission(event.properties.sessionID, error instanceof HostHookError ? error.code : 'HOST_AGENT_PERMISSION_FAILED') }
         return
       }
-      if (agents?.event(event.type, event.properties) || models?.event(event.type, event.properties)) return
+      if (mcp?.event(event.type, event.properties) || agents?.event(event.type, event.properties) || models?.event(event.type, event.properties)) return
       startup.event(event.type, event.properties)
       if (event.type === 'session.created' && record(event.properties)) {
         const info = record(event.properties.info) ? event.properties.info : undefined
@@ -346,13 +357,14 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
     },
     'shell.env': async (input: { readonly sessionID?: string }, output: { readonly env: Record<string, string> }) => {
       if (!input.sessionID) return
+      if (mcp?.owns(input.sessionID)) unavailable('HOST_MCP_TOOL_OWNER_MISMATCH')
       if (models?.owns(input.sessionID)) unavailable('HOST_MODEL_TOOL_UNAVAILABLE')
       if (agents?.owns(input.sessionID)) { const execution = agents.execution(input.sessionID); Object.assign(output.env, await startup.shellEnvironment(runtime.sessions.get(execution.parentID))); return }
       Object.assign(output.env, await startup.shellEnvironment(runtime.sessions.get(input.sessionID)))
     },
-    inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), ...(models ? { models: models.inspect() } : {}), ...(agents ? { agents: agents.inspect(), agentPermissions: agentPermissions!.inspect(), agentTools: agentTools!.inspect() } : {}), cleanup: Object.freeze({ pending: cleanups.size, failedSessions: cleanupFailures.size, overflowFailures: cleanupOverflowFailures, observerFailures: cleanupObserverFailures }), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
+    inspect: () => ({ ...tools.inspect(), permissions: approvals.inspect(), prompts: contexts.inspect(), runtime: runtime.inspect(), ...(models ? { models: models.inspect() } : {}), ...(mcp ? { mcp: mcp.inspect() } : {}), ...(agents ? { agents: agents.inspect(), agentPermissions: agentPermissions!.inspect(), agentTools: agentTools!.inspect() } : {}), cleanup: Object.freeze({ pending: cleanups.size, failedSessions: cleanupFailures.size, overflowFailures: cleanupOverflowFailures, observerFailures: cleanupObserverFailures }), ...(nativeState ? { nativeState: nativeState.inspect() } : {}) }),
     disposeSession,
-    dispose: async () => { runtime.sessions.dispose(); await Promise.all([models?.dispose(), agents?.dispose()]); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await Promise.allSettled([...cleanups.values()]); try { await startup.dispose(); await tools.dispose(); await agentTools?.dispose(); await agentPermissions?.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose() } },
+    dispose: async () => { runtime.sessions.dispose(); await Promise.all([models?.dispose(), agents?.dispose(), mcp?.dispose()]); contexts.dispose(); protocols.clear(); wrappers.clear(); delegates.clear(); rejectedTransports.clear(); await Promise.allSettled([...cleanups.values()]); try { await startup.dispose(); await tools.dispose(); await agentTools?.dispose(); await agentPermissions?.dispose(); await approvals.dispose(); await runtime.dispose() } finally { await nativeState?.dispose() } },
   }
   const message = guarded(runtime, 'admission', hooks['chat.message'], (prompt, output) => ({ sessionID: prompt.sessionID, messageID: output.message.id }))
   const parameters = guarded(runtime, 'parameters', hooks['chat.params'], prompt => ({ sessionID: prompt.sessionID, messageID: prompt.message.id }))
@@ -364,8 +376,8 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   return {
     ...hooks,
     ...(agents ? { tool: { [AGENT_VERDICT_TOOL]: agents.verdictTool } } : {}),
-    'tool.execute.before': async (...args: Parameters<typeof tools['tool.execute.before']>) => { if (agents?.owns(args[0].sessionID)) return agents.beforeTool(...args); if (models?.owns(args[0].sessionID)) return models.tool(args[0]); return tools['tool.execute.before'](...args) },
-    'tool.execute.after': async (...args: Parameters<typeof tools['tool.execute.after']>) => { if (agents?.owns(args[0].sessionID)) return agents.afterTool(...args); if (models?.owns(args[0].sessionID)) return models.tool(args[0]); return tools['tool.execute.after'](...args) },
+    'tool.execute.before': async (...args: Parameters<typeof tools['tool.execute.before']>) => { if (mcp?.owns(args[0].sessionID)) return mcp.beforeTool(...args); if (agents?.owns(args[0].sessionID)) return agents.beforeTool(...args); if (models?.owns(args[0].sessionID)) return models.tool(args[0]); return tools['tool.execute.before'](...args) },
+    'tool.execute.after': async (...args: Parameters<typeof tools['tool.execute.after']>) => { if (mcp?.owns(args[0].sessionID)) return mcp.afterTool(...args); if (agents?.owns(args[0].sessionID)) return agents.afterTool(...args); if (models?.owns(args[0].sessionID)) return models.tool(args[0]); return tools['tool.execute.after'](...args) },
     'chat.message': async (...args: Parameters<typeof message>) => { const evaluator = internal(args[0].sessionID); if (evaluator) return evaluator.message(...args); return message(...args) },
     'chat.params': async (...args: Parameters<typeof parameters>) => {
       const prompt = args[0]
@@ -377,7 +389,7 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
       if (!id || !valid || id !== prompt.model?.providerID) unavailable('HOST_PROMPT_TRANSPORT_UNAVAILABLE')
     },
     'chat.headers': async (...args: Parameters<typeof headers>) => { const evaluator = internal(args[0].sessionID); if (evaluator) { evaluator.headers(args[0]); evaluator.requestHeaders(args[0], args[1].headers); return }; return headers(...args) },
-    'experimental.chat.messages.transform': async (...args: Parameters<typeof messages>) => { if (agents?.layout(args[1].messages) || models?.layout(args[1].messages)) return; return messages(...args) },
+    'experimental.chat.messages.transform': async (...args: Parameters<typeof messages>) => { if (mcp?.layout(args[1].messages) || agents?.layout(args[1].messages) || models?.layout(args[1].messages)) return; return messages(...args) },
     'experimental.chat.system.transform': async (prompt: Prompt, output: { system: string[] }) => { internal(prompt.sessionID)?.system(prompt, output) },
   }
 }

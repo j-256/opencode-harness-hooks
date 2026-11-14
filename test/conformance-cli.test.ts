@@ -169,3 +169,12 @@ test('agent conformance exposes its named case without weakening dependency and 
   const wrongHost = await invoke(['--case', name, '--host', 'v2'], { PATH: '' })
   assert.equal(wrongHost.status, 2); assert.match(wrongHost.stderr, /CONFORMANCE_USAGE_CASE/)
 })
+
+test('MCP conformance exposes its named case without weakening dependency and host gates', { skip: process.platform === 'win32' }, async () => {
+  const name = 'claude.pretooluse.mcp'
+  const help = await invoke(['--help'], { PATH: '' }); assert.ok(help.stdout.includes(name))
+  const missing = await invoke(['--case', name, '--claude-binary', '/missing/claude'])
+  assert.equal(missing.status, 3); assert.match(missing.stderr, /DEPENDENCY_UNAVAILABLE: claude/)
+  const wrongHost = await invoke(['--case', name, '--host', 'v2'], { PATH: '' })
+  assert.equal(wrongHost.status, 2); assert.match(wrongHost.stderr, /CONFORMANCE_USAGE_CASE/)
+})

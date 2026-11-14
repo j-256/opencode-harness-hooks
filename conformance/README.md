@@ -147,3 +147,11 @@ This case compares actual pinned Claude Code with the default stock V1 agent ser
 The recorder checks the parent native session identity, distinct call identities, `dontAsk`, and reserved absent transcript for evaluator tools. Command hooks must run while nested prompt and agent model handlers remain suppressed. Malformed verdict arguments must not reach tool hooks. The completed parent transcript must exist and exclude evaluator call identities. A positive parent instruction control establishes that the marker excluded from every evaluator request was supplied to the caller. Project memory discovery itself is outside this fixture's claim. The host must delete each owned child, and source, command, and adapter build fingerprints must remain unchanged.
 
 The comparer enforces literal expectations separately for both runtimes, including retry and inference limits, and rejects missing or duplicated controls, tool callbacks, stale identities, unexpected effects, and incorrect artifact admission. A pass verifies only the named requirement. Broader shell classification, permission precedence, tool catalogs and rendering, other retry/status policies, real models, other providers/events, V2, and native trust retain separate obligations. The complete-profile gate remains incomplete until those obligations have their own evidence.
+
+## Configured MCP hook comparison
+
+```sh
+node scripts/verify-conformance.mjs --case claude.pretooluse.mcp
+```
+
+This named V1 case shares source, recorder, and local MCP server bytes with pinned native Claude. Literal RPC arguments, parent effects and denial feedback, callback counts, text/error/empty/malformed/timeout controls, parent transcript isolation, and owned child cleanup must all agree. The deterministic internal transport uses no model account; parent responses use synthetic loopback providers. Provider allowlist handling is exercised. Native permission bypass is fixture-only, and machine-managed settings can remain active. The case does not certify connection/authentication/elicitation, exact raw multi-text whitespace, other events, native trust, Codex MCP, or V2. See the [MCP capability boundaries](../docs/mcp-hooks.md).
