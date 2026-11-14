@@ -7,6 +7,7 @@ import { runService } from '../service-execution.js'
 import { snapshotID } from '../session-snapshot.js'
 import type { SessionSnapshot } from '../sessions.js'
 import { MODEL_REQUEST_HEADER } from './model-v1.js'
+import type { WakeRecords } from '../wake-records.js'
 
 export const BACKGROUND_REQUEST_HEADER = 'x-opencode-harness-hooks-background'
 const MAX_BYTES = 32 * 1024 * 1024
@@ -18,8 +19,9 @@ const READ_MS = 5000
 const TOOL_REMINDER_SEPARATOR = '\n\n'
 interface Carrier { readonly anchor: BackgroundAnchor; readonly parts?: readonly string[] }
 interface Layout { readonly session: SessionSnapshot; readonly users: readonly Carrier[]; readonly tools: readonly Carrier[]; readonly current: Carrier; readonly bytes: number }
-interface Ticket { readonly layout: Layout; readonly providerID: string; readonly protocol: PromptProtocol; readonly signal: AbortSignal; readonly cleanup: () => void; readonly hashes: Map<string, string>; rows?: readonly BackgroundEntry[]; preparing?: Promise<void> }
-interface Options { readonly records: BackgroundRecords; readonly prepare: (session: SessionSnapshot, anchor: BackgroundAnchor, signal: AbortSignal) => Promise<void>; readonly maxBytes?: number }
+interface ProjectionRow extends Pick<BackgroundEntry, 'anchor' | 'dialect' | 'model'> { readonly replacePrompt?: boolean }
+interface Ticket { readonly layout: Layout; readonly providerID: string; readonly protocol: PromptProtocol; readonly signal: AbortSignal; readonly cleanup: () => void; readonly hashes: Map<string, string>; rows?: readonly ProjectionRow[]; preparing?: Promise<void> }
+interface Options { readonly records: BackgroundRecords; readonly wakes?: WakeRecords; readonly prepare: (session: SessionSnapshot, anchor: BackgroundAnchor, signal: AbortSignal) => Promise<void>; readonly maxBytes?: number }
 interface Target { readonly carrier: Carrier; readonly position: number; readonly part?: number }
 interface Wire { readonly value: Record<string, unknown>; readonly field: 'input' | 'messages'; readonly source: readonly Record<string, unknown>[]; readonly responses: boolean; readonly targets: ReadonlyMap<string, Target> }
 function fail(code = 'HOST_BACKGROUND_CARRIER_UNAVAILABLE'): never { throw new HostHookError(code, code === 'HOST_BACKGROUND_CANCELLED' ? 'cancelled' : 'unsupported') }
@@ -57,9 +59,10 @@ export class V1BackgroundProjection {
   private readonly lifetime = new AbortController()
   private readonly maxBytes: number
   private readonly records: BackgroundRecords
+  private readonly wakes?: WakeRecords
   private readonly prepare: Options['prepare']
   private pending = 0
-  constructor(options: Options) { this.records = options.records; this.prepare = options.prepare; this.maxBytes = options.maxBytes ?? MAX_BYTES; if (!Number.isSafeInteger(this.maxBytes) || this.maxBytes < 1 || this.maxBytes > MAX_BYTES) fail('HOST_BACKGROUND_LIMIT') }
+  constructor(options: Options) { this.records = options.records; if (options.wakes) this.wakes = options.wakes; this.prepare = options.prepare; this.maxBytes = options.maxBytes ?? MAX_BYTES; if (!Number.isSafeInteger(this.maxBytes) || this.maxBytes < 1 || this.maxBytes > MAX_BYTES) fail('HOST_BACKGROUND_LIMIT') }
   capture(owner: SessionSnapshot, input: unknown): void {
     this.live(owner)
     if (!Array.isArray(input) || !input.length || input.length > MAX_ROWS) fail('HOST_BACKGROUND_LAYOUT_UNAVAILABLE')
@@ -121,12 +124,12 @@ export class V1BackgroundProjection {
       if (ticket.hashes.size >= MAX_VARIANTS || this.bytes() + 128 > this.maxBytes) fail('HOST_BACKGROUND_LIMIT')
       let value: unknown; try { value = JSON.parse(text) } catch { fail('HOST_BACKGROUND_REQUEST_UNAVAILABLE') }
       const wire = this.wire(ticket, value)
-      this.validate(ticket, wire, ticket.rows ?? this.records.read(ticket.layout.session))
+      this.validate(ticket, wire, ticket.rows ?? this.read(ticket.layout.session))
       if (!ticket.rows) {
         ticket.preparing ??= (async () => {
           await this.prepare(ticket.layout.session, ticket.layout.current.anchor, signal)
           if (signal.aborted) fail('HOST_BACKGROUND_CANCELLED')
-          const rows = this.records.read(ticket.layout.session).filter(row => row.anchor)
+          const rows = this.read(ticket.layout.session).filter(row => row.anchor)
           this.validate(ticket, wire, rows)
           ticket.rows = Object.freeze(rows)
         })().finally(() => { delete ticket.preparing })
@@ -172,17 +175,27 @@ export class V1BackgroundProjection {
     if (userIndex !== ticket.layout.users.length || ticket.layout.tools.some(row => !targets.has(carrierKey(row.anchor)))) fail()
     return { value, field, source, responses, targets }
   }
-  private validate(ticket: Ticket, wire: Wire, rows: readonly BackgroundEntry[]): void {
+  private read(session: SessionSnapshot): readonly ProjectionRow[] {
+    const rows: ProjectionRow[] = [...this.records.read(session)]
+    for (const row of this.wakes?.read(session) ?? []) {
+      const binding = row.binding; if (!binding) continue
+      rows.push({ dialect: 'claude-code', anchor: binding.anchor, model: binding.model, ...(binding.placement.kind === 'system' ? { replacePrompt: true } : {}) })
+      if (binding.developer.length) rows.push({ dialect: 'codex', anchor: binding.anchor, model: binding.developer })
+    }
+    return rows
+  }
+  private validate(ticket: Ticket, wire: Wire, rows: readonly ProjectionRow[]): void {
     for (const row of rows) {
       if (!row.anchor) { if (row.model.length && row.dialect === 'codex' && ticket.protocol === 'anthropic') fail('HOST_BACKGROUND_ROLE_UNAVAILABLE'); continue }
       const target = wire.targets.get(carrierKey(row.anchor))
       if (!target || !sameAnchor(row.anchor, target.carrier.anchor)) fail()
+      if (row.replacePrompt && row.anchor.kind !== 'prompt') fail()
       if (row.model.length && row.dialect === 'codex' && ticket.protocol === 'anthropic') fail('HOST_BACKGROUND_ROLE_UNAVAILABLE')
     }
   }
   private overlay(ticket: Ticket, wire: Wire): Record<string, unknown> {
     const changes = new Map<number, Record<string, unknown>>(), developers = new Map<number, unknown[]>()
-    const groups = new Map<string, { readonly anchor: BackgroundAnchor; readonly model: string[] }>()
+    const groups = new Map<string, { readonly anchor: BackgroundAnchor; readonly model: string[]; replacement?: readonly string[] }>()
     for (const row of ticket.rows!) {
       if (!row.model.length || !row.anchor) continue
       const target = wire.targets.get(carrierKey(row.anchor))!
@@ -192,13 +205,15 @@ export class V1BackgroundProjection {
         developers.set(target.position, values); continue
       }
       const key = carrierKey(row.anchor), group = groups.get(key) ?? { anchor: row.anchor, model: [] }
-      group.model.push(...row.model); groups.set(key, group)
+      if (row.replacePrompt) { if (group.replacement) fail(); group.replacement = row.model } else group.model.push(...row.model)
+      groups.set(key, group)
     }
     for (const group of groups.values()) {
       const target = wire.targets.get(carrierKey(group.anchor))!, raw = changes.get(target.position) ?? wire.source[target.position]!, suffix = group.model.join(TOOL_REMINDER_SEPARATOR)
       if (group.anchor.kind === 'prompt') {
         const type = wire.responses ? 'input_text' : 'text', content = textParts(raw.content, type)
-        changes.set(target.position, { ...raw, content: [...group.model.map((text, index) => ({ type, text: text + (index === group.model.length - 1 ? '\n' : '') })), ...content] })
+        const original = group.replacement ? [...content.slice(0, -target.carrier.parts!.length), ...group.replacement.map((text, index) => ({ ...(index === group.replacement!.length - 1 ? content.at(-1) : { type }), text }))] : content
+        changes.set(target.position, { ...raw, content: [...group.model.map((text, index) => ({ type, text: text + (index === group.model.length - 1 ? '\n' : '') })), ...original] })
       } else if (target.part !== undefined) {
         const content = [...raw.content as Record<string, unknown>[]], part = content[target.part]!
         content[target.part] = { ...part, content: toolText(part.content) + TOOL_REMINDER_SEPARATOR + suffix }; changes.set(target.position, { ...raw, content })

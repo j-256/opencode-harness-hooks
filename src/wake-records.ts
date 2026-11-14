@@ -213,7 +213,8 @@ export class WakeRecords {
         if (anchor.kind !== 'prompt') fail('WAKE_BINDING_OWNER_MISMATCH')
         artifact = { created: attempt.created, body: claudeSystemWake({ ...input, promptID: attempt.promptID, promptIndex: placement.promptIndex, turnIndex: placement.turnIndex }), model: [text.model] }
       }
-      const model = [...artifact.model, ...attempt.result.attachments.flatMap(row => { const rendered = row.body.rendered; return Array.isArray(rendered) ? rendered.map(value => (value as { readonly content: string }).content) : [] })]
+      const callbacks = attempt.result.attachments.flatMap(row => { const rendered = row.body.rendered; return Array.isArray(rendered) ? rendered.map(value => (value as { readonly content: string }).content) : [] })
+      const model = placement.kind === 'system' ? [...callbacks.map((text, index) => text + (index === callbacks.length - 1 ? '\n' : '')), ...artifact.model] : [...artifact.model, ...callbacks]
       binding = { attemptID: attempt.id, anchor, placement, artifact, model, developer: attempt.result.developer }
     }
     return freeze({ delivery, sourceUUID, deliveryID, text, attempts, ...(binding ? { binding } : {}) })
