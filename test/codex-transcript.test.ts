@@ -236,3 +236,35 @@ test('startup context enters the journal before its owned user with native hook 
   assert.equal(await readFile(view.transcriptPath, 'utf8'), before)
   assert.throws(() => transcript.bindStart(sessions.get('host-session'), 'activation', 'foreign'), { code: 'CODEX_STARTUP_BINDING_INVALID' })
 })
+
+test('a genuine prompt can read its existing Codex journal before its SDK user is persisted', async t => {
+  const { CodexTranscript } = await library(), sessions = new Sessions(), records = { id: 'host-session', messages: [] as any[] }
+  sessions.prompt('host-session', 'turn', 'fixture'); const session = sessions.get('host-session')
+  const transcript = new CodexTranscript({ host: 'v1', directory: '/project', history: async () => records }); t.after(async () => { await transcript.dispose(); sessions.dispose() })
+  const prompt = { host: 'v1' as const, event: 'UserPromptSubmit' as const, sessionID: 'host-session', messageID: 'turn', prompt: 'User prompt', signal: session.turnSignal }
+  const view = await transcript.preparePrompt(prompt, session, session.turnSignal), before = await readFile(view.transcriptPath, 'utf8')
+  assert.equal(JSON.parse(before).type, 'session_meta'); assert.equal(JSON.parse(before).payload.id, view.sessionID)
+  assert.deepEqual(await transcript.preparePrompt(prompt, session, session.turnSignal), view)
+  assert.match(view.turnID, /^[a-f0-9-]{36}$/); assert.notEqual(view.turnID, view.sessionID)
+  records.messages.push(...history().messages); transcript.observe(event(), session)
+  const tool = await transcript.prepare(event(), session, session.turnSignal)
+  assert.equal(tool.sessionID, view.sessionID); assert.equal(tool.turnID, view.turnID); assert.equal(tool.transcriptPath, view.transcriptPath)
+  assert.ok((await readFile(tool.transcriptPath, 'utf8')).startsWith(before))
+  await assert.rejects(transcript.preparePrompt(prompt, session, session.turnSignal), { code: 'CODEX_TRANSCRIPT_PROMPT_UNAVAILABLE' })
+})
+
+test('a notification callback validates its real completed anchor and sees its Codex result without a fabricated tool event', async t => {
+  const { CodexTranscript } = await library(), sessions = new Sessions(), records = history()
+  sessions.prompt('host-session', 'turn', 'fixture'); const session = sessions.get('host-session')
+  const transcript = new CodexTranscript({ host: 'v1', directory: '/project', history: async () => records }); t.after(async () => { await transcript.dispose(); sessions.dispose() })
+  transcript.observe(event(), session)
+  const anchor = { kind: 'tool' as const, sessionID: 'host-session', turnID: 'turn', messageID: 'answer', callID: 'call', signature: (await import('node:crypto')).createHash('sha256').update('Tool result').digest('hex') }
+  const notification = { host: 'v1' as const, event: 'UserPromptSubmit' as const, sessionID: 'host-session', messageID: 'turn', prompt: 'NOTIFICATION', notificationID: 'owned-notice', anchor, signal: session.turnSignal }
+  const view = await transcript.prepareNotification(notification, session, session.turnSignal), before = await readFile(view.transcriptPath, 'utf8'), rows = before.trim().split('\n').map(line => JSON.parse(line))
+  assert.equal(rows.find(row => row.payload.type === 'function_call_output').payload.output, 'Tool result')
+  assert.equal(rows.some(row => JSON.stringify(row.payload).includes('NOTIFICATION')), false)
+  for (const changed of [{ callID: 'foreign' }, { messageID: 'foreign' }, { signature: 'a'.repeat(64) }]) await assert.rejects(transcript.prepareNotification({ ...notification, anchor: { ...anchor, ...changed } }, session, session.turnSignal), { code: 'CODEX_TRANSCRIPT_NOTIFICATION_UNAVAILABLE' })
+  records.messages[1].content[1].status = 'running'
+  await assert.rejects(transcript.prepareNotification(notification, session, session.turnSignal), { code: 'CODEX_TRANSCRIPT_NOTIFICATION_UNAVAILABLE' })
+  assert.equal(await readFile(view.transcriptPath, 'utf8'), before)
+})

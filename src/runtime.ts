@@ -268,15 +268,21 @@ export async function createRuntime(host: HostVersion, directory: string, inputO
       if (starts) await runService(null, signal, () => starts.wait(event.sessionID))
       const base: NativeEvent = { host, event: 'UserPromptSubmit', sessionID: event.sessionID, cwd: directory }
       const selected = matched(sources, base).filter(registration => !nativeSkip(registration, base))
-      const context = notificationEvent ? await runService(null, signal, current => services.notifications!.prepare(notificationEvent, session, current)) : undefined
+      const context = notificationEvent ? await runService(null, signal, current => services.notifications!.prepare(notificationEvent, session, current, selected)) : undefined
       if (notificationEvent && (!record(context) || !record(context.dialectData) || selected.some(registration => typeof context.dialectData[registration.dialect]?.transcript_path !== 'string' || !context.dialectData[registration.dialect]!.transcript_path))) throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported')
       let nativeData = context?.dialectData ?? (selected.length && services.promptData ? await runService(null, signal, current => services.promptData!(event, session, current)) : undefined)
+      let nativeSessionIDs = context?.nativeSessionIDs
       if (!notificationEvent && selected.some(registration => registration.dialect === 'claude-code') && nativeData?.['claude-code']?.transcript_path === undefined && services.transcripts) {
         const path = await services.transcripts.prepare(event, session, signal)
         nativeData = { ...nativeData, 'claude-code': { ...nativeData?.['claude-code'], transcript_path: path } }
       }
+      if (!notificationEvent && selected.some(registration => registration.dialect === 'codex') && nativeData?.codex?.transcript_path === undefined && services.codexTranscripts?.preparePrompt) {
+        const view = await services.codexTranscripts.preparePrompt(event, session, signal)
+        nativeData = { ...nativeData, codex: { ...nativeData?.codex, transcript_path: view.transcriptPath, turn_id: view.turnID } }
+        nativeSessionIDs = { ...nativeSessionIDs, codex: view.sessionID }
+      }
       const data = { prompt: event.prompt, transcript_path: null, turn_id: event.messageID, prompt_id: event.messageID, ...(session.model ? { model: session.model } : {}), ...(options.permissionMode ? { permission_mode: options.permissionMode } : {}) }
-      const nativeEvent: NativeEvent = { ...base, data, ...(nativeData ? { dialectData: nativeData } : {}), ...(context?.nativeSessionIDs ? { nativeSessionIDs: context.nativeSessionIDs } : {}) }
+      const nativeEvent: NativeEvent = { ...base, data, ...(nativeData ? { dialectData: nativeData } : {}), ...(nativeSessionIDs ? { nativeSessionIDs } : {}) }
       for (const registration of selected) {
         try { buildPayload(registration, nativeEvent) } catch (error) { throw new HostHookError('HOST_NATIVE_METADATA_UNAVAILABLE', 'unsupported', `${registration.id} ${error instanceof PayloadError ? error.message : 'PAYLOAD_INVALID'}`) }
       }

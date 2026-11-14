@@ -15,6 +15,9 @@ import { OriginalInputs } from './original-inputs.js'
 import { SESSION_SNAPSHOT_VERSION, sessionSnapshot, snapshotCopy, snapshotID, snapshotObject } from './session-snapshot.js'
 import type { BackgroundRecords } from './background-records.js'
 import { BackgroundHistory } from './background-history.js'
+import type { HostPromptEvent } from './prompt-types.js'
+import type { HostNotificationEvent } from './notification.js'
+import { backgroundAnchor } from './background-records.js'
 
 const MAX_BYTES = 32 * 1024 * 1024
 const MAX_CALLS = 20000
@@ -39,9 +42,11 @@ export interface CodexTranscriptService {
   unbindStart?(session: SessionSnapshot, activationID: string, messageID: string): void
   observe(event: HostToolEvent, session: SessionSnapshot): void
   prepare(event: HostToolEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView>
+  preparePrompt?(event: HostPromptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView>
+  prepareNotification?(event: HostNotificationEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView>
   dispose(): Promise<void>
 }
-interface Options { readonly host: HostVersion; readonly directory: string; readonly temporaryParent?: string; readonly background?: BackgroundRecords; readonly history: (event: HostToolEvent | SessionStartEvent, signal: AbortSignal) => Promise<CodexTranscriptHistory> }
+interface Options { readonly host: HostVersion; readonly directory: string; readonly temporaryParent?: string; readonly background?: BackgroundRecords; readonly history: (event: HostToolEvent | HostPromptEvent | SessionStartEvent, signal: AbortSignal) => Promise<CodexTranscriptHistory> }
 interface Published { readonly path?: string; readonly created: string; readonly fingerprints: ReadonlyMap<string, string>; readonly layout: readonly string[] }
 interface Startup { readonly contexts: readonly string[]; readonly created: number; messageID?: string }
 interface Startups { readonly signal: AbortSignal; readonly batches: Map<string, Startup>; readonly cleanup: () => void; bytes: number }
@@ -97,7 +102,15 @@ export class CodexTranscript implements CodexTranscriptService {
   }
 
   prepare(inputEvent: HostToolEvent, inputSession: SessionSnapshot, parent: AbortSignal): Promise<CodexTranscriptView> {
-    let event: HostToolEvent, session: SessionSnapshot
+    return this.prepareEvent(inputEvent, inputSession, parent)
+  }
+  preparePrompt(event: HostPromptEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView> { return this.prepareEvent(event, session, signal) }
+  prepareNotification(input: HostNotificationEvent, session: SessionSnapshot, signal: AbortSignal): Promise<CodexTranscriptView> {
+    try { const event = Object.freeze({ ...input, anchor: backgroundAnchor(input.anchor) }); if (event.event !== 'UserPromptSubmit' || !snapshotID(event.notificationID)) fail('CODEX_TRANSCRIPT_NOTIFICATION_UNAVAILABLE'); return this.prepareEvent(event, session, signal, event) }
+    catch (error) { return Promise.reject(error instanceof HostHookError && error.code === 'BACKGROUND_ANCHOR_INVALID' ? new HostHookError('CODEX_TRANSCRIPT_NOTIFICATION_UNAVAILABLE', 'unsupported') : error) }
+  }
+  private prepareEvent(inputEvent: HostToolEvent | HostPromptEvent, inputSession: SessionSnapshot, parent: AbortSignal, notification?: HostNotificationEvent): Promise<CodexTranscriptView> {
+    let event: HostToolEvent | HostPromptEvent, session: SessionSnapshot
     try { this.owner(inputEvent, inputSession); event = { ...inputEvent }; session = { ...inputSession } } catch (error) { return Promise.reject(error) }
     if (this.pending >= MAX_PENDING) return Promise.reject(new HostHookError('CODEX_TRANSCRIPT_PENDING_LIMIT', 'unsupported'))
     const signal = AbortSignal.any([parent, session.signal, session.turnSignal, this.lifetime.signal])
@@ -108,8 +121,13 @@ export class CodexTranscript implements CodexTranscriptService {
       const history = copy(await runService(HISTORY_MS, signal, current => this.options.history(event, current)))
       if (history.id !== event.sessionID) fail('CODEX_TRANSCRIPT_SESSION_MISMATCH')
       if (!session.turnID || !Array.isArray(history.messages) || history.messages.length > MAX_MESSAGES) fail('CODEX_TRANSCRIPT_HISTORY_INVALID')
-      if (this.published.has(event.sessionID) && !history.messages.length) fail('CODEX_TRANSCRIPT_HISTORY_RESET_UNVERIFIED')
-      const view = await this.publish(event.sessionID, history, this.project(event, session, history), signal)
+      if (this.published.get(event.sessionID)?.layout.length && !history.messages.length) fail('CODEX_TRANSCRIPT_HISTORY_RESET_UNVERIFIED')
+      if (event.event === 'UserPromptSubmit') {
+        if (event.messageID !== session.turnID || typeof event.prompt !== 'string' || !snapshotID(event.messageID)) fail('CODEX_TRANSCRIPT_PROMPT_UNAVAILABLE')
+        if (notification) this.validateNotification(notification, session, history)
+        else if (history.messages.some(message => message.id === event.messageID)) fail('CODEX_TRANSCRIPT_PROMPT_UNAVAILABLE')
+      }
+      const view = await this.publish(event.sessionID, history, this.project(event, session, history, event.event !== 'UserPromptSubmit'), signal)
       return { ...view, turnID: identity(this.options.directory, event.sessionID, session.turnID) }
     }).catch((error: unknown) => { if (signal.aborted) fail('CODEX_TRANSCRIPT_CANCELLED'); if (error instanceof HostHookError) throw error; fail('CODEX_TRANSCRIPT_UNAVAILABLE') })
     this.serial.set(event.sessionID, operation)
@@ -278,7 +296,18 @@ export class CodexTranscript implements CodexTranscriptService {
     if (this.deleted.has(event.sessionID)) fail('CODEX_TRANSCRIPT_SESSION_DELETED')
   }
 
-  private project(event: HostToolEvent | SessionStartEvent, session: SessionSnapshot, history: CodexTranscriptHistory, requireCurrent = true): CodexRolloutHistoryRecord[] {
+  private validateNotification(event: HostNotificationEvent, session: SessionSnapshot, history: CodexTranscriptHistory): void {
+    const anchor = event.anchor, hash = (text: string) => createHash('sha256').update(text).digest('hex')
+    if (anchor.sessionID !== event.sessionID || anchor.turnID !== session.turnID) fail('CODEX_TRANSCRIPT_NOTIFICATION_UNAVAILABLE')
+    if (anchor.kind === 'prompt') {
+      if (anchor.messageID !== event.messageID || anchor.signature !== hash(JSON.stringify([event.prompt])) || history.messages.some(message => message.id === event.messageID)) fail('CODEX_TRANSCRIPT_NOTIFICATION_UNAVAILABLE')
+      return
+    }
+    const message = history.messages.find(message => message.id === anchor.messageID && message.turnID === session.turnID && message.role === 'assistant'), tool = message?.content.find((part): part is CodexTranscriptTool => typeof part !== 'string' && part.id === anchor.callID)
+    if (history.messages.findLast(message => message.role === 'user')?.id !== session.turnID || !tool || !['completed', 'error'].includes(tool.status) || typeof tool.output !== 'string' || hash(tool.output) !== anchor.signature) fail('CODEX_TRANSCRIPT_NOTIFICATION_UNAVAILABLE')
+  }
+
+  private project(event: HostToolEvent | HostPromptEvent | SessionStartEvent, session: SessionSnapshot, history: CodexTranscriptHistory, requireCurrent = true): CodexRolloutHistoryRecord[] {
     const rows: CodexRolloutHistoryRecord[] = [], seen = new Set<string>()
     const background = new BackgroundHistory(this.options.background, session, 'codex')
     let turn: string | undefined, found = false, lastText = ''

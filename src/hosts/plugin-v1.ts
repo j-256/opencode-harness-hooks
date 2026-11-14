@@ -134,11 +134,18 @@ export async function createHarnessHooks(input: V1Input, options: unknown, servi
   } } : {}), ...(!services.host?.mcp ? { mcp: { timeoutAccounting: 'wall' as const, execute: request => {
     if (!mcp) unavailable('HOST_MCP_TOOL_UNAVAILABLE')
     return mcp.execute(request)
-  } } } : {}) }, transcripts, codexTranscripts, nativeState: stateService, sessionStart: startup.service, ...(!customBackground ? { notifications: { prepare: async (event, session, signal) => {
-    if (services.notifications) return services.notifications.prepare(event, session, signal)
-    if (!transcripts.prepareNotification) unavailable('HOST_NOTIFICATION_UNAVAILABLE')
-    const path = await transcripts.prepareNotification(event, session, signal)
-    return { dialectData: { 'claude-code': { transcript_path: path } } }
+  } } } : {}) }, transcripts, codexTranscripts, nativeState: stateService, sessionStart: startup.service, ...(!customBackground ? { notifications: { prepare: async (event, session, signal, selected) => {
+    if (services.notifications) return services.notifications.prepare(event, session, signal, selected)
+    let path: string | undefined, codex: Awaited<ReturnType<NonNullable<typeof codexTranscripts.prepareNotification>>> | undefined
+    if (selected.some(row => row.dialect === 'claude-code')) {
+      if (!transcripts.prepareNotification) unavailable('HOST_NOTIFICATION_UNAVAILABLE')
+      path = await transcripts.prepareNotification(event, session, signal)
+    }
+    if (selected.some(row => row.dialect === 'codex')) {
+      if (!codexTranscripts.prepareNotification) unavailable('HOST_NOTIFICATION_UNAVAILABLE')
+      codex = await codexTranscripts.prepareNotification(event, session, signal)
+    }
+    return { dialectData: { ...(path ? { 'claude-code': { transcript_path: path } } : {}), ...(codex ? { codex: { transcript_path: codex.transcriptPath, turn_id: codex.turnID } } : {}) }, ...(codex ? { nativeSessionIDs: { codex: codex.sessionID } } : {}) }
   }, capture: async (event, session, dispatch, signal) => { await services.notifications?.capture(event, session, dispatch, signal); await wake.capture(event, session, dispatch, signal) } } } : {}) })
   startup.attach(runtime)
   wake.attach(runtime.sessions, runtime)
